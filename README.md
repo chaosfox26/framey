@@ -1,20 +1,18 @@
-<p align="center"><img src="icon.svg" width="128" height="128" alt="Framy icon"></p>
+<p align="center"><img src="icon.svg" width="128" height="128" alt="Framey icon"></p>
 
-# Framy
+# Framey
 
-> **Framy is an AI-made project, developed by ChaosFox using AI coding tools.**
+> **Framey is an AI-made project, developed by ChaosFox using AI coding tools.**
 >
-> **Framy was inspired by [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) and its contributors’ work making Steam Deck customization accessible through plugins. We gratefully acknowledge that inspiration. Framy is an independent project for Steam Frame, with no claimed affiliation or endorsement.**
+> **Framey was inspired by [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) and its contributors’ work making Steam Deck customization accessible through plugins. We gratefully acknowledge that inspiration. Framey is an independent project for Steam Frame, with no claimed affiliation or endorsement.**
 
-Framy is a lightweight plugin loader that runs on the Steam Frame itself. It adds a button to Steam's bottom bar that opens a VR-friendly panel where plugins live, starting with fan control. Unofficial and independent of Valve.
-
-Naming: the public name is Framy. This repository and its technical identifiers keep the spelling `framey` (`framey.py`, `framey.service`, `~/framey`, the `Framey` JavaScript object). Those identifiers are unchanged.
+Framey is a lightweight plugin loader that runs on the Steam Frame itself. It adds a button to Steam's bottom bar that opens a VR-friendly panel where plugins live, starting with fan control. Unofficial and independent of Valve.
 
 ## Origins and purpose
 
-Framy grew from a wish to make the Steam Frame easier to customize through a lightweight, VR-first plugin interface, beginning with convenient fan controls. Plugins are small folders, so new features can be added without changing the loader.
+Framey grew from a wish to make the Steam Frame easier to customize through a lightweight, VR-first plugin interface, beginning with convenient fan controls. Plugins are small folders, so new features can be added without changing the loader.
 
-## The Framy projects
+## The Framey projects
 
 Three separate repositories, each under GPL-2.0:
 
@@ -36,7 +34,7 @@ Three separate repositories, each under GPL-2.0:
 
 ## Install
 
-The easiest way is the [Framy App](https://github.com/chaosfox26/framey-app), which installs and updates Framy over SSH.
+The easiest way is the [Framey App](https://github.com/chaosfox26/framey-app), which installs and updates Framey over SSH.
 
 Manually, on a Steam Frame with Developer Mode enabled (Steam Settings > System > Enable Developer Mode):
 
@@ -64,17 +62,17 @@ WantedBy=default.target
 
 3. Run `systemctl --user daemon-reload && systemctl --user enable --now framey.service`.
 
-Framy needs Steam to be running with its local debug port open. That port was available on the author's headset. If it is not available on yours, Framy cannot attach.
+Framey needs Steam to be running with its local debug port open. That port was available on the author's headset. If it is not available on yours, Framey cannot attach.
 
 ## Use, update and remove
 
-- Tap the Framy icon in Steam's bottom bar to open or close the panel, and use the side menu to switch tabs.
-- Update by running the Framy App's **Install / Update**, or replace the files in `~/framey` and run `systemctl --user restart framey.service`.
-- Remove with the Framy App's **Remove**, or manually: `systemctl --user disable --now framey.service`, then delete `~/.config/systemd/user/framey.service`, `~/framey` and `~/.config/framey`. Stopping the service removes the icon and panel from Steam's interface.
+- Tap the Framey icon in Steam's bottom bar to open or close the panel, and use the side menu to switch tabs.
+- Update by running the Framey App's **Install / Update**, or replace the files in `~/framey` and run `systemctl --user restart framey.service`.
+- Remove with the Framey App's **Remove**, or manually: `systemctl --user disable --now framey.service`, then delete `~/.config/systemd/user/framey.service`, `~/framey` and `~/.config/framey`. Stopping the service removes the icon and panel from Steam's interface.
 
 ## Status and verification
 
-Framy has been developed and tested on one Steam Frame running SteamOS 0.4.5. Because it works through Steam's own interface, a Steam update could change or break it. It has not been tested on other headsets or SteamOS versions. AI authorship and a working build are not proof that something works; only what was run on the headset is claimed here.
+Framey has been developed and tested on one Steam Frame running SteamOS 0.4.5. Because it works through Steam's own interface, a Steam update could change or break it. It has not been tested on other headsets or SteamOS versions. AI authorship and a working build are not proof that something works; only what was run on the headset is claimed here.
 
 ## Roadmap (not implemented)
 
@@ -82,12 +80,12 @@ Framy has been developed and tested on one Steam Frame running SteamOS 0.4.5. Be
 
 ## Inspiration and acknowledgments
 
-Framy was inspired by [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader). Its plugin-loader concept, and the way it made Steam Deck customization accessible through plugins, shaped Framy's idea of a small loader with plugins, a Settings page and a Store page. Thank you to the Decky Loader maintainers and contributors for the work and the example. Framy's aim is to bring that kind of convenience to the Steam Frame while respecting the work that inspired it.
+Framey was inspired by [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader). Its plugin-loader concept, and the way it made Steam Deck customization accessible through plugins, shaped Framey's idea of a small loader with plugins, a Settings page and a Store page. Thank you to the Decky Loader maintainers and contributors for the work and the example. Framey's aim is to bring that kind of convenience to the Steam Frame while respecting the work that inspired it.
 
-What Framy is not: it is not a port of Decky Loader, it is not compatible with Decky plugins, and it has no official relationship with the Decky Loader project. It is also not a clean-room implementation. While Framy was being designed, Decky Loader's public source was read for reference. No Decky Loader code, assets or documentation were copied. A line-by-line comparison of this repository against Decky Loader's source found one identical line, the generic browser call `document.head.append(style);`, and no other matches.
+What Framey is not: it is not a port of Decky Loader, it is not compatible with Decky plugins, and it has no official relationship with the Decky Loader project. It is also not a clean-room implementation. While Framey was being designed, Decky Loader's public source was read for reference. No Decky Loader code, assets or documentation were copied. A line-by-line comparison of this repository against Decky Loader's source found one identical line, the generic browser call `document.head.append(style);`, and no other matches.
 
-Framy is unofficial and independent of Valve.
+Framey is unofficial and independent of Valve.
 
 ## License
 
-Framy is licensed under the GNU General Public License, version 2. The full text is in [LICENSE](LICENSE), and GitHub identifies it as GPL-2.0. The source files do not carry their own license notices.
+Framey is licensed under the GNU General Public License, version 2. The full text is in [LICENSE](LICENSE), and GitHub identifies it as GPL-2.0. The source files do not carry their own license notices.
