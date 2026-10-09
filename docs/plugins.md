@@ -53,7 +53,7 @@ Available helpers:
 
 Range inputs with the class `fy-r` get Framey's large slider styling. Keep controls large: the panel is used with a laser pointer. Keyboard shortcuts did not reach the page when tested on the headset, so do not rely on them.
 
-If `main.js` throws while loading, the loader shows "Module <id> failed" and carries on. If `render` throws, the tab shows the error.
+Each `main.js` is evaluated as its own script, inside its own block, so top-level `let` and `const` do not clash between plugins. A syntax error or exception in one `main.js` disables only that plugin: the loader shows "Module <id> failed" and carries on. If `render` throws, the tab shows the error.
 
 ## backend.py
 
@@ -64,13 +64,19 @@ async def call(method, arg):
     return {"ok": True}
 ```
 
-The result must be JSON-serializable. Exceptions are returned to the page as `{"error": "..."}`. The backend runs inside the loader's Python process with the user's permissions, so keep it small and do not block. Backends load when the loader starts or reloads, and are skipped for disabled plugins.
+The result must be JSON-serializable. Exceptions are returned to the page as `{"error": "..."}`. A backend that fails to import is skipped and logged.
+
+There is no process isolation. Every backend runs inside the loader's single Python process and event loop, with the user's permissions. A backend that blocks, spins or exits stalls or stops the loader and every other plugin, so keep it small and never block.
+
+Backends load when the loader starts or reloads, and are skipped for disabled plugins. There is no unload hook: Framey calls nothing in a backend when its plugin is disabled, removed or reloaded. A reload imports the file again and drops the old module reference, but threads, tasks, sockets and subprocesses the old module started keep running until the loader exits. A backend that starts any of these has to manage them itself, and a restart of `framey.service` is the only full reset.
 
 ## Installing a plugin
 
 - **Linked or copied folder:** place or link the folder in `plugins/`, then reload from the Settings tab or restart `framey.service`.
-- **Zip:** an HTTPS link to a `.zip` with `plugin.json` at its top level (or inside a single top folder). `plugin.json` needs an `id`. The Framey App can also install a zip file or a GitHub link and does this for you.
+- **Zip:** an HTTPS link to a `.zip` with `plugin.json` at its top level (or inside a single top folder). `plugin.json` needs an `id`. A zip may hold up to 500 files, 5 MB per file and 20 MB unpacked, in folders nested at most 8 deep. The Framey App can also install a zip file or a GitHub link and does this for you.
 - **Store:** put a folder with `plugin.json` into the loader's `store/<id>/` directory and install it from the Store tab.
+
+A zip or Store install is unpacked into a staging folder and checked first. Only then does it replace the old copy of the plugin, so a failed install leaves the working plugin as it was. A plugin whose `plugin.json` is missing, not a JSON object, or has a non-text `name`, `version` or `short` is skipped and logged.
 
 The Settings tab stores which plugins you turned off in `~/.config/framey/settings.json`.
 

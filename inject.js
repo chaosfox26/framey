@@ -4,6 +4,7 @@
   let n = 0;
   const el = (css, text) => {
     const e = document.createElement("div");
+    e.dataset.fy = "";
     e.style.cssText = css;
     if (text !== undefined) e.textContent = text;
     return e;

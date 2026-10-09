@@ -3,6 +3,7 @@
   window.FYBar = true;
   if (window.FYObs) window.FYObs.disconnect();
   const b = document.createElement("div");
+  b.dataset.fy = "";
   b.style.cssText = "flex:none;align-self:center;margin:0 8px 0 4px;width:44px;height:48px;z-index:99999;background:center/24px 24px no-repeat";
   b.style.backgroundImage = 'url("' + FY_ICON_URL + '")';
   b.onclick = () => window.fyCall(JSON.stringify({ id: 0, plugin: "_core", method: "toggle" }));

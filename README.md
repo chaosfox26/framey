@@ -27,9 +27,9 @@ Three separate repositories, each under GPL-2.0:
 - Runs as a user service on the headset, in Python 3.9 or newer with no third-party Python packages, at low CPU priority.
 - Attaches to Steam's own web interface through its local debug port (`127.0.0.1:8080`) and adds a small icon to the bottom bar. Tapping it opens a panel with a side menu, large tap targets and a dark look, sized for a laser pointer. It remembers the last tab and whether the panel was open.
 - Each plugin gets its own tab. A plugin is a folder with metadata (`plugin.json`), a JavaScript interface (`main.js`) and an optional Python backend (`backend.py`). See [docs/plugins.md](docs/plugins.md).
-- **Settings tab:** turn plugins on or off, remove them (two taps), reload them, and install one from an HTTPS link to a zip file. Zip installs check the link, size, paths and plugin id.
+- **Settings tab:** turn plugins on or off, remove them (two taps), reload them, and install one from an HTTPS link to a zip file. Zip installs check the link, size (including unpacked size), paths and plugin id, and only replace an installed plugin once the new one has unpacked cleanly.
 - **Store tab:** lists plugins found in a local `store` folder next to the loader and installs or removes them. The folder is empty by default. There is no online catalog.
-- A plugin that fails is isolated and reported instead of taking the panel down.
+- A plugin with a broken manifest, a JavaScript error or a backend that fails to load is skipped and reported instead of taking the panel down. Plugins are not sandboxed: each plugin's page script is evaluated separately, but backends run in the loader's own Python process and event loop with your permissions, so a backend that blocks or crashes can stall or stop the loader.
 - Reconnects when Steam's interface reloads, refreshes its pages when it starts, and removes its additions when it stops.
 
 ## Install
