@@ -1,7 +1,10 @@
 (() => {
   if (window.Framey) return;
   const calls = {};
+  const gen = Math.random().toString(36).slice(2);
   let n = 0;
+  let busy = false;
+  let tc;
   const el = (css, text) => {
     const e = document.createElement("div");
     e.dataset.fy = "";
@@ -13,6 +16,7 @@
     plugins: [],
     register(p) {
       p.name = p.name || FY._meta.name;
+      p.id = p.id || (FY._meta && FY._meta.id);
       p.short = p.short || FY._meta.short || p.name.split(" ")[0];
       FY.plugins.push(p);
     },
@@ -20,13 +24,22 @@
       return new Promise(r => {
         const id = ++n;
         calls[id] = r;
-        window.fyCall(JSON.stringify({ id, plugin, method, arg }));
+        window.fyCall(JSON.stringify({ gen, id, plugin, method, arg }));
       });
     },
-    _reply(id, v) { calls[id](v); delete calls[id]; },
+    _reply(g, id, v) {
+      const c = calls[id];
+      if (g !== gen || !c) return;
+      delete calls[id];
+      c(v);
+    },
     toast(text, ms) {
-      const t = el("position:fixed;left:50%;bottom:40px;transform:translateX(-50%);z-index:99999;background:#101018;color:#fff;border-radius:14px;padding:14px 24px;font:22px sans-serif", text);
-      document.body.append(t);
+      if (!tc || !tc.isConnected) {
+        tc = el("position:fixed;left:50%;bottom:40px;transform:translateX(-50%);z-index:99999;display:flex;flex-direction:column;align-items:center;gap:8px");
+        document.body.append(tc);
+      }
+      const t = el("background:#101018;color:#fff;border-radius:14px;padding:14px 24px;font:22px sans-serif", text);
+      tc.append(t);
       setTimeout(() => t.remove(), ms || 2500);
     },
     fail(id, e) { FY.toast("Module " + id + " failed: " + e.message, 4000); },
@@ -48,23 +61,39 @@
     ".fy-r{-webkit-appearance:none;height:14px;border-radius:7px;background:#2a2a3a;flex:1;margin:0 10px}" +
     ".fy-r::-webkit-slider-thumb{-webkit-appearance:none;width:40px;height:40px;border-radius:20px;background:#5585ff}";
   document.head.append(style);
+  const act = (method, arg, word) => {
+    busy = true;
+    return FY.call("_core", method, arg).then(r => {
+      busy = false;
+      r = r || {};
+      if (r.ok) {
+        const m = word + (typeof r.ok === "string" ? " " + r.ok : "");
+        sessionStorage.fyMsg = m;
+        FY.toast(m);
+      } else FY.toast(r.error || "Failed", 4000);
+      return r;
+    });
+  };
   const LINKED = "Linked plugin: this only removes it from Framey and does not undo anything it installed on the system.";
   const settings = {
+    id: "#settings",
     name: "Settings",
     short: "Settings",
     render(box) {
       const status = el("font-size:18px;color:#8a8aa0;margin-top:10px", "Modules run inside Steam's UI. Install only ones you trust.");
       FY.call("_core", "list").then(list => {
         box.replaceChildren();
+        if (!Array.isArray(list)) { box.textContent = (list && list.error) || "Unavailable"; return; }
         list.forEach(m => {
           const row = el("display:flex;align-items:center;gap:10px;margin-bottom:10px");
           const del = tile("width:60px;height:56px;justify-content:center;font-size:24px", "x", () => {
+            if (busy) return;
             if (del.textContent === "x") { del.textContent = "?"; if (m.linked) FY.toast(LINKED, 7000); return; }
-            FY.call("_core", "uninstall", m.id);
+            act("uninstall", m.id, "Removed");
           });
           row.append(
             el("flex:1;font-size:21px", m.name + (m.version ? "  v" + m.version : "")),
-            tile("width:90px;height:56px;justify-content:center;font-weight:700;background:" + (m.enabled ? "#5585ff" : "#2a2a3a"), m.enabled ? "On" : "Off", () => FY.call("_core", m.enabled ? "disable" : "enable", m.id)),
+            tile("width:90px;height:56px;justify-content:center;font-weight:700;background:" + (m.enabled ? "#5585ff" : "#2a2a3a"), m.enabled ? "On" : "Off", () => !busy && act(m.enabled ? "disable" : "enable", m.id, m.enabled ? "Disabled" : "Enabled")),
             del,
           );
           box.append(row);
@@ -75,20 +104,23 @@
         box.append(
           url,
           tile("height:60px;justify-content:center;font-weight:700;background:#5585ff;margin-top:10px", "Install", () => {
+            if (busy) return;
             status.textContent = "Installing...";
-            FY.call("_core", "install", url.value).then(r => { status.textContent = r.error ? "Failed: " + r.error : "Installed " + r.ok; });
+            act("install", url.value, "Installed").then(r => { status.textContent = r.error ? "Failed: " + r.error : ""; });
           }),
-          tile("height:60px;justify-content:center;font-weight:700;margin-top:10px", "Reload modules", () => FY.call("_core", "reload")),
+          tile("height:60px;justify-content:center;font-weight:700;margin-top:10px", "Reload modules", () => !busy && act("reload", undefined, "Reloaded")),
           status,
         );
       });
     },
   };
   const store = {
+    id: "#store",
     name: "Store",
     short: "Store",
     render(box) {
       FY.call("_core", "store").then(list => {
+        if (!Array.isArray(list)) { box.textContent = (list && list.error) || "Unavailable"; return; }
         if (!list.length) box.append(el("font-size:20px;color:#8a8aa0;text-align:center;padding:80px 0", "No modules yet"));
         list.forEach(m => {
           const row = el("display:flex;align-items:center;gap:10px;margin-bottom:10px");
@@ -96,8 +128,9 @@
           row.append(
             el("flex:1;font-size:21px", m.name + (m.version ? "  v" + m.version : "")),
             tile("width:130px;height:56px;justify-content:center;font-weight:700;background:" + (m.installed ? "#2a2a3a" : "#5585ff"), m.installed ? "Remove" : "Install", () => {
+              if (busy) return;
               if (!armed) { armed = true; FY.toast(LINKED, 7000); return; }
-              FY.call("_core", m.installed ? "uninstall" : "add", m.id);
+              act(m.installed ? "uninstall" : "add", m.id, m.installed ? "Removed" : "Installed");
             }),
           );
           box.append(row);
@@ -106,8 +139,9 @@
     },
   };
   const tabs = () => [...FY.plugins, settings, store];
+  const key = p => p.id || p.short;
   const show = i => {
-    sessionStorage.fyTab = tabs()[i].short;
+    sessionStorage.fyTab = key(tabs()[i]);
     rail.replaceChildren();
     tabs().forEach((p, k) => rail.append(tile("height:78px;justify-content:center;text-align:center;font-weight:700;font-size:19px;padding:0 4px;background:" + (k === i ? "#5585ff" : "#2a2a3a"), p.short, () => show(k))));
     content.replaceChildren();
@@ -119,8 +153,14 @@
     const shut = panel.style.display === "none";
     panel.style.display = shut ? "flex" : "none";
     sessionStorage.fyOpen = shut ? "1" : "";
-    if (shut) show(Math.max(0, tabs().findIndex(p => p.short === sessionStorage.fyTab)));
+    if (shut) show(Math.max(0, tabs().findIndex(p => key(p) === sessionStorage.fyTab)));
   };
-  FY.restore = () => { if (sessionStorage.fyOpen) FY.toggle(); };
+  FY.restore = () => {
+    if (sessionStorage.fyOpen) FY.toggle();
+    if (sessionStorage.fyMsg) {
+      FY.toast(sessionStorage.fyMsg);
+      sessionStorage.fyMsg = "";
+    }
+  };
   document.body.append(panel);
 })();
