@@ -88,4 +88,4 @@ Framey is unofficial and independent of Valve.
 
 ## License
 
-Framey is licensed under the GNU General Public License, version 2. The full text is in [LICENSE](LICENSE), and GitHub identifies it as GPL-2.0. The source files do not carry their own license notices.
+Framey is licensed under the GNU General Public License, version 2 only. The full text is in [LICENSE](LICENSE), and GitHub identifies it as GPL-2.0. The source files do not carry their own license notices.
