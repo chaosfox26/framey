@@ -78,7 +78,9 @@ Backends load when the loader starts or reloads, and are skipped for disabled pl
 
 A zip or Store install is unpacked into a staging folder and checked first. Only then does it replace the old copy of the plugin, so a failed install leaves the working plugin as it was. A plugin whose `plugin.json` is missing, not a JSON object, or has a non-text `name`, `version` or `short` is skipped and logged.
 
-The Settings tab stores which plugins you turned off in `~/.config/framey/settings.json`.
+The Settings tab stores which plugins you turned off in `~/.config/framey/settings.json`. A missing, unreadable or malformed settings file is treated as empty, and entries of the wrong type are ignored.
+
+Remove in Settings or Store only deletes the plugin folder, or unlinks it if it is a link. It never undoes anything a plugin installed elsewhere on the system, and for a linked plugin the loader says so before removing it. For Fan Control, Remove in the loader does not restore stock cooling: use the Framey App's **Remove** for that.
 
 ## Security
 

@@ -40,9 +40,12 @@ def manifest(d):
 
 def settings():
     try:
-        return {"disabled": [], **json.loads(CONF.read_text())}
-    except (OSError, ValueError, TypeError):
-        return {"disabled": []}
+        s = json.loads(CONF.read_text())
+    except Exception:
+        s = None
+    s = s if isinstance(s, dict) else {}
+    off = s.get("disabled")
+    return {**s, "disabled": [x for x in off if isinstance(x, str)] if isinstance(off, list) else []}
 
 
 def save(s):
@@ -55,7 +58,7 @@ def manifests():
 
 
 def catalog():
-    return [{"id": m["id"], "name": m["name"], "version": m.get("version", ""), "installed": (PLUGINS / m["id"]).exists()} for m in map(manifest, sorted(STORE.iterdir()) if STORE.exists() else []) if m]
+    return [{"id": m["id"], "name": m["name"], "version": m.get("version", ""), "installed": (PLUGINS / m["id"]).exists(), "linked": (PLUGINS / m["id"]).is_symlink()} for m in map(manifest, sorted(STORE.iterdir()) if STORE.exists() else []) if m]
 
 
 def load_backends():
@@ -197,7 +200,7 @@ async def core(method, arg):
             await LIVE["main"]("Runtime.evaluate", expression="Framey.toggle()")
         return None
     if method == "list":
-        return [{**m, "enabled": m["id"] not in s["disabled"]} for m in manifests()]
+        return [{**m, "enabled": m["id"] not in s["disabled"], "linked": (PLUGINS / m["id"]).is_symlink()} for m in manifests()]
     if method == "store":
         return catalog()
     if method == "install":

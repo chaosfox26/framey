@@ -48,6 +48,7 @@
     ".fy-r{-webkit-appearance:none;height:14px;border-radius:7px;background:#2a2a3a;flex:1;margin:0 10px}" +
     ".fy-r::-webkit-slider-thumb{-webkit-appearance:none;width:40px;height:40px;border-radius:20px;background:#5585ff}";
   document.head.append(style);
+  const LINKED = "Linked plugin: this only removes it from Framey and does not undo anything it installed on the system.";
   const settings = {
     name: "Settings",
     short: "Settings",
@@ -58,7 +59,7 @@
         list.forEach(m => {
           const row = el("display:flex;align-items:center;gap:10px;margin-bottom:10px");
           const del = tile("width:60px;height:56px;justify-content:center;font-size:24px", "x", () => {
-            if (del.textContent === "x") { del.textContent = "?"; return; }
+            if (del.textContent === "x") { del.textContent = "?"; if (m.linked) FY.toast(LINKED, 7000); return; }
             FY.call("_core", "uninstall", m.id);
           });
           row.append(
@@ -91,9 +92,13 @@
         if (!list.length) box.append(el("font-size:20px;color:#8a8aa0;text-align:center;padding:80px 0", "No modules yet"));
         list.forEach(m => {
           const row = el("display:flex;align-items:center;gap:10px;margin-bottom:10px");
+          let armed = !m.installed || !m.linked;
           row.append(
             el("flex:1;font-size:21px", m.name + (m.version ? "  v" + m.version : "")),
-            tile("width:130px;height:56px;justify-content:center;font-weight:700;background:" + (m.installed ? "#2a2a3a" : "#5585ff"), m.installed ? "Remove" : "Install", () => FY.call("_core", m.installed ? "uninstall" : "add", m.id)),
+            tile("width:130px;height:56px;justify-content:center;font-weight:700;background:" + (m.installed ? "#2a2a3a" : "#5585ff"), m.installed ? "Remove" : "Install", () => {
+              if (!armed) { armed = true; FY.toast(LINKED, 7000); return; }
+              FY.call("_core", m.installed ? "uninstall" : "add", m.id);
+            }),
           );
           box.append(row);
         });
