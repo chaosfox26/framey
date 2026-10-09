@@ -1,6 +1,6 @@
-# Writing a Framy plugin
+# Writing a Framey plugin
 
-This page is for plugin authors. For what Framy is, see the [README](../README.md). Identifiers keep the spelling `framey` (the JavaScript object is `Framey`).
+This page is for plugin authors. For what Framey is, see the [README](../README.md).
 
 ## Layout
 
@@ -13,7 +13,7 @@ plugins/<id>/
   backend.py    optional Python backend
 ```
 
-An id uses lowercase letters, digits, `-` and `_`, up to 32 characters. The Framy App refuses a package that has neither `main.js` nor `backend.py`.
+An id uses lowercase letters, digits, `-` and `_`, up to 32 characters. The Framey App refuses a package that has neither `main.js` nor `backend.py`.
 
 ## plugin.json
 
@@ -51,7 +51,7 @@ Available helpers:
 | `Framey.button(text, css, onclick)` | Creates a centered, tappable button. |
 | `Framey.toast(text, ms)` | Shows a short message over the page. |
 
-Range inputs with the class `fy-r` get Framy's large slider styling. Keep controls large: the panel is used with a laser pointer. Keyboard shortcuts did not reach the page when tested on the headset, so do not rely on them.
+Range inputs with the class `fy-r` get Framey's large slider styling. Keep controls large: the panel is used with a laser pointer. Keyboard shortcuts did not reach the page when tested on the headset, so do not rely on them.
 
 If `main.js` throws while loading, the loader shows "Module <id> failed" and carries on. If `render` throws, the tab shows the error.
 
@@ -69,7 +69,7 @@ The result must be JSON-serializable. Exceptions are returned to the page as `{"
 ## Installing a plugin
 
 - **Linked or copied folder:** place or link the folder in `plugins/`, then reload from the Settings tab or restart `framey.service`.
-- **Zip:** an HTTPS link to a `.zip` with `plugin.json` at its top level (or inside a single top folder). `plugin.json` needs an `id`. The Framy App can also install a zip file or a GitHub link and does this for you.
+- **Zip:** an HTTPS link to a `.zip` with `plugin.json` at its top level (or inside a single top folder). `plugin.json` needs an `id`. The Framey App can also install a zip file or a GitHub link and does this for you.
 - **Store:** put a folder with `plugin.json` into the loader's `store/<id>/` directory and install it from the Store tab.
 
 The Settings tab stores which plugins you turned off in `~/.config/framey/settings.json`.
