@@ -1,4 +1,4 @@
-import asyncio, base64, importlib.util, io, json, os, pathlib, re, shutil, urllib.parse, zipfile
+import asyncio, base64, importlib.util, io, json, os, pathlib, re, shutil, signal, urllib.parse, zipfile
 
 ROOT = pathlib.Path(__file__).parent
 PLUGINS = ROOT / "plugins"
@@ -9,6 +9,8 @@ NAME = re.compile(r"^[a-z0-9_-]{1,32}$")
 LIVE = {}
 mods = {}
 WIPE = "document.querySelectorAll('div').forEach(d=>{if(d.style.zIndex==='99999')d.remove()});document.querySelectorAll('[data-fy]').forEach(e=>e.remove());delete window.Framey"
+WIPE_BAR = "window.FYObs&&window.FYObs.disconnect();document.querySelectorAll('div').forEach(d=>{if(d.style.zIndex==='99999')d.remove()});delete window.FYBar;delete window.FYObs"
+WIPES = {"main": WIPE, "bar": WIPE_BAR}
 
 
 def settings():
@@ -256,6 +258,7 @@ async def session(name, tab, code, probe_expr):
     t = None
     try:
         await send("Runtime.addBinding", name="fyCall")
+        await send("Runtime.evaluate", expression=WIPES[name])
         probe = await send("Runtime.evaluate", expression=probe_expr, returnByValue=True)
         t = asyncio.create_task(ticker())
         while (raw := await ws.recv()) is not None:
@@ -284,10 +287,17 @@ async def watch(name, marker, code, probe_expr):
 
 async def main():
     load_backends()
-    await asyncio.gather(
+    stop = asyncio.Event()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
+    work = asyncio.gather(
         watch("main", lambda u: "vrOverlayKey=valve.steam.gamepadui.main" in u, main_code, "typeof window.Framey"),
         watch("bar", lambda u: u.endswith("vrOverlayKey=valve.steam.gamepadui.bar"), bar_code, "typeof window.FYBar"),
     )
+    await stop.wait()
+    for name, send in list(LIVE.items()):
+        await send("Runtime.evaluate", expression=WIPES[name])
+    await asyncio.sleep(0.3)
+    work.cancel()
 
 
 asyncio.run(main())
