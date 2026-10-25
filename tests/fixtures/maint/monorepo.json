@@ -1,0 +1,63 @@
+{
+ "note": "tree link with a subdirectory: activity is read for that path only",
+ "now": "2026-10-09T00:00:00Z",
+ "plugin": {
+  "id": "demo",
+  "source": "https://github.com/acme/suite/tree/main/plugins/demo"
+ },
+ "api": {
+  "repos/acme/suite": {
+   "full_name": "acme/suite",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main",
+   "pushed_at": "2020-01-01T00:00:00Z",
+   "updated_at": "2020-01-01T00:00:00Z"
+  },
+  "repos/acme/suite/commits": [
+   {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "commit": {
+     "committer": {
+      "date": "2026-10-01T10:00:00Z"
+     },
+     "author": {
+      "date": "2026-10-01T10:00:00Z"
+     }
+    }
+   }
+  ],
+  "repos/acme/suite/commits?path=plugins/demo": [
+   {
+    "sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "commit": {
+     "committer": {
+      "date": "2023-02-01T10:00:00Z"
+     },
+     "author": {
+      "date": "2023-02-01T10:00:00Z"
+     }
+    }
+   }
+  ],
+  "repos/acme/suite/releases/latest": {
+   "tag_name": "v9.0.0",
+   "published_at": "2026-09-20T10:00:00Z",
+   "created_at": "2026-09-20T10:00:00Z",
+   "draft": false,
+   "prerelease": false
+  }
+ },
+ "expect": {
+  "label": "none",
+  "scope": "plugin path",
+  "path": "plugins/demo",
+  "evidence_has": [
+   "under plugins/demo"
+  ],
+  "calls_have": [
+   "path=plugins/demo",
+   "contents/plugins/demo/plugin.json"
+  ]
+ }
+}

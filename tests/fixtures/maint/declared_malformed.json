@@ -1,0 +1,40 @@
+{
+ "note": "malformed plugin.json is ignored with a note",
+ "now": "2026-10-09T00:00:00Z",
+ "plugin": {
+  "id": "demo",
+  "source": "https://github.com/acme/widget"
+ },
+ "api": {
+  "repos/acme/widget": {
+   "full_name": "acme/widget",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main",
+   "pushed_at": "2020-01-01T00:00:00Z",
+   "updated_at": "2020-01-01T00:00:00Z"
+  },
+  "repos/acme/widget/commits": [
+   {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "commit": {
+     "committer": {
+      "date": "2022-01-01T10:00:00Z"
+     },
+     "author": {
+      "date": "2022-01-01T10:00:00Z"
+     }
+    }
+   }
+  ],
+  "repos/acme/widget/releases/latest": 404,
+  "repos/acme/widget/contents/plugin.json": {
+   "text": "{not json at all"
+  }
+ },
+ "expect": {
+  "label": "none",
+  "declaration": null,
+  "note_has": "could not be parsed"
+ }
+}

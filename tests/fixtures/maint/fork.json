@@ -1,0 +1,46 @@
+{
+ "note": "the configured fork itself is assessed and fork_of is recorded",
+ "now": "2026-10-09T00:00:00Z",
+ "plugin": {
+  "id": "demo",
+  "source": "https://github.com/forker/widget"
+ },
+ "api": {
+  "repos/forker/widget": {
+   "full_name": "forker/widget",
+   "archived": false,
+   "fork": true,
+   "default_branch": "main",
+   "pushed_at": "2020-01-01T00:00:00Z",
+   "updated_at": "2020-01-01T00:00:00Z",
+   "parent": {
+    "full_name": "upstream/widget"
+   }
+  },
+  "repos/forker/widget/commits": [
+   {
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "commit": {
+     "committer": {
+      "date": "2026-09-15T10:00:00Z"
+     },
+     "author": {
+      "date": "2026-09-15T10:00:00Z"
+     }
+    }
+   }
+  ],
+  "repos/forker/widget/releases/latest": 404,
+  "repos/forker/widget/contents/plugin.json": 404
+ },
+ "expect": {
+  "label": "recent",
+  "repo": "forker/widget",
+  "fork_of": "upstream/widget",
+  "all_calls_have": "forker/widget",
+  "evidence_has": [
+   "fork of upstream/widget",
+   "assessed itself"
+  ]
+ }
+}

@@ -1,0 +1,24 @@
+{
+ "note": "an empty repository answers 409 to the commit list: no commits, not an error",
+ "now": "2026-10-09T00:00:00Z",
+ "plugin": {
+  "id": "demo",
+  "source": "https://github.com/acme/widget"
+ },
+ "api": {
+  "repos/acme/widget": {
+   "full_name": "acme/widget",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main",
+   "pushed_at": "2020-01-01T00:00:00Z",
+   "updated_at": "2020-01-01T00:00:00Z"
+  },
+  "repos/acme/widget/commits": 409,
+  "repos/acme/widget/releases/latest": 404
+ },
+ "expect": {
+  "label": "none",
+  "commit_at": ""
+ }
+}

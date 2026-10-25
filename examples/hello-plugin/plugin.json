@@ -1,0 +1,1 @@
+{"id": "hello", "name": "Hello", "version": "1.0.0", "short": "Hello", "source": "https://github.com/your-name/hello-plugin", "framey": {"min": "1.0.2"}, "platform": ["linux-aarch64", "linux-x86_64"], "timeout": 15}

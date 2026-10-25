@@ -1,0 +1,47 @@
+{
+ "note": "valid declaration beats recent commits",
+ "now": "2026-10-09T00:00:00Z",
+ "plugin": {
+  "id": "demo",
+  "source": "https://github.com/acme/widget"
+ },
+ "api": {
+  "repos/acme/widget": {
+   "full_name": "acme/widget",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main",
+   "pushed_at": "2020-01-01T00:00:00Z",
+   "updated_at": "2020-01-01T00:00:00Z"
+  },
+  "repos/acme/widget/commits": [
+   {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "commit": {
+     "committer": {
+      "date": "2026-09-20T10:00:00Z"
+     },
+     "author": {
+      "date": "2026-09-20T10:00:00Z"
+     }
+    }
+   }
+  ],
+  "repos/acme/widget/releases/latest": 404,
+  "repos/acme/widget/contents/plugin.json": {
+   "text": "{\"id\": \"demo\", \"name\": \"Demo\", \"version\": \"1.0.0\", \"short\": \"x\", \"maintenance\": {\"status\": \"unmaintained\", \"by\": \"example-maintainer\", \"note\": \"No further fixes planned.\", \"date\": \"2026-08-01\"}}"
+  }
+ },
+ "expect": {
+  "label": "declared",
+  "declaration": {
+   "by": "example-maintainer",
+   "file": "plugin.json",
+   "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "date": "2026-08-01"
+  },
+  "evidence_has": [
+   "plugin.json@aaaaaaa"
+  ]
+ }
+}

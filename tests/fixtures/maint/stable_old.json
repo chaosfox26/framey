@@ -1,0 +1,50 @@
+{
+ "note": "old commit and old release: none, with the not-abandonment explanation",
+ "now": "2026-10-09T00:00:00Z",
+ "plugin": {
+  "id": "demo",
+  "source": "https://github.com/acme/widget"
+ },
+ "api": {
+  "repos/acme/widget": {
+   "full_name": "acme/widget",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main",
+   "pushed_at": "2020-01-01T00:00:00Z",
+   "updated_at": "2020-01-01T00:00:00Z"
+  },
+  "repos/acme/widget/commits": [
+   {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "commit": {
+     "committer": {
+      "date": "2022-03-01T10:00:00Z"
+     },
+     "author": {
+      "date": "2022-03-01T10:00:00Z"
+     }
+    }
+   }
+  ],
+  "repos/acme/widget/releases/latest": {
+   "tag_name": "v1.0.0",
+   "published_at": "2022-03-02T10:00:00Z",
+   "created_at": "2022-03-02T10:00:00Z",
+   "draft": false,
+   "prerelease": false
+  },
+  "repos/acme/widget/contents/plugin.json": 404
+ },
+ "expect": {
+  "label": "none",
+  "scope": "whole repository",
+  "reason_has": [
+   "does not establish abandonment",
+   "stable software"
+  ],
+  "evidence_has": [
+   "whole repository"
+  ]
+ }
+}

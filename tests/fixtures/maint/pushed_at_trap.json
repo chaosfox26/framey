@@ -1,0 +1,36 @@
+{
+ "note": "pushed_at and updated_at are recent but commits are old: must be none",
+ "now": "2026-10-09T00:00:00Z",
+ "plugin": {
+  "id": "demo",
+  "source": "https://github.com/acme/widget"
+ },
+ "api": {
+  "repos/acme/widget": {
+   "full_name": "acme/widget",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main",
+   "pushed_at": "2026-10-08T00:00:00Z",
+   "updated_at": "2026-10-08T00:00:00Z"
+  },
+  "repos/acme/widget/commits": [
+   {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "commit": {
+     "committer": {
+      "date": "2021-05-01T10:00:00Z"
+     },
+     "author": {
+      "date": "2021-05-01T10:00:00Z"
+     }
+    }
+   }
+  ],
+  "repos/acme/widget/releases/latest": 404,
+  "repos/acme/widget/contents/plugin.json": 404
+ },
+ "expect": {
+  "label": "none"
+ }
+}
