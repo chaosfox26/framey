@@ -198,7 +198,8 @@ A module's `backend.py` runs in its own worker process. Its interface (`main.js`
 The Steam Frame performance target is **less than 400 MB total added memory** for Framey, its backend workers and its interface in Steam, with CPU use near zero while idle. This is a target to measure on the headset, not an allowance to consume. The service limit below covers the loader and its child processes; Steam's browser is a separate process, so the interface's additional memory must be assessed separately. Development review workers are not part of the installed application.
 
 - **Service ceiling.** The app's unit sets `MemoryHigh=128M` and `MemoryMax=150M`. The loader and its workers share this cgroup. These are ceilings, not a budget. Going past `MemoryMax` can stop the service. The manual unit uses the same numbers.
-- **Measured (indicative).** Measured on one Windows 11 PC with Python 3.14, not on a headset and not under systemd:
+- **Steam Frame samples.** Short idle and Store samples observed about 27–30 MiB for the service and approximately 0.1% of one CPU core. A native worker exited while idle in a longer bounded observation. Browser memory is separate; these samples do not establish peak or arbitrary-plugin totals. See the [measurement details](decky-comparison.md#memory-and-cpu-target).
+- **Historical Windows measurements.** Measured on one Windows 11 PC with Python 3.14, not on a headset and not under systemd:
   - Idle, 120 seconds, no modules: about 34 MB working set, about 21.7 MB private, CPU 0%.
   - Panel open, 100 backend calls over 10 seconds: median 0.68 ms, p95 1.06 ms, no errors. Two workers used about 51 MB working set in total. One worker used about 25.6 MB.
   - Windows numbers are not comparable with Linux RSS. The service-ceiling scenario was not run because systemd is not available on Windows.
@@ -249,8 +250,9 @@ These are limits of the experimental implementation. Code review and isolated te
 ## Verification status
 
 - **Existing installed build.** Framey 1.0.1 ran on one Steam Frame with SteamOS 0.4.5, with the panel working. The bottom-bar button has also been confirmed working in the installed build. This does not verify the experimental catalog or management changes.
-- **ARM64 baseline.** A selected set of 415 isolated tests passed on ARM64. They used fixtures and temporary test state; this was not a full run of the new service inside Steam's VR interface. Earlier Python and jsdom suites were also run offline on Windows, where Linux-only tests were skipped.
-- **Experimental device validation.** Full service and VR validation of the new experimental build is not established by that baseline. In particular, the following need separate device evidence:
+- **Frozen experimental runtime.** Commit `678c0fd` completed 1,984 Python tests on Linux x64 (one expected off-Linux skip) and on the ARM64 Steam Frame (15 Node/TypeScript-dependent skips). All 29 browser test files and strict TypeScript compilation passed on the PC. These use fixtures and temporary state. The earlier 415-test ARM64 run is historical baseline evidence.
+- **Live experimental checks.** The runtime is installed on one Steam Frame running SteamOS VR 0.5.6. The existing bottom-bar button opens the panel; its 520-pixel width and 104-pixel rail are preserved. The native Store returned three listings, the separate Decky Store returned 116 listings, a native Hello install/backend call succeeded, and selected Notebook archive inspection verified its catalog hash without executing plugin code. A native worker exited after idle. See the [comparison and measurement limits](decky-comparison.md).
+- **Remaining device validation.** The checks above do not establish full service or physical VR acceptance. In particular, the following need broader or separate device evidence:
   - `trusted_input` `"auto"` and `"require"` with real controller input.
   - The isolated world (`isolation`), including whether the browser accepts the world and binding, and controller focus in it.
   - Catalog browsing, source/category filters, details, installation and offline recovery in the Steam VR panel.

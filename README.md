@@ -8,7 +8,7 @@
 
 Framey is a plugin loader that runs on the Steam Frame. It adds an icon to Steam's bottom bar that opens a VR-friendly panel for installed plugins, updates and loader settings. Framey is unofficial and independent of Valve.
 
-Version 1.0.2. The experimental branch has automated checks and partial live Steam Frame verification; physical VR and controller validation remains incomplete. See [Verification status](docs/using.md#verification-status).
+Version 1.0.2. The experimental branch has automated checks and partial live Steam Frame verification; physical VR and controller validation remains incomplete. See [Verification status](docs/using.md#verification-status). The [current Decky comparison](docs/decky-comparison.md) records the remaining compatibility gaps.
 
 ## What it does
 
