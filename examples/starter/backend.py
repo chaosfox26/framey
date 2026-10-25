@@ -9,10 +9,13 @@ state = {"job": None}
 
 
 def read():
+    enabled = fy.settings.get("enabled", True)
+    level = fy.settings.get("level", 50)
+    mode = fy.settings.get("mode", "normal")
     return {
-        "enabled": fy.settings.get("enabled", True),
-        "level": fy.settings.get("level", 50),
-        "mode": fy.settings.get("mode", "normal"),
+        "enabled": enabled if isinstance(enabled, bool) else True,
+        "level": level if type(level) is int and 0 <= level <= 100 else 50,
+        "mode": mode if mode in MODES else "normal",
     }
 
 

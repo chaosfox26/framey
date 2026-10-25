@@ -1,0 +1,86 @@
+name: Fixture tests
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fixture-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixtures:
+    name: Fixtures (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            machine: x86_64
+          - runner: ubuntu-24.04-arm
+            machine: aarch64
+    env:
+      FRAMEY_JSDOM: ${{ runner.temp }}/framey-jsdeps
+      FRAMEY_PYTHON: python
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14.8'
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - name: Install locked browser test dependency
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          mkdir -p "$FRAMEY_JSDOM"
+          cp .github/ci/package.json .github/ci/package-lock.json "$FRAMEY_JSDOM/"
+          npm ci --prefix "$FRAMEY_JSDOM" --ignore-scripts --no-audit --no-fund
+          node -e 'const p = require.resolve("jsdom/package.json", {paths: [process.env.FRAMEY_JSDOM]}); if (require(p).version !== "30.1.2") process.exit(1)'
+      - name: Report test environment
+        env:
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        shell: bash
+        run: |
+          uname -sm
+          python -c 'import os, platform; assert platform.machine() == os.environ["EXPECTED_MACHINE"], "Unexpected runner architecture"'
+          python --version
+          node --version
+          npm --version
+          command -v timeout
+          command -v ssh-keygen
+      - name: Run Python fixture and local process tests
+        shell: bash
+        run: timeout --signal=TERM --kill-after=10s 12m python -I -m unittest discover -s tests -p 'test_fy_*.py' -v
+      - name: Check assessment fixtures without external Python network access
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: timeout --signal=TERM --kill-after=10s 120s python -I .github/ci/offline_assessment.py
+      - name: Run browser fixture tests
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          failed=0
+          for test_file in tests/js/*.test.js; do
+            printf '\nRunning %s\n' "$test_file"
+            if timeout --signal=TERM --kill-after=10s 120s node "$test_file"; then
+              :
+            else
+              status=$?
+              printf 'FAILED %s (exit %s)\n' "$test_file" "$status"
+              failed=1
+            fi
+          done
+          exit "$failed"

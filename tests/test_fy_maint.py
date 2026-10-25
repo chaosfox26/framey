@@ -429,15 +429,17 @@ class SourceTests(Base):
         self.assertEqual(r["path"], "tools/demo")
         self.assertTrue(h.calls_with("contents/tools/demo/plugin.json"))
 
-    async def test_hostile_source_path_is_ignored(self):
+    async def test_hostile_source_path_is_not_checked_as_whole_repository(self):
         for p in ("../x", "a/../b", 5, "a b", "x" * 300, "a\\b", "a?b=c"):
             with self.subTest(p=p):
                 self.setUp()
                 h = self.host(api_for())
                 h.add("demo", source=SRC, source_path=p)
                 r = await fm.check_one(h, "demo")
-                self.assertEqual(r["scope"], "whole repository")
-                self.assertTrue(all("path=" not in c for c in h.calls))
+                self.assertEqual(r["scope"], "")
+                self.assertEqual(r["label"], "unknown")
+                self.assertIn("source path", r["reason"])
+                self.assertEqual(h.calls, [])
 
     async def test_branch_from_tree_link(self):
         h = self.host(api_for())
@@ -921,7 +923,8 @@ class BudgetTests(Base):
 
     async def test_run_request_cap(self):
         self.many(30)
-        out = await fm.check_all(self.h, self.h.manifests())
+        with mock.patch.object(fm, "PARALLEL", 1):
+            out = await fm.check_all(self.h, self.h.manifests())
         self.assertEqual(len(self.h.calls), fm.CAP)
         done = [r for r in out.values() if r["label"] == "recent"]
         left = [r for r in out.values() if r["label"] == "unknown"]
@@ -930,7 +933,8 @@ class BudgetTests(Base):
         self.assertTrue(all(r["reason"] == fm.UNKNOWN["unchecked"] and r["failure"] is None and r["stale"] for r in left))
         self.assertEqual(len(self.h.stored()["entries"]), 10)
         n = len(self.h.calls)
-        out = await fm.check_all(self.h, self.h.manifests())
+        with mock.patch.object(fm, "PARALLEL", 1):
+            out = await fm.check_all(self.h, self.h.manifests())
         self.assertGreater(len(self.h.calls), n)
         self.assertLessEqual(len(self.h.calls) - n, fm.CAP)
         self.assertEqual(sum(1 for r in out.values() if r["label"] == "recent"), 20)

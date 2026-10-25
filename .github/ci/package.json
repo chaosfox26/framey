@@ -1,0 +1,9 @@
+{
+  "name": "framey-fixture-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned dependency for Framey browser fixture tests",
+  "dependencies": {
+    "jsdom": "30.1.2"
+  }
+}

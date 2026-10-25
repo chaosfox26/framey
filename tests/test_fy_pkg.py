@@ -976,6 +976,17 @@ class TarHostile(Tmp):
         self.assertEqual(list(outside.iterdir()), [])
 
     @POSIX
+    def test_symlink_parent_cannot_create_outside_directories(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.dest.mkdir()
+        os.symlink(outside, self.dest / "sub")
+        with self.assertRaises(pk.PkgError) as cm:
+            self.extract([("sub/new/nested/file", "file", b"x")])
+        self.assertEqual(cm.exception.code, "unsafe_path")
+        self.assertEqual(list(outside.iterdir()), [])
+
+    @POSIX
     def test_modes_ignore_archive_bits(self):
         self.extract([("a", "file", b"x", 0o4777), ("b", "file", b"x", 0o2755), ("c", "file", b"x", 0o1777), ("run", "file", b"x", 0o600)], exec_names=("run",))
         for n in "abc":
@@ -1098,6 +1109,17 @@ class ZipHostile(Tmp):
         with self.assertRaises(pk.PkgError):
             self.extract([("a", b"theirs")])
         self.assertEqual((self.dest / "a").read_bytes(), b"mine")
+
+    @POSIX
+    def test_symlink_parent_cannot_create_outside_directories(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.dest.mkdir()
+        os.symlink(outside, self.dest / "sub")
+        with self.assertRaises(pk.PkgError) as cm:
+            self.extract([("sub/new/nested/file", b"x")], strip=0)
+        self.assertEqual(cm.exception.code, "unsafe_path")
+        self.assertEqual(list(outside.iterdir()), [])
 
     @POSIX
     def test_modes_ignore_archive_bits(self):

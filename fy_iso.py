@@ -48,18 +48,46 @@ class Iso:
         self.on = self.busy = self.injected = self.held = False
         self.ctx = self.frame = None
         self.stale = self.lost = 0
+        self.epoch = 0
+        self.creating = None
 
     async def typeof(self, ctx):
         more = {} if ctx is None else {"contextId": ctx}
         r = await self.rpc("Runtime.evaluate", expression="typeof window.fyCall", returnByValue=True, **more)
         return (r.get("result") or {}).get("value")
 
+    async def locate(self):
+        epoch = self.epoch
+        r = await self.rpc("Page.getFrameTree")
+        frame = r["frameTree"]["frame"]["id"]
+        if not isinstance(frame, str) or not frame:
+            raise ValueError("no main frame id")
+        if not self.on or epoch != self.epoch:
+            raise ValueError("main frame changed while being located")
+        self.frame = frame
+
     async def make(self):
-        r = await self.rpc("Page.createIsolatedWorld", frameId=self.frame, worldName=WORLD)
+        frame, epoch = self.frame, self.epoch
+        destroyed = self.creating = set()
+        try:
+            r = await self.rpc("Page.createIsolatedWorld", frameId=frame, worldName=WORLD)
+        finally:
+            self.creating = None
         ctx = r["executionContextId"]
-        if type(ctx) is not int:
+        if type(ctx) is not int or ctx <= 0:
             raise ValueError("no execution context id")
+        if not self.on or epoch != self.epoch or frame != self.frame or ctx in destroyed:
+            raise ValueError("isolated world changed while being created")
         self.ctx, self.injected, self.stale = ctx, False, 0
+
+    async def verify(self):
+        ctx, epoch = self.ctx, self.epoch
+        if type(ctx) is not int or ctx <= 0:
+            raise ValueError("no execution context id")
+        if await self.typeof(ctx) != "function":
+            raise ValueError("the binding is missing in the isolated world")
+        if not self.on or ctx != self.ctx or epoch != self.epoch:
+            raise ValueError("isolated world changed while being verified")
 
     async def start(self):
         self.on = self.busy = True
@@ -69,13 +97,12 @@ class Iso:
             if await self.typeof(None) != "undefined":
                 self.held = True
                 raise ValueError("the page already defines fyCall")
-            self.frame = (await self.rpc("Page.getFrameTree"))["frameTree"]["frame"]["id"]
+            await self.locate()
             await self.rpc("Runtime.addBinding", name=BINDING, executionContextName=WORLD)
             if await self.typeof(None) != "undefined":
                 raise ValueError("the binding is visible to the page")
             await self.make()
-            if await self.typeof(self.ctx) != "function":
-                raise ValueError("the binding is missing in the isolated world")
+            await self.verify()
         except Exception as e:
             self.log("isolation unavailable:", str(e) or type(e).__name__)
             await self.stop()
@@ -86,26 +113,35 @@ class Iso:
 
     async def stop(self, wipe=None):
         ctx, self.on, self.ctx = self.ctx, False, None
+        self.epoch += 1
         calls = [("Runtime.removeBinding", {"name": BINDING}), ("Runtime.disable", {}), ("Page.disable", {})]
         if wipe and ctx is not None:
             calls.insert(0, ("Runtime.evaluate", {"expression": wipe, "contextId": ctx}))
         await asyncio.gather(*(self.rpc(method, **p) for method, p in calls), return_exceptions=True)
 
     def event(self, m):
-        k, p = m.get("method"), m.get("params") or {}
+        if not self.on or not isinstance(m, dict):
+            return
+        k, p = m.get("method"), m.get("params", {})
+        if not isinstance(p, dict):
+            return
         if k == "Runtime.executionContextsCleared":
+            self.epoch += 1
             self.ctx = None
         elif k == "Runtime.executionContextDestroyed":
-            if p.get("executionContextId") == self.ctx:
+            ctx = p.get("executionContextId")
+            if type(ctx) is not int:
+                return
+            if self.creating is not None:
+                self.creating.add(ctx)
+            if ctx == self.ctx:
+                self.epoch += 1
                 self.ctx = None
-        elif k == "Runtime.executionContextCreated":
-            c = p.get("context") or {}
-            if c.get("name") == WORLD and (c.get("auxData") or {}).get("frameId") == self.frame and type(c.get("id")) is int:
-                self.ctx, self.injected, self.stale = c["id"], False, 0
         elif k == "Page.frameNavigated":
-            f = p.get("frame") or {}
-            if "parentId" not in f:
-                self.frame, self.ctx = f.get("id") or self.frame, None
+            f = p.get("frame")
+            if isinstance(f, dict) and "parentId" not in f and isinstance(f.get("id"), str) and f["id"]:
+                self.epoch += 1
+                self.frame, self.ctx = f["id"], None
 
     async def renew(self):
         if self.busy or not self.on:
@@ -115,11 +151,16 @@ class Iso:
             try:
                 await self.make()
             except Exception:
-                self.frame = (await self.rpc("Page.getFrameTree"))["frameTree"]["frame"]["id"]
+                if not self.on:
+                    return False
+                await self.locate()
                 await self.make()
+            await self.verify()
             self.lost = 0
             return True
         except Exception as e:
+            if not self.on:
+                return False
             self.ctx, self.lost = None, self.lost + 1
             self.log("isolated world not renewed:", str(e) or type(e).__name__)
             return False

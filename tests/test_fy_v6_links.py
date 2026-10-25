@@ -63,8 +63,10 @@ class KeptCopyLinkTests(unittest.TestCase):
     def test_recover_restores_orphan_hold_copy(self):
         self.dest.rename(self.plugins / ".hold-demo")
         framey.recover()
-        self.assertTrue((self.plugins / ".old-demo" / "plugin.json").is_file())
+        self.assertTrue((self.plugins / "demo" / "plugin.json").is_file())
         self.assertFalse((self.plugins / ".hold-demo").exists())
+        framey.recover()
+        self.assertTrue((self.plugins / "demo" / "plugin.json").is_file())
 
 
 if __name__ == "__main__":

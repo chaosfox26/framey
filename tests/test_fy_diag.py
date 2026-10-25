@@ -127,6 +127,30 @@ class ShapeTests(unittest.TestCase):
         bare = types.SimpleNamespace()
         self.assertEqual(set(fy_diag.snapshot(bare)), TOP)
 
+    def test_malformed_optional_parts_still_produce_strict_json(self):
+        for value in (None, "wrong", 5, {}):
+            with self.subTest(value=value):
+                host = make_host(manifests=lambda: value,
+                                 supervisor=types.SimpleNamespace(status=lambda: {}, events=types.SimpleNamespace(_dropped=value)),
+                                 targets=types.SimpleNamespace(items=value), media=types.SimpleNamespace(_tokens=value))
+                snap = fy_diag.snapshot(host, 0)
+                self.assertEqual(snap["modules"]["count"], 0)
+                self.assertEqual(snap["events"]["dropped"], 0)
+                json.dumps(snap, allow_nan=False)
+
+    def test_clock_values_must_be_finite_nonnegative_numbers(self):
+        for value in (float("nan"), float("inf"), -float("inf"), True, -1, 10**100):
+            with self.subTest(value=value):
+                snap = fy_diag.snapshot(make_host(now=lambda: value), 0)
+                self.assertIsNone(snap["loader"]["uptime_s"])
+                self.assertIsNone(fy_diag.snapshot(make_host(), value)["loader"]["uptime_s"])
+                json.dumps(snap, allow_nan=False)
+
+    def test_duplicate_manifests_do_not_inflate_installed_count(self):
+        snap = fy_diag.snapshot(make_host(manifests=lambda: [{"id": "a"}, {"id": "a"}, {"id": "b"}]), 0)
+        self.assertEqual(snap["modules"]["count"], 2)
+        self.assertEqual(snap["modules"]["ids"], ["a", "b"])
+
     def test_logs_tail_is_bounded_and_ordered(self):
         snap = fy_diag.snapshot(make_host(), 0)
         tail = snap["logs"]["tail"]
@@ -185,6 +209,24 @@ class WorkerTests(unittest.TestCase):
         rows = {"a": {"state": "x", "os_pid": "9", "rss_kb": None, "calls": -3, "crashes": True, "last_used": True, "limits_applied": "yes", "last_error": 5}}
         row = fy_diag.snapshot(make_host(supervisor=self.sup(rows)), 0)["workers"]["a"]
         self.assertEqual((row["os_pid"], row["rss_kb"], row["calls"], row["crashes"], row["last_used"], row["limits_applied"], row["last_error"]), (None, None, 0, 0, None, None, None))
+
+    def test_negative_and_nonfinite_metrics_are_not_reported_as_real(self):
+        for value in (-1, float("nan"), float("inf"), -float("inf"), True, 10**100):
+            with self.subTest(value=value):
+                rows = {"a": {"os_pid": value, "rss_kb": value, "last_used": value}}
+                snap = fy_diag.snapshot(make_host(supervisor=self.sup(rows)), 0)
+                row = snap["workers"]["a"]
+                self.assertEqual((row["os_pid"], row["rss_kb"], row["last_used"]), (None, None, None))
+                json.dumps(snap, allow_nan=False)
+        row = fy_diag.snapshot(make_host(supervisor=self.sup({"a": {"os_pid": 0, "rss_kb": 0, "last_used": 0}})), 0)["workers"]["a"]
+        self.assertEqual((row["os_pid"], row["rss_kb"], row["last_used"]), (None, 0, 0))
+
+    def test_extreme_counters_cannot_break_serialization_or_payload_bound(self):
+        huge = 10**5000
+        rows = {"a": {"calls": huge, "crashes": huge}}
+        snap = fy_diag.snapshot(make_host(supervisor=self.sup(rows)), 0)
+        self.assertEqual(snap["workers"]["a"]["calls"], fy_diag.COUNT_MAX)
+        self.assertLessEqual(len(json.dumps(snap, allow_nan=False)), fy_diag.CAP)
 
     def test_row_count_and_ids_are_bounded(self):
         rows = {"w%d" % i: {"state": "ready"} for i in range(40)}
@@ -303,6 +345,52 @@ class LeakTests(unittest.TestCase):
         text = json.dumps(fy_diag.snapshot(make_host(log_tail=lambda: ["access_token=" + SECRET, "https://bob:" + SECRET + "@h/x", "client_secret: " + SECRET]), 0))
         self.assertNotIn(SECRET, text)
 
+    def test_scrub_hides_oauth_and_signed_url_values_including_encoded_keys(self):
+        for key in ("code", "state", "session_id", "X-Amz-Credential", "X-Amz-Signature", "X-Goog-Signature", "access%5Ftoken"):
+            with self.subTest(key=key):
+                dirty = "https://example.test/callback?view=summary&" + key + "=" + SECRET + "&page=2"
+                clean = fy_diag.scrub(dirty)
+                self.assertNotIn(SECRET, clean)
+                self.assertIn("view=summary", clean)
+        clean = fy_diag.scrub("https://example.test/#code=" + SECRET)
+        self.assertNotIn(SECRET, clean)
+        self.assertIn("<hidden>", clean)
+
+    def test_scrub_hides_cross_platform_home_paths_without_prefix_confusion(self):
+        self.assertEqual(fy_diag.scrub("/home/deckhand/data", "/home/deck"), "/home/<user>/data")
+        for value in ("/Users/example/Documents", "C:\\Users\\example\\Documents", "C:/Users/example/Documents", "/run/media/example/volume/file"):
+            with self.subTest(value=value):
+                clean = fy_diag.scrub(value)
+                self.assertNotIn("example", clean)
+                self.assertIn("<user>", clean)
+
+    def test_structured_catalog_errors_scrub_escaped_paths_and_signed_urls(self):
+        error = {
+            "code": "download_failed",
+            "message": r"Could not open C:\Users\fixtureuser\Downloads\archive.zip",
+            "source": "https://example.test/catalog.json",
+            "url": "https://example.test/archive.zip?X-Amz-Credential=" + SECRET + "&X-Amz-Signature=" + SECRET,
+        }
+        for line in (error, repr(error), json.dumps(error)):
+            with self.subTest(kind=type(line).__name__):
+                snap = fy_diag.snapshot(make_host(log_tail=lambda: [line]), 0)
+                text = json.dumps(snap, allow_nan=False)
+                self.assertNotIn("fixtureuser", text)
+                self.assertNotIn(SECRET, text)
+                self.assertIn("download_failed", text)
+                self.assertIn("<user>", text)
+
+    def test_catalog_and_assessment_status_text_remains_useful_and_bounded(self):
+        lines = [
+            "The Decky server did not return a complete catalog",
+            "Refresh the Decky catalog before inspecting a plugin",
+            "The compatibility check took too long; its result is unverified",
+            "Only selected metadata and file headers were read; complete entry contents and CRCs were not checked.",
+        ]
+        snap = fy_diag.snapshot(make_host(log_tail=lambda: lines), 0)
+        self.assertEqual(snap["logs"]["tail"], lines)
+        self.assertLessEqual(len(json.dumps(snap, allow_nan=False)), fy_diag.CAP)
+
     def test_ids_are_validated(self):
         state = {"modules": {"state": {"../x": {"fails": 3}, "ok": {"fails": 1}}}}
         snap = fy_diag.snapshot(make_host(settings=lambda: state), 0)
@@ -396,7 +484,7 @@ class HygieneTests(unittest.TestCase):
                 names.update(a.name.split(".")[0] for a in node.names)
             elif isinstance(node, ast.ImportFrom):
                 names.add(node.module.split(".")[0])
-        self.assertLessEqual(names, {"json", "os", "re", "sys", "threading"})
+        self.assertLessEqual(names, {"json", "os", "re", "sys", "threading", "urllib"})
         self.assertNotIn("environ", self.source())
         self.assertNotIn("getenv", self.source())
 

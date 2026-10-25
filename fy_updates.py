@@ -30,7 +30,7 @@ LABELS = {"check": "Checking", "download": "Downloading", "verify": "Verifying",
 CHANNELS = ("stable", "prerelease")
 NOTES_MAX, PAGE, BATCH_MAX, CYCLE_MAX, CACHE_MAX = 8000, 10, 32, 20, 16
 DAY, FLOOR, TTL, COMPANION_MAX = 86400, 21600, 300, 20_000_000
-CONFIRM = "Going back to %s removes nothing from your data, but data migrations are not undone and the module may not read newer data. The current copy is kept until you press Done."
+CONFIRM = "Going back to %s removes nothing from your data, but data migrations are not undone and the module may not read newer data. The current copy is kept until you choose Keep this version."
 FORWARD_ONLY = "Protected components only move forward; use Restore previous version after an update"
 PROTECTED_UPDATE = "Protected components update through their own Update action"
 INTEGRITY = "integrity check, not a signature"
@@ -214,6 +214,22 @@ class Job:
                 pass
 
 
+async def _finish_transaction(coro):
+    task = asyncio.ensure_future(coro)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 class Updates:
     SPACING = 2.0
 
@@ -355,6 +371,8 @@ class Updates:
         m, g, curver = self._source_of(pid)
         page = page if isinstance(page, int) and not isinstance(page, bool) and 1 <= page <= 100 else 1
         prot = _priv(m)
+        frozen = pid in _frozen(host.settings())
+        linked = pid != "_loader" and _linked(host.plugin_dir(pid))
         installed = self._loader_sha() if pid == "_loader" else self._sha(pid)
         cur = parse_version(curver)
         stable = self._channel() != "prerelease"
@@ -367,7 +385,8 @@ class Updates:
             missing = True
         if missing:
             sha = await asyncio.to_thread(host.latest, g[0], g[1], g[2] if len(g) > 2 else "HEAD")
-            row = {"tag": sha, "version": sha[:7], "commit": sha, "prerelease": False, "published": "", "label": "", "current": sha == installed, "compat": {"badge": "unknown", "msg": ""}, "downgrade": False, "eligible": not prot and sha != installed and pid != "_loader", "reason": PROTECTED_UPDATE if prot else ("Installed" if sha == installed else "")}
+            reason = PROTECTED_UPDATE if prot else "Installed" if sha == installed else "This module is frozen: unfreeze it first" if frozen else LINKED if linked else ""
+            row = {"tag": sha, "version": sha[:7], "commit": sha, "prerelease": False, "published": "", "label": "", "current": sha == installed, "compat": {"badge": "unknown", "msg": ""}, "downgrade": False, "eligible": not reason and pid != "_loader", "reason": reason}
             return {"versions": [row], "more": False, "note": "No releases are published: showing the latest commit only; version history is unavailable"}
         out = []
         for r in rows:
@@ -381,6 +400,10 @@ class Updates:
                 reason = "Unrecognised version tag"
             elif now_:
                 reason = "Installed: use Repair to reinstall it"
+            elif frozen:
+                reason = "This module is frozen: unfreeze it first"
+            elif linked:
+                reason = LINKED
             elif r["prerelease"] and stable:
                 reason = "Prerelease: switch the channel to Prerelease first"
             compat = {"badge": "unknown", "msg": "Checked before install"}
@@ -476,8 +499,18 @@ class Updates:
         meta = await self._remote_meta(g, sha)
         row["to"] = meta.get("version") or sha[:7] if meta else sha[:7]
         bad = host.gate(meta) if meta else ""
-        if bad:
+        new = parse_version(meta.get("version", "")) if meta else None
+        cur = parse_version(m.get("version", ""))
+        if meta and "id" in meta and meta["id"] != pid:
+            row["reason"] = "the newest commit declares a different plugin id"
+        elif bad:
             row["reason"] = "incompatible: " + bad
+        elif new and new.prerelease and self._channel() != "prerelease":
+            row["reason"] = "Prerelease versions need the Prerelease channel (Settings)"
+        elif meta and new and cur and new < cur:
+            row["reason"] = "the newest commit holds an older version than the installed one"
+        elif meta and (new is None) != (cur is None):
+            row["reason"] = "the newest commit changes the version format: choose a version explicitly"
         else:
             row["eligible"] = True
 
@@ -503,7 +536,7 @@ class Updates:
                 else:
                     row.update(await self._update_one(m))
             except UpdateError as e:
-                if e.code == "incompatible":
+                if e.code in ("incompatible", "prerelease"):
                     row.update(state="skipped", reason=e.message)
                 else:
                     row.update(state="failed", error=e.message)
@@ -585,7 +618,7 @@ class Updates:
             return {"confirm": "Reset also deletes this module's saved settings and cannot be undone. Everything else is kept."}
         job = self._job(pid, STAGES)
         await self._run(job, "check", self._nothing)
-        return await self._pushed(self._replace(job, pid, m, dest, g, ident["commit"], kind=ident["kind"], tag=ident["tag"], confirm=True, reset=reset))
+        return await self._pushed(self._replace(job, pid, m, dest, g, ident["commit"], kind=ident["kind"], tag=ident["tag"], confirm=True, reset=reset, repairing=True))
 
     def _archive(self, g, sha, job):
         fn = self.host.archive
@@ -607,13 +640,15 @@ class Updates:
             raise UpdateError("incompatible", bad)
         return z, infos, base, meta
 
-    async def _replace(self, job, pid, m, dest, g, sha, *, kind, tag="", confirm=False, reset=False, lower=False):
+    async def _replace(self, job, pid, m, dest, g, sha, *, kind, tag="", confirm=False, reset=False, lower=False, repairing=False):
         host = self.host
         if _linked(host.plugin_dir(pid)):
             raise UpdateError("bad_link", LINKED)
         data =await self._run(job, "download", self._archive, g, sha, job)
         z, infos, base, meta = await self._run(job, "verify", self._vet, data, pid)
         new, cur = parse_version(meta.get("version", "")), parse_version(m.get("version", ""))
+        if new and new.prerelease and self._channel() != "prerelease" and not (repairing and new == cur):
+            raise UpdateError("prerelease", "Prerelease versions need the Prerelease channel (Settings)", "verify")
         down = lower or bool(new and cur and new < cur) or (new is None) != (cur is None)
         if down and not confirm:
             return {"confirm": CONFIRM % (meta.get("version") or "the older version"), "downgrade": True}
@@ -636,37 +671,40 @@ class Updates:
             where[0] = "swap"
             job.emit_sync("swap", "running")
 
-        old, hold = dest.with_name(".old-" + dest.name), dest.with_name(".hold-" + dest.name)
-        if new == cur and old.is_dir():
-            old.rename(hold)
-        try:
+        async def transaction():
+            old, hold = dest.with_name(".old-" + dest.name), dest.with_name(".hold-" + dest.name)
+            if new == cur and old.is_dir():
+                old.rename(hold)
             try:
-                await asyncio.to_thread(host.stage_swap, pid, fill, dest, True)
-            except Exception as e:
-                err = UpdateError("failed", why(e), where[0])
-                await job.emit(where[0], "fail", err.message)
-                raise err
-            await job.emit("swap", "ok")
-            try:
-                await self._run(job, "reload", self._reload, pid, reset)
-            except UpdateError as err:
-                back = False
                 try:
-                    host.restore(dest)
-                    await host.reload(pid)
-                    back = True
+                    await asyncio.to_thread(host.stage_swap, pid, fill, dest, True)
                 except Exception as e:
-                    host.log("restore after failed reload:", e)
-                if err.code == "start_failed":
-                    err.message = (err.message + ("; the previous version was restored" if back else "; restoring the previous version failed"))[:300]
-                raise
-        finally:
-            if hold.is_dir():
-                shutil.rmtree(old, ignore_errors=True)
-                hold.rename(old)
-        self._mark(pid, sha[:7])
-        version = (host.manifest(d) or {}).get("version", "")
-        return {"ok": pid, "version": version, **({"kept_previous": True} if down else {})}
+                    err = UpdateError("failed", why(e), where[0])
+                    await job.emit(where[0], "fail", err.message)
+                    raise err
+                await job.emit("swap", "ok")
+                try:
+                    await self._run(job, "reload", self._reload, pid, reset)
+                except UpdateError as err:
+                    back = False
+                    try:
+                        host.restore(dest)
+                        await host.reload(pid)
+                        back = True
+                    except Exception as e:
+                        host.log("restore after failed reload:", e)
+                    if err.code == "start_failed":
+                        err.message = (err.message + ("; the previous version was restored" if back else "; restoring the previous version failed"))[:300]
+                    raise
+            finally:
+                if hold.is_dir():
+                    shutil.rmtree(old, ignore_errors=True)
+                    hold.rename(old)
+            self._mark(pid, sha[:7])
+            version = (host.manifest(d) or {}).get("version", "")
+            return {"ok": pid, "version": version, **({"kept_previous": True} if down else {})}
+
+        return await _finish_transaction(transaction())
 
     @_safe
     async def update(self, pid):
@@ -686,6 +724,8 @@ class Updates:
         await self.host.reload(pid)
         if reset:
             shutil.rmtree(c, ignore_errors=True)
+            if c.exists() or c.is_symlink():
+                raise UpdateError("reset_failed", "The module settings could not be removed: reset did not finish")
         check = getattr(self.host, "backend_check", None)
         bad = await check(pid) if check else ""
         if bad:

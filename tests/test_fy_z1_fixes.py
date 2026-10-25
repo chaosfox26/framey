@@ -211,7 +211,7 @@ class Crash(BaseException):
 
 class LoaderSwap(Base):
     def package(self):
-        return {f.name: f.read_text(encoding="utf-8") for f in H.repo_files()}
+        return H.full_tree()
 
     def install_and_crash_after(self, n):
         sha = "c" * 40

@@ -13,13 +13,13 @@ Version 1.0.2. Most of what is new in 1.0.2 has not been run on a headset yet. S
 ## What it does
 
 - Runs as a user service on the headset. It needs Python 3 and uses only the standard library.
-- Adds a Framey icon to Steam's bottom bar. The panel has one page per installed plugin, plus Modules, Store (coming soon) and Settings.
+- Adds a Framey icon to Steam's bottom bar. The panel has one page per installed plugin, plus Modules, Store, Decky Store and Settings on the experimental branch. [Store](docs/catalog.md) discovers and installs Framey-native modules; the separate [Decky Store](docs/catalog.md#decky-store) browses upstream Decky entries and inspects selected archives without installing or running them. Older installed builds may still show the Store placeholder.
 - Plugins (called modules in the panel) can be enabled, disabled, reordered, hidden, frozen, updated, repaired, rolled back and removed from the headset.
 - Shows whether a module's upstream project still looks maintained. This is information only.
 - Updates Framey and signed Fan Control releases from inside the headset.
 - Runs plugin backends in separate worker processes. This is failure containment, not a security sandbox: plugins are trusted code.
 
-The full guide is [docs/using.md](docs/using.md). Plugin authors should read [docs/plugins.md](docs/plugins.md).
+The full guide is [docs/using.md](docs/using.md). Plugin authors can start with the [developer quickstart](docs/developer-quickstart.md), then use the [plugin API reference](docs/plugins.md). Plain JavaScript and Python plugins need no Node.js build step.
 
 ## Install
 
@@ -38,6 +38,12 @@ Three separate repositories, each under GPL-2.0:
 | [framey](https://github.com/chaosfox26/framey) (this repo) | The plugin loader that runs on the headset. Version 1.0.2. |
 | [frame-fan](https://github.com/chaosfox26/frame-fan) | Fan Control, a plugin with privileged cooling components. It has its own signed releases. |
 | [framey-app](https://github.com/chaosfox26/framey-app) | A desktop app that installs and updates Framey and Fan Control over SSH. |
+
+## Develop a plugin
+
+Copy [Hello](examples/hello-plugin) for a small settings and backend example, or [Starter](examples/starter) for events, translations, notifications, extra pages and cleanup. Both declare API generation 1, minimum loader version and supported platforms. The [quickstart](docs/developer-quickstart.md) covers local edits, checks, packaging and source ports from Decky. Decky plugin bundles do not load directly in Framey. The [limited source-port helper and example](docs/decky-compatibility.md) adapt a few call and event patterns; they do not supply Decky React/UI, backend runtime or native binary compatibility. A platform declaration or an archive labeled ARM64 does not verify SteamOS device behavior or a usable VR interface.
+
+Local Python and simulated browser tests provide development evidence. They do not verify a new service revision on Steam Frame; consult [verification status](docs/using.md#verification-status) before relying on headset behavior.
 
 ## Inspiration and acknowledgments
 

@@ -8,13 +8,27 @@
   let off = false;
   let moves = 0;
   let since = 0;
-  window.FYBar = {
-    dispose() { off = true; clearTimeout(timer); timer = 0; if (window.FYObs) window.FYObs.disconnect(); b.remove(); st.remove(); },
+  let observer = null;
+  const bar = {
+    get button() { return off ? null : b; },
+    dispose() {
+      if (off) return;
+      off = true;
+      clearTimeout(timer);
+      timer = 0;
+      if (observer) observer.disconnect();
+      if (window.FYObs === observer) delete window.FYObs;
+      b.remove();
+      st.remove();
+      if (window.FYBar === bar) delete window.FYBar;
+    },
     set(on) {
+      if (off) return;
       b.classList.toggle("fy-on", !!on);
       b.setAttribute("aria-pressed", String(!!on));
     },
   };
+  window.FYBar = bar;
   if (window.FYObs) window.FYObs.disconnect();
   const old = document.getElementById("fy-bar-style");
   if (old) old.remove();
@@ -28,6 +42,7 @@
     ".fy-bb>span{position:absolute;left:50%;top:44px;transform:translate(calc(-50% + var(--x,0px)),var(--y,0px));padding:0 6px;border-radius:6px;background:rgba(8,8,16,.92);color:#fff;font:600 14px/18px sans-serif;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s ease}" +
     ".fy-bb.fy-on>i{filter:brightness(1.2)}" +
     ".fy-bb:hover>i,.fy-bb:focus-visible>i{filter:brightness(1.35)}" +
+    ".fy-bb:focus-visible{outline:3px solid #8fb0ff;outline-offset:3px;border-radius:8px}" +
     ".fy-bb:hover::before,.fy-bb:focus-visible::before{opacity:.16}" +
     ".fy-bb:hover>span,.fy-bb:focus-visible>span{opacity:1}" +
     ".fy-bb.fy-on::before{opacity:.24}" +
@@ -58,7 +73,7 @@
     label.style.setProperty("--x", Math.max(0, 4 - (c - w / 2)) + Math.min(0, innerWidth - 4 - (c + w / 2)) + "px");
     label.style.setProperty("--y", Math.min(0, innerHeight - 2 - (r.top + 44 + label.offsetHeight)) + "px");
   };
-  const open = () => fyCall(stringify({ id: 0, plugin: "_core", method: "toggle" }));
+  const open = () => { if (!off) fyCall(stringify({ id: 0, plugin: "_core", method: "toggle" })); };
   b.addEventListener("mouseenter", place);
   b.addEventListener("focus", place);
   b.addEventListener("click", () => {
@@ -82,11 +97,15 @@
     if (!e || e.children.length < 2 || e.children[1] === b) return;
     const now = Date.now();
     if (now - since > 10000) { since = now; moves = 0; }
-    if (++moves > 20) return;
+    if (++moves > 20) {
+      timer = setTimeout(mount, Math.max(1, 10001 - (now - since)));
+      return;
+    }
     e.insertBefore(b, e.children[1]);
-    window.FYBar.set(b.classList.contains("fy-on"));
+    bar.set(b.classList.contains("fy-on"));
   };
-  window.FYObs = new MutationObserver(() => { if (!off && !timer) timer = setTimeout(mount, 300); });
+  observer = new MutationObserver(() => { if (!off && !timer) timer = setTimeout(mount, 300); });
+  window.FYObs = observer;
   mount();
-  window.FYObs.observe(document.body, { childList: true, subtree: true });
+  observer.observe(document.body, { childList: true, subtree: true });
 })();

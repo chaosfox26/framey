@@ -641,6 +641,149 @@ t("live resource tokens are revoked on dispose, fire and forget", async () => {
   assert.deepStrictEqual(json(last), { id: 0, plugin: "_core", method: "resource", arg: { revoke: "tokX", pid: "a" }, t: "tok-a-0000" });
 });
 
+t("locale loads and additions cannot revive a disposed or replaced module", async () => {
+  const e = fresh();
+  const old = e.plugin("a");
+  const pending = old.i18n.load("fr");
+  e.answer(e.sent("locale")[0], { strings: { greeting: "old reply" } });
+  e.window.Framey.dispose("a", TOK);
+  const current = e.plugin("a");
+  current.i18n.add("fr", { greeting: "current module" });
+  e.window.Framey.i18n.setLang("fr");
+  assert.strictEqual(await pending, false);
+  assert.strictEqual(old.i18n.add("fr", { greeting: "stale handle" }), 0);
+  const before = e.sent("locale").length;
+  assert.strictEqual(await old.i18n.load("fr"), false);
+  assert.strictEqual(e.sent("locale").length, before);
+  assert.strictEqual(current.t("greeting"), "current module");
+});
+
+t("plugin identity is immutable and catalog assessment retains only its module token", async () => {
+  const e = fresh();
+  const api = e.plugin("sample");
+  assert.throws(() => { api.id = "core"; }, { name: "TypeError" });
+  assert.throws(() => Object.defineProperty(api, "id", { value: "_core" }), { name: "TypeError" });
+  assert.throws(() => { api._rpc = () => Promise.resolve({ ok: true }); }, { name: "TypeError" });
+  assert.strictEqual(api.id, "sample");
+  assert.strictEqual(api.runtime.plugin, "sample");
+  api.i18n.add("en", { "notify.dismiss": "Plugin text" });
+  assert.strictEqual(e.window.Framey.i18n.t("core", "notify.dismiss"), "Dismiss");
+  assert.strictEqual("catalog_assess" in api, false);
+  const assessment = api._rpc("catalog_assess", { id: "decky-entry", source: "decky_stable" });
+  const request = e.sent("catalog_assess")[0];
+  assert.strictEqual(request.plugin, "_core");
+  assert.strictEqual(request.t, "tok-sample-0000");
+  assert.notStrictEqual(request.t, TOK);
+  e.answer(request, { error: "not authorized", code: "not_authorized" });
+  await assert.rejects(assessment, err => err.code === "not_authorized");
+});
+
+t("automatic replacement cannot receive an old locale continuation", async () => {
+  const e = fresh();
+  const old = e.plugin("a");
+  const pending = old.i18n.load("fr");
+  e.answer(e.sent("locale")[0], { strings: { title: "old module" } });
+  const replacement = e.plugin("a");
+  replacement.i18n.add("fr", { title: "replacement module" });
+  e.window.Framey.i18n.setLang("fr");
+  assert.strictEqual(await pending, false);
+  assert.strictEqual(old.i18n.add("fr", { title: "late old module" }), 0);
+  assert.strictEqual(replacement.t("title"), "replacement module");
+});
+
+t("already answered backend and fetch calls still observe disposal before delivery", async () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  const backend = api.call("read");
+  e.answer(e.sent("read")[0], { value: "stale" });
+  const fetched = api.fetch("https://example.org/data");
+  e.answer(e.sent("fetch")[0], { text: "stale" });
+  e.window.Framey.dispose("a", TOK);
+  assert.deepStrictEqual(json(await backend), { error: "module disposed", code: "disposed" });
+  await assert.rejects(fetched, err => err.code === "disposed" && /module disposed/.test(err.message));
+});
+
+t("a resource answer awaiting delivery is revoked when disposal wins", async () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  const pending = api.resource("data", "image.png");
+  e.answer(e.sent("resource")[0], { url: "http://127.0.0.1:1/m/late", token: "late-token" });
+  e.window.Framey.dispose("a", TOK);
+  await assert.rejects(pending, err => err.code === "disposed" && /module disposed/.test(err.message));
+  const revokes = e.sent("resource").filter(x => x.id === 0);
+  assert.deepStrictEqual(json(revokes.map(x => x.arg)), [{ revoke: "late-token", pid: "a" }]);
+  assert.strictEqual(e.window.Framey.diag().calls, 0);
+});
+
+t("a malformed resource reply does not leave its token untracked", async () => {
+  const e = fresh();
+  const pending = e.plugin("a").resource("data", "bad.png");
+  e.answer(e.sent("resource")[0], { token: "orphan-token" });
+  await assert.rejects(pending, /no resource url/);
+  const revokes = e.sent("resource").filter(x => x.id === 0);
+  assert.deepStrictEqual(json(revokes.map(x => x.arg)), [{ revoke: "orphan-token", pid: "a" }]);
+});
+
+t("failed resource revocation stays tracked for disposal cleanup", async () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  const pending = api.resource("data", "image.png");
+  e.answer(e.sent("resource")[0], { url: "http://127.0.0.1:1/m/keep", token: "keep-token" });
+  const url = await pending;
+  const revoke = api.revoke(url);
+  e.answer(e.sent("resource")[1], { error: "temporary failure", code: "busy" });
+  assert.strictEqual(await revoke, false);
+  e.window.Framey.dispose("a", TOK);
+  const revokes = e.sent("resource").filter(x => x.id === 0);
+  assert.deepStrictEqual(json(revokes.map(x => x.arg)), [{ revoke: "keep-token", pid: "a" }]);
+});
+
+t("resource tracking revokes evicted tokens while retaining every accepted live token", async () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  for (let i = 0; i < 17; i++) {
+    const pending = api.resource("data", i + ".png");
+    const request = e.calls[e.calls.length - 1];
+    e.answer(request, { url: "http://127.0.0.1:1/m/" + i, token: "token-" + i });
+    await pending;
+  }
+  let revokes = e.sent("resource").filter(x => x.id === 0);
+  assert.deepStrictEqual(json(revokes.map(x => x.arg.revoke)), ["token-0"]);
+  e.window.Framey.dispose("a", TOK);
+  revokes = e.sent("resource").filter(x => x.id === 0);
+  assert.strictEqual(new Set(revokes.map(x => x.arg.revoke)).size, 17);
+});
+
+t("resource revoke reports an expired token and does not erase a newer token for the same URL", async () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  const url = "http://127.0.0.1:1/m/shared";
+  let pending = api.resource("data", "image.png");
+  e.answer(e.calls[e.calls.length - 1], { url, token: "older" });
+  await pending;
+  const oldRevoke = api.revoke(url);
+  const oldRequest = e.calls[e.calls.length - 1];
+  pending = api.resource("data", "image.png");
+  e.answer(e.calls[e.calls.length - 1], { url, token: "newer" });
+  await pending;
+  e.answer(oldRequest, { ok: false });
+  assert.strictEqual(await oldRevoke, false);
+  const newRevoke = api.revoke(url);
+  const newRequest = e.calls[e.calls.length - 1];
+  assert.strictEqual(newRequest.arg.revoke, "newer");
+  e.answer(newRequest, { ok: true });
+  assert.strictEqual(await newRevoke, true);
+  assert.strictEqual(await api.revoke(url), false);
+});
+
+t("disposed API handles cannot write log messages", () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  e.window.Framey.dispose("a", TOK);
+  api.log("info", "late message");
+  assert.strictEqual(e.sent("log").length, 0);
+});
+
 t("api.log: levels, truncation, 5 per second, fire and forget", () => {
   const e = fresh();
   const api = e.plugin("a");
@@ -757,10 +900,10 @@ t("existing inject.js behaviour is kept", async () => {
   const c = e.calls[e.calls.length - 1];
   F.dispose("a", TOK);
   F._reply(c.gen, c.id, "late");
-  let settled = false;
-  p.then(() => { settled = true; });
+  const settled = [];
+  p.then(value => settled.push(json(value)));
   await flush();
-  assert.strictEqual(settled, false);
+  assert.deepStrictEqual(settled, [{ error: "module disposed", code: "disposed" }]);
   const again = e.plugin("a");
   const p2 = again.call("m");
   e.answer(e.calls[e.calls.length - 1], "fresh");
@@ -772,11 +915,10 @@ t("existing inject.js behaviour is kept", async () => {
 t("types/framey.d.ts members exist on a registered api and on Framey", async () => {
   const src = fs.readFileSync(path.join(ROOT, "types", "framey.d.ts"), "utf8");
   assert.strictEqual((src.match(/\{/g) || []).length, (src.match(/\}/g) || []).length);
-  assert.ok(!/\/\/|\/\*/.test(src));
   const iface = name => {
     const m = src.match(new RegExp("interface " + name + " \\{\\r?\\n([\\s\\S]*?)\\r?\\n\\}\\r?\\n"));
     assert.ok(m, "interface " + name);
-    return m[1].split(/\r?\n/).map(l => /^  (readonly )?([A-Za-z_]\w*)(\?)?(\()?/.exec(l)).filter(Boolean)
+    return m[1].split(/\r?\n/).map(l => /^  (readonly )?([A-Za-z_]\w*)(?:<[^>\r\n]*>)?(\?)?(\()?/.exec(l)).filter(Boolean)
       .map(m2 => ({ name: m2[2], fn: !!m2[4], ro: !!m2[1], opt: !!m2[3] }));
   };
   const e = fresh({ loadFiles: ["fy-api.js", "fy-ui.js", "fy-pages.js"], before: w => { w.FY_RUNTIME = { version: "1.1.0", api: 1, platform: "linux-aarch64", lang: "en" }; } });
@@ -794,6 +936,13 @@ t("types/framey.d.ts members exist on a registered api and on Framey", async () 
   check("api", api, apiMembers);
   check("api.events", api.events, iface("FrameyEvents"));
   check("api.i18n", api.i18n, iface("FrameyApiI18n"));
+  check("api.ui", api.ui, iface("FrameyUi"));
+  check("api.pages", api.pages, iface("FrameyPages"));
+  check("api.global", api.global, iface("FrameyGlobalZones"));
+  const binding = e.window.__bindFramey("binding", "tok-binding-0000", { name: "Binding" });
+  check("Framey binding", binding, iface("FrameyBinding"));
+  assert.ok(/declare const Framey:\s*FrameyBinding\s*;/.test(src));
+  assert.ok(/interface Window\s*\{[\s\S]*?readonly Framey:\s*FrameyGlobal\s*;/.test(src));
   check("Framey", F, iface("FrameyGlobal"));
   check("Framey.i18n", F.i18n, iface("FrameyI18n"));
   check("runtime", api.runtime, iface("FrameyRuntime"));

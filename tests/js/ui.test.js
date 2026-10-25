@@ -448,5 +448,294 @@ t("trusted_input require: synthetic clicks and keys on plugin controls do nothin
   assert.equal(n, 1);
 });
 
-console.log("\n" + pass + " passed, " + fail + " failed");
-process.exit(fail ? 1 : 0);
+t("slider: scientific steps remain selectable and Home End page keys commit once", () => {
+  const { api, mount, key, w } = boot();
+  const fine = mount(api.ui.slider({ label: "Fine", min: 0, max: 0.000001, step: 1e-7, value: 2e-7 }));
+  key(fine, "ArrowRight");
+  assert.equal(fine.value, 3e-7);
+  const changes = [];
+  const s = mount(api.ui.slider({ label: "Level", min: 2, max: 32, step: 2, value: 4, onchange: v => changes.push(v) }));
+  key(s, "PageUp");
+  assert.equal(s.value, 24);
+  key(s, "End");
+  assert.equal(s.value, 32);
+  s.dispatchEvent(new w.KeyboardEvent("keyup", { key: "End", bubbles: true }));
+  assert.deepEqual(changes, [32]);
+  key(s, "PageDown");
+  assert.equal(s.value, 12);
+  key(s, "Home");
+  assert.equal(s.value, 2);
+  s.blur();
+  s.dispatchEvent(new w.KeyboardEvent("keyup", { key: "Home", bubbles: true }));
+  assert.deepEqual(changes, [32, 2]);
+});
+
+const pointer = (w, e, type, id, x, button = 0) => {
+  const ev = new w.MouseEvent(type, { clientX: x, button, bubbles: true, cancelable: true });
+  Object.defineProperty(ev, "pointerId", { value: id });
+  e.dispatchEvent(ev);
+  return ev;
+};
+
+t("slider: capture failures are safe and only the active primary pointer can drag", () => {
+  const { api, mount, w, d } = boot();
+  const changes = [];
+  const s = mount(api.ui.slider({ label: "Level", min: 0, max: 10, onchange: v => changes.push(v) }));
+  const rw = s.querySelector(".fy-rw");
+  rw.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  rw.setPointerCapture = () => { throw new Error("capture unavailable"); };
+  pointer(w, rw, "pointerdown", 7, 40, 1);
+  assert.equal(s.value, 0);
+  pointer(w, rw, "pointerdown", 7, 40);
+  assert.equal(s.value, 4);
+  assert.equal(d.activeElement, s);
+  pointer(w, rw, "pointerdown", 8, 90);
+  pointer(w, rw, "pointermove", 8, 90);
+  pointer(w, rw, "pointerup", 8, 90);
+  assert.equal(s.value, 4);
+  assert.deepEqual(changes, []);
+  pointer(w, rw, "pointermove", 7, 60);
+  pointer(w, rw, "pointerup", 7, 60);
+  assert.equal(s.value, 6);
+  assert.deepEqual(changes, [6]);
+});
+
+t("slider: disabled or programmatic replacement cancels pending user commits", () => {
+  const { api, mount, w, key } = boot();
+  const changes = [];
+  const s = mount(api.ui.slider({ label: "Level", min: 0, max: 10, onchange: v => changes.push(v) }));
+  const rw = s.querySelector(".fy-rw");
+  rw.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  pointer(w, rw, "pointerdown", 1, 40);
+  s.disabled = true;
+  pointer(w, rw, "pointermove", 1, 90);
+  pointer(w, rw, "pointerup", 1, 90);
+  assert.equal(s.value, 4);
+  assert.deepEqual(changes, []);
+  s.disabled = false;
+  pointer(w, rw, "pointerdown", 2, 60);
+  s.value = 3;
+  pointer(w, rw, "pointermove", 2, 90);
+  pointer(w, rw, "pointerup", 2, 90);
+  assert.equal(s.value, 3);
+  key(s, "ArrowRight");
+  s.value = 8;
+  s.dispatchEvent(new w.KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true }));
+  assert.deepEqual(changes, []);
+});
+
+t("slider: losing capture ends and commits a drag only once", () => {
+  const { api, mount, w } = boot();
+  const changes = [], released = [];
+  const s = mount(api.ui.slider({ label: "Level", min: 0, max: 10, onchange: v => changes.push(v) }));
+  const rw = s.querySelector(".fy-rw");
+  rw.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  rw.releasePointerCapture = id => { released.push(id); pointer(w, rw, "lostpointercapture", id, 0); };
+  pointer(w, rw, "pointerdown", 1, 40);
+  pointer(w, rw, "lostpointercapture", 1, 40);
+  pointer(w, rw, "pointerup", 1, 40);
+  pointer(w, rw, "pointermove", 1, 90);
+  assert.equal(s.value, 4);
+  assert.deepEqual(changes, [4]);
+  assert.deepEqual(released, [1]);
+});
+
+t("list: Home and End focus eligible endpoints without selecting", () => {
+  const { api, mount, key, d } = boot();
+  const values = [];
+  const l = mount(api.ui.list({ items: [{ id: 0, label: "disabled", disabled: true }, { id: 1, label: "one" }, { id: 2, label: "two" }, { id: 3, label: "disabled", disabled: true }], onselect: v => values.push(v) }));
+  const rows = rowsOf(l);
+  rows[1].focus();
+  assert.ok(key(rows[1], "End").defaultPrevented);
+  assert.equal(d.activeElement, rows[2]);
+  assert.ok(key(rows[2], "Home").defaultPrevented);
+  assert.equal(d.activeElement, rows[1]);
+  assert.deepEqual(values, []);
+});
+
+t("list: refreshing options retains keyboard focus by id without stealing external focus", () => {
+  const { api, mount, d } = boot();
+  const l = mount(api.ui.list({ items: [{ id: "a", label: "A" }, { id: "b", label: "B" }], selected: "a" }));
+  rowsOf(l)[1].focus();
+  l.setItems([{ id: "b", label: "B refreshed" }, { id: "a", label: "A" }]);
+  assert.equal(d.activeElement, rowsOf(l)[0]);
+  assert.equal(l.selected, "a");
+  l.setItems([{ id: "a", label: "A" }, { id: "c", label: "C" }]);
+  assert.equal(d.activeElement, rowsOf(l)[0]);
+  const outside = mount(api.ui.button({ label: "Outside" }));
+  outside.focus();
+  l.setItems([{ id: "c", label: "C" }]);
+  assert.equal(d.activeElement, outside);
+});
+
+t("list: replaced rows cannot select stale options or call handlers", () => {
+  const { api, mount, key } = boot();
+  const values = [];
+  const l = mount(api.ui.list({ items: [{ id: "a", label: "Old A" }], onselect: v => values.push(v) }));
+  const old = rowsOf(l)[0];
+  l.setItems([{ id: "a", label: "New A" }, { id: "b", label: "B" }]);
+  old.click();
+  key(old, "Enter");
+  assert.deepEqual(values, []);
+  assert.equal(l.selected, null);
+  rowsOf(l)[1].click();
+  assert.deepEqual(values, ["b"]);
+});
+
+t("list: duplicate or invalid ids cannot create ambiguous selected rows", () => {
+  const { api, mount } = boot();
+  const l = mount(api.ui.list({ items: [{ id: "a", label: "First" }, { id: "a", label: "Duplicate" }, { id: {}, label: "Invalid" }, { id: NaN, label: "Invalid" }, { id: 1, label: "One" }, { label: "Default id" }], selected: "a" }));
+  assert.equal(rowsOf(l).length, 3);
+  assert.deepEqual(rowsOf(l).map(r => r.getAttribute("aria-selected")), ["true", "false", "false"]);
+  assert.deepEqual(rowsOf(l).map(r => r.textContent), ["First", "One", "Default id"]);
+});
+
+t("disposed controls: retained nodes cannot activate, change selection or move focus", () => {
+  const { api, mount, key, FY, w, d } = boot();
+  let calls = 0;
+  const b = mount(api.ui.button({ label: "Action", onclick: () => calls++ }));
+  const toggle = mount(api.ui.toggle({ label: "Toggle", onchange: () => calls++ }));
+  const slider = mount(api.ui.slider({ label: "Level", value: 4, onchange: () => calls++ }));
+  const list = mount(api.ui.list({ items: [{ id: "a", label: "A" }, { id: "b", label: "B" }], onselect: () => calls++ }));
+  const rows = rowsOf(list), rw = slider.querySelector(".fy-rw");
+  rw.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  FY.dispose("t", TOK);
+  b.click(); key(b, "Enter"); toggle.click(); key(slider, "ArrowRight");
+  pointer(w, rw, "pointerdown", 1, 90); pointer(w, rw, "pointerup", 1, 90);
+  rows[1].click(); key(rows[0], "ArrowDown");
+  api.ui.focus(b);
+  assert.equal(calls, 0);
+  assert.equal(toggle.value, false);
+  assert.equal(slider.value, 4);
+  assert.equal(list.selected, null);
+  assert.notEqual(d.activeElement, b);
+});
+
+t("detached controls: replacing a live view makes retained controls inert", () => {
+  const { api, mount, key, w, d } = boot();
+  let calls = 0;
+  const box = mount(d.createElement("div"));
+  const button = api.ui.button({ label: "Inspect compatibility", onclick: () => calls++ });
+  const slider = api.ui.slider({ label: "Level", value: 4, oninput: () => calls++ });
+  const toggle = api.ui.toggle({ label: "Option", onchange: () => calls++ });
+  const list = api.ui.list({ items: [{ id: "first", label: "First" }], onselect: () => calls++ });
+  box.append(button, slider, toggle, list);
+  const option = rowsOf(list)[0], rail = slider.querySelector(".fy-rw");
+  rail.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  box.replaceChildren(api.ui.button({ label: "Current route" }));
+  button.click(); key(button, "Enter"); toggle.click(); option.click(); key(slider, "ArrowRight");
+  pointer(w, rail, "pointerdown", 1, 90); pointer(w, rail, "pointerup", 1, 90);
+  assert.equal(calls, 0);
+  assert.equal(toggle.value, false);
+  assert.equal(slider.value, 4);
+  assert.equal(list.selected, null);
+});
+
+t("detached controls: value and options can still be prepared before mounting", () => {
+  const { api, mount } = boot();
+  let changes = 0;
+  const slider = api.ui.slider({ label: "Level", value: 4, oninput: () => changes++ });
+  const toggle = api.ui.toggle({ label: "Option", onchange: () => changes++ });
+  const list = api.ui.list({ items: [{ id: "old", label: "Old" }], onselect: () => changes++ });
+  slider.value = 7;
+  toggle.value = true;
+  list.setItems([{ id: "new", label: "New" }]);
+  assert.equal(slider.value, 7);
+  assert.equal(toggle.value, true);
+  assert.equal(rowsOf(list)[0].textContent, "New");
+  assert.equal(changes, 0);
+  mount(list); rowsOf(list)[0].click();
+  assert.equal(list.selected, "new");
+  assert.equal(changes, 1);
+});
+
+t("group: native input and selection controls retain their editing keys", () => {
+  const { api, mount, key, d } = boot();
+  const input = d.createElement("input");
+  input.tabIndex = 0; input.value = "Search modules";
+  const select = d.createElement("select");
+  select.tabIndex = 0;
+  const option = d.createElement("option"); option.textContent = "Stable"; select.append(option);
+  const editor = d.createElement("div"); editor.setAttribute("contenteditable", "true"); editor.tabIndex = 0;
+  const button = api.ui.button({ label: "Search" });
+  mount(api.ui.group(input, select, editor, button));
+  for (const control of [input, select, editor]) {
+    control.focus();
+    for (const arrow of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]) {
+      assert.equal(key(control, arrow).defaultPrevented, false);
+      assert.equal(d.activeElement, control);
+    }
+  }
+});
+
+const asyncTest = async (name, fn) => {
+  try { await fn(); pass++; console.log("ok   " + name); } catch (e) { fail++; console.log("FAIL " + name + "\n" + (e.stack || e)); }
+};
+const flush = () => new Promise(resolve => setImmediate(resolve));
+(async () => {
+  await asyncTest("button: pending action blocks duplicates and restores interactivity", async () => {
+    const { api, mount, key } = boot();
+    let resolve, calls = 0;
+    const pending = new Promise(done => { resolve = done; });
+    const b = mount(api.ui.button({ label: "Install", onclick: () => { calls++; return pending; } }));
+    b.click(); b.click(); key(b, "Enter");
+    assert.equal(calls, 1);
+    assert.equal(b.disabled, true);
+    assert.equal(b.getAttribute("aria-busy"), "true");
+    assert.equal(b.tabIndex, -1);
+    resolve(); await flush();
+    assert.equal(b.disabled, false);
+    assert.equal(b.getAttribute("aria-busy"), "false");
+    assert.equal(b.tabIndex, 0);
+    b.click(); await flush();
+    assert.equal(calls, 2);
+  });
+  await asyncTest("button: manual disabled state survives completion and cannot bypass pending action", async () => {
+    const { api, mount } = boot();
+    let resolve, calls = 0;
+    const pending = new Promise(done => { resolve = done; });
+    const b = mount(api.ui.button({ label: "Apply", onclick: () => { calls++; return pending; } }));
+    b.click(); b.disabled = false; b.click();
+    assert.equal(calls, 1);
+    b.disabled = true;
+    resolve(); await flush();
+    assert.equal(b.disabled, true);
+    assert.equal(b.getAttribute("aria-busy"), "false");
+    b.click(); assert.equal(calls, 1);
+  });
+  await asyncTest("button: rejection is reported once and a retry remains possible", async () => {
+    const { api, mount, d } = boot();
+    const b = mount(api.ui.button({ label: "Retry", onclick: () => Promise.reject(new Error("Could not apply")) }));
+    b.click(); await flush();
+    const errors = d.querySelector('[role="status"]');
+    assert.equal(errors.childElementCount, 1);
+    assert.equal(errors.firstElementChild.textContent, "Module t failed: Could not apply");
+    assert.equal(b.disabled, false);
+    b.click(); await flush();
+    assert.equal(errors.childElementCount, 2);
+  });
+  await asyncTest("button: disposed pending action settles without showing a stale failure", async () => {
+    const { api, mount, FY, d } = boot();
+    let reject;
+    const pending = new Promise((resolve, fail) => { reject = fail; });
+    const b = mount(api.ui.button({ label: "Apply", onclick: () => pending }));
+    b.click(); FY.dispose("t", TOK); reject(new Error("Old action")); await flush();
+    assert.equal(b.getAttribute("aria-busy"), "false");
+    assert.equal(d.querySelector('[role="status"]'), null);
+  });
+  await asyncTest("button: intentional action cancellation clears busy without a failure toast", async () => {
+    const { api, mount, d, w } = boot();
+    let reject;
+    const pending = new Promise((resolve, fail) => { reject = fail; });
+    const button = mount(api.ui.button({ label: "Inspect compatibility", onclick: () => pending }));
+    button.click();
+    assert.equal(button.disabled, true);
+    reject(new w.DOMException("Inspection cancelled", "AbortError"));
+    await flush();
+    assert.equal(button.disabled, false);
+    assert.equal(button.getAttribute("aria-busy"), "false");
+    assert.equal(d.querySelector('[role="status"]'), null);
+  });
+  console.log("\n" + pass + " passed, " + fail + " failed");
+  process.exit(fail ? 1 : 0);
+})();

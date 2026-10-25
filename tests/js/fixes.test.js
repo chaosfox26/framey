@@ -5,6 +5,7 @@ const path = require("path");
 const { makeDom, ROOT, TOK, registerAs } = require("./harness");
 
 const FILES = ["fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-modules.js", "fy-settings.js"];
+const CATALOG_FILES = FILES.flatMap(file => file === "fy-settings.js" ? ["fy-catalog.js", file] : [file]);
 const RM = "document.querySelectorAll('[data-fy]').forEach(e=>e.remove());";
 const WIPE = RM + "delete window.Framey";
 const flush = () => new Promise(r => setImmediate(r));
@@ -159,8 +160,9 @@ t("timers and listeners: the registry shrinks when they fire or are cleared and 
   const e = boot();
   const api = e.plugin("a");
   const F = e.FY;
-  for (let i = 0; i < 5000; i++) api.timeout(() => {}, 1);
-  assert.ok(F.diag().plugins[0].timers <= 256);
+  for (let i = 0; i < 256; i++) api.timeout(() => {}, 1);
+  assert.throws(() => api.timeout(() => {}, 1), { name: "RangeError" });
+  assert.strictEqual(F.diag().plugins[0].timers, 256);
   e.clock.tick(5);
   assert.strictEqual(F.diag().plugins[0].timers, 0);
   const h = api.timeout(() => {}, 100);
@@ -336,7 +338,7 @@ t("disposed plugins: api calls return an error, fetch rejects, rail omits them",
   assert.ok(e.tab("a"));
   e.FY.dispose("a", TOK);
   const n = e.calls.length;
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(await api.call("x"))), { error: "module disposed" });
+  assert.strictEqual((await api.call("x")).error, "module disposed");
   await assert.rejects(api.fetch("https://example.org/"), /module disposed/);
   await assert.rejects(api.resource("home", "x"), /module disposed/);
   assert.strictEqual(e.calls.length, n);
@@ -466,9 +468,10 @@ t("fyCall hardening: a patched JSON.stringify never sees a payload that carries 
   w.JSON.stringify = function (...a) { seen.push(String(orig.apply(w.JSON, a))); return orig.apply(w.JSON, a); };
   const api = e.plugin("a");
   e.K().call("state_get");
-  api.fetch("https://example.org/");
+  const fetch = api.fetch("https://example.org/").catch(error => error);
   e.FY.toggle();
   e.FY.dispose(undefined, TOK);
+  assert.match((await fetch).message, /module disposed/);
   w.JSON.stringify = orig;
   assert.ok(!seen.join("\n").includes(TOK));
   assert.ok(!seen.join("\n").includes("tok-a-0000"));
@@ -670,7 +673,7 @@ t("versions: a failed page is not skipped on retry and the error clears after a 
 });
 
 t("the settings page shows channel, safe mode and developer mode as read-only text", async () => {
-  const e = boot();
+  const e = boot({ answers: { loader: { commit: "1234567", kept: false } } });
   e.FY.toggle();
   e.tab("Settings").click();
   await settle();
@@ -680,13 +683,25 @@ t("the settings page shows channel, safe mode and developer mode as read-only te
   assert.strictEqual(e.sent("prefs_set").length, 0);
 });
 
-t("legacy plugin: frame-fan main.js runs through __bindFramey; Framey.call sends its own id and token, never another id", async () => {
-  const e = boot({ files: FILES, before: w => { w.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} }; } });
-  e.window.eval("(function(Framey){" + read("../frame-fan/main.js") + "\n})(window.__bindFramey(\"fan\", \"tok-fan-00000000\", {id: \"fan\", name: \"Fan Control\", short: \"Fan\", version: \"1.0.0\"}))");
+t("independently authored legacy-style fixture: render and backend calls stay bound to its own id and token", async () => {
+  const e = boot({ answers: { sample: { value: 1 } } });
+  const fixture = `Framey.register({
+    short: "Fan",
+    render(box) {
+      box.append(Framey.el("", "Temperature sensor"));
+      Framey.call("fan", "sample", { fixture: true });
+    }
+  });`;
+  e.window.eval("(function(Framey){" + fixture + "\n})(window.__bindFramey(\"fan\", \"tok-fan-00000000\", {id: \"fan\", name: \"Legacy fixture\", short: \"Fan\", version: \"1.0.0\"}))");
   e.FY.toggle();
   await settle();
   assert.strictEqual(e.FY.plugins.find(p => p.id === "fan").short, "Fan");
   assert.ok(e.document.body.textContent.includes("Temperature sensor"));
+  const rendered = e.sent("sample");
+  assert.strictEqual(rendered.length, 1);
+  assert.strictEqual(rendered[0].plugin, "fan");
+  assert.strictEqual(rendered[0].t, "tok-fan-00000000");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(rendered[0].arg)), { fixture: true });
   e.window.eval("window.__bindFramey(\"fan\", \"tok-fan-00000000\", {}).call(\"victim\", \"set\", {})");
   const last = e.calls.filter(c => c.method === "set").pop();
   assert.strictEqual(last.plugin, "fan");
@@ -746,6 +761,168 @@ t("closing the panel returns focus to the element that opened it", () => {
   e.FY.toggle();
   e.key(e.document.activeElement, "Escape");
   assert.strictEqual(e.document.activeElement, bar);
+});
+
+t("reload isolation: old page and mount handles cannot remove a replacement or another plugin's content", () => {
+  const e = boot();
+  const old = e.plugin("a");
+  const neighbor = e.plugin("b");
+  const oldPage = old.pages.register({ id: "tools", mode: "full", render(box) { box.textContent = "old tools"; } });
+  const oldMount = old.global.mount("status", { render(box) { box.textContent = "old status"; } });
+  const otherMount = neighbor.global.mount("status", { render(box) { box.textContent = "neighbor status"; } });
+  oldPage.open();
+  e.FY.dispose("a", TOK);
+  const current = e.plugin("a");
+  const currentPage = current.pages.register({ id: "tools", mode: "full", render(box) { box.textContent = "current tools"; } });
+  const currentMount = current.global.mount("status", { render(box) { box.textContent = "current status"; } });
+  currentPage.open();
+  assert.strictEqual(oldPage.close(), false);
+  assert.strictEqual(oldPage.remove(), false);
+  oldMount.unmount();
+  assert.strictEqual(current.pages.list()[0].open, true);
+  assert.ok(e.document.querySelector('[role="dialog"]').textContent.includes("current tools"));
+  assert.ok(currentMount.el.isConnected);
+  assert.ok(otherMount.el.isConnected);
+  assert.strictEqual(otherMount.el.textContent, "neighbor status");
+  e.FY.dispose("a", TOK);
+  assert.strictEqual(currentMount.el.isConnected, false);
+  assert.strictEqual(e.document.querySelector('[role="dialog"]'), null);
+  assert.ok(otherMount.el.isConnected);
+});
+
+t("reload isolation: stale unsubscribe and cleanup removers leave replacement registrations intact", () => {
+  const e = boot();
+  const previous = e.plugin("a");
+  const got = [];
+  const oldOff = previous.events.on("tick", () => got.push("previous"));
+  const oldRemoveCleanup = previous.cleanup(() => got.push("previous cleanup"));
+  const current = e.plugin("a");
+  current.events.on("tick", value => got.push("current " + value));
+  current.cleanup(() => got.push("current cleanup"));
+  oldOff();
+  oldRemoveCleanup();
+  previous.events.off("tick", () => {});
+  e.event("a", "tick", 1);
+  assert.deepStrictEqual(got, ["previous cleanup", "current 1"]);
+  e.FY.dispose("a", TOK);
+  assert.deepStrictEqual(got, ["previous cleanup", "current 1", "current cleanup"]);
+});
+
+t("event disposal is immediate for its remaining callbacks and does not clear another plugin", () => {
+  const e = boot();
+  const a = e.plugin("a");
+  const b = e.plugin("b");
+  const got = [];
+  a.events.on("tick", () => { got.push("a first"); e.FY.dispose("a", TOK); });
+  a.events.on("tick", () => got.push("a after disposal"));
+  b.events.on("tick", value => got.push("b " + value));
+  e.event("a", "tick", 1);
+  e.event("b", "tick", 2);
+  e.event("a", "tick", 3);
+  assert.deepStrictEqual(got, ["a first", "b 2"]);
+  assert.strictEqual(e.FY.diag().plugins.find(p => p.id === "b").subscriptions, 1);
+});
+
+t("reload isolation: cleanup of one module removes its listeners without changing a neighbor's listener", () => {
+  const e = boot();
+  const a = e.plugin("a");
+  const b = e.plugin("b");
+  const target = e.document.createElement("button");
+  e.document.body.append(target);
+  const got = [];
+  const oldOff = a.on(target, "click", () => got.push("previous"));
+  b.on(target, "click", () => got.push("neighbor"));
+  const current = e.plugin("a");
+  current.on(target, "click", () => got.push("current"));
+  oldOff();
+  target.click();
+  assert.deepStrictEqual(got, ["neighbor", "current"]);
+  e.FY.dispose("a", TOK);
+  target.click();
+  assert.deepStrictEqual(got, ["neighbor", "current", "neighbor"]);
+});
+
+t("catalog isolation: scoped assessment requests never acquire the catalog's core capability", async () => {
+  const e = boot({ files: CATALOG_FILES, answers: {
+    catalog_assess: (arg, request) => request.t === TOK ? { read_only: true } : { error: "not authorized", code: "forbidden" },
+  } });
+  const api = e.plugin("a");
+  const n = e.calls.length;
+  const denied = await e.FY.call("_core", "catalog_assess", { id: "fixture", source: "decky_stable" });
+  assert.strictEqual(denied.error, "not authorized");
+  assert.strictEqual(e.calls.length, n);
+  await assert.rejects(api._rpc("catalog_assess", { id: "fixture", source: "decky_stable" }), error => error.code === "forbidden");
+  const scoped = e.sent("catalog_assess").at(-1);
+  assert.strictEqual(scoped.plugin, "_core");
+  assert.strictEqual(scoped.t, "tok-a-0000");
+  assert.notStrictEqual(scoped.t, TOK);
+  assert.strictEqual(e.FY._k(scoped.t), null);
+  assert.strictEqual("catalog_assess" in api, false);
+  const allowed = await e.K().call("catalog_assess", { id: "fixture", source: "decky_stable" });
+  assert.strictEqual(allowed.read_only, true);
+  assert.strictEqual(e.sent("catalog_assess").at(-1).t, TOK);
+});
+
+t("catalog isolation: loaded catalog pages cannot be replaced through the public page registry", () => {
+  const e = boot({ files: CATALOG_FILES });
+  const a = e.window.__bindFramey("a", "tok-a-0000", { name: "a" });
+  a.register({ render() {} });
+  const before = e.FY.pages.decky_store;
+  const replace = e.window.eval(`(function(FY, scope) {
+    try { FY.pages.decky_store = { render() {} }; } catch (error) {}
+    try { Object.defineProperty(FY.pages, "decky_store", { value: { render() {} } }); } catch (error) {}
+    try { FY.pages = { decky_store: { render() {} } }; } catch (error) {}
+    try { scope.pages = FY.pages; } catch (error) {}
+  })`);
+  replace(e.FY, a);
+  assert.strictEqual(e.FY.pages.decky_store, before);
+  assert.strictEqual(Object.isFrozen(before), true);
+  assert.strictEqual("pages" in a, false);
+  for (const id of ["store", "discover", "decky-store"]) {
+    assert.throws(() => e.window.__bindFramey(id, "tok-reserved-0000", {}), /reserved/);
+  }
+  assert.strictEqual(typeof e.FY.pages.store.render, "function");
+  assert.strictEqual(typeof e.FY.pages.decky_store.render, "function");
+});
+
+t("catalog isolation: switching native and Decky stores preserves peers and hides all tabs of a hidden module", async () => {
+  const source = id => ({ id, label: id, url: "https://example.com/catalog.json" });
+  const e = boot({ files: CATALOG_FILES, answers: {
+    state_get: { order: ["a", "b"], hidden: ["a"], sort: "custom", frozen: {}, prefs: {}, safe: false },
+    catalog_sources: { source: source("stable"), sources: [source("stable"), source("testing"), source("custom")], decky_sources: [source("decky_stable"), source("decky_testing")], custom_url: "" },
+    catalog_list: arg => ({ rows: [], total: 0, offset: 0, limit: 50, categories: [], source: source(arg.source), origin: "downloaded", stale: false, error: null }),
+  } });
+  const a = e.plugin("a"), b = e.plugin("b");
+  a.pages.register({ id: "extra", title: "Hidden extra", render(box) { box.textContent = "Hidden body"; } });
+  const am = a.global.mount("status", { render(box) { box.textContent = "A status"; } });
+  const bm = b.global.mount("status", { render(box) { box.textContent = "B status"; } });
+  a.notify({ title: "A notice", duration: 0 });
+  b.notify({ title: "B notice", duration: 0 });
+  const target = e.document.createElement("button");
+  e.document.body.append(target);
+  let events = 0, clicks = 0;
+  b.events.on("tick", () => events++);
+  b.on(target, "click", () => clicks++);
+  e.FY.open("#discover");
+  await settle();
+  e.FY.open("#decky-store");
+  await settle();
+  assert.ok(!e.tab("a"));
+  assert.ok(!e.tab("Hidden"));
+  assert.ok(e.tab("b"));
+  assert.ok(am.el.isConnected && bm.el.isConnected);
+  e.FY.dispose("a", TOK);
+  assert.strictEqual(am.el.isConnected, false);
+  assert.strictEqual(bm.el.isConnected, true);
+  e.event("b", "tick", {});
+  target.click();
+  assert.strictEqual(events, 1);
+  assert.strictEqual(clicks, 1);
+  const notices = [...e.document.querySelectorAll('[role="status"]')].filter(node => node.dataset.fy === "a" || node.dataset.fy === "b");
+  assert.strictEqual(notices.length, 1);
+  assert.strictEqual(notices[0].dataset.fy, "b");
+  assert.strictEqual(e.sent("catalog_assess").length, 0);
+  assert.strictEqual(e.sent("catalog_install").length, 0);
 });
 
 const main = async () => {

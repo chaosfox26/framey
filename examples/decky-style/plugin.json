@@ -1,0 +1,18 @@
+{
+  "id": "decky-style",
+  "name": "Session Check-ins",
+  "short": "Check-ins",
+  "version": "1.0.0",
+  "api": 1,
+  "framey": {"min": "1.0.2"},
+  "platform": ["linux-aarch64", "linux-x86_64"],
+  "backend": {
+    "timeout": 10,
+    "idle": 120,
+    "keepalive": false,
+    "concurrency": 1,
+    "memory_mb": 64,
+    "startup_timeout": 10
+  },
+  "data_version": 1
+}

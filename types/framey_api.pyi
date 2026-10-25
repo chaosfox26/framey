@@ -1,5 +1,44 @@
+from os import PathLike
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, TypedDict, Union
+
+_PathInput = Union[str, PathLike[str]]
+
+class _FetchResult(TypedDict):
+    status: int
+    headers: Dict[str, str]
+    text: Optional[str]
+    b64: Optional[str]
+    bytes: int
+    truncated: bool
+    path: Optional[str]
+
+class _FileEntry(TypedDict):
+    name: str
+    type: Literal["link", "dir", "file", "other"]
+    size: Optional[int]
+    mtime: Optional[int]
+
+class _FileRoot(TypedDict):
+    id: str
+    label: str
+
+class _DirectoryRoots(TypedDict, total=False):
+    roots: List[_FileRoot]
+
+class _DirectoryResult(_DirectoryRoots):
+    root: str
+    path: str
+    parent: Optional[str]
+    entries: List[_FileEntry]
+    truncated: bool
+
+class _MoveResult(TypedDict):
+    moved: bool
+    reason: str
+
+class _KeysResult(TypedDict):
+    renamed: List[List[str]]
 
 PLUGIN: str
 API: int
@@ -29,19 +68,19 @@ class _Settings:
 
 class _Log:
     dropped: int
-    def debug(self, msg: str, *args: Any) -> None: ...
-    def info(self, msg: str, *args: Any) -> None: ...
-    def warning(self, msg: str, *args: Any) -> None: ...
-    def error(self, msg: str, *args: Any) -> None: ...
+    def debug(self, msg: object, *args: Any) -> None: ...
+    def info(self, msg: object, *args: Any) -> None: ...
+    def warning(self, msg: object, *args: Any) -> None: ...
+    def error(self, msg: object, *args: Any) -> None: ...
     def close(self) -> None: ...
 
 class _Events:
     def emit(self, name: str, payload: Any = ...) -> bool: ...
 
 class _Migrate:
-    def move(self, src: Any, dst: Any, overwrite: bool = ...) -> Dict[str, Any]: ...
-    def keys(self, mapping: Mapping[str, str]) -> Dict[str, List[List[str]]]: ...
-    def copy_once(self, src: Any, dst: Any, marker: str) -> bool: ...
+    def move(self, src: _PathInput, dst: _PathInput, overwrite: bool = ...) -> _MoveResult: ...
+    def keys(self, mapping: Dict[str, str]) -> _KeysResult: ...
+    def copy_once(self, src: _PathInput, dst: _PathInput, marker: str) -> bool: ...
     def snapshot(self) -> Optional[Path]: ...
 
 runtime: _Runtime
@@ -54,7 +93,7 @@ migrate: _Migrate
 class FrameyApiError(Exception):
     code: str
     message: str
-    def __init__(self, code: str, message: str = ...) -> None: ...
+    def __init__(self, code: object, message: object = ...) -> None: ...
 
 async def fetch(
     url: str,
@@ -65,15 +104,15 @@ async def fetch(
     timeout: float = ...,
     max_bytes: int = ...,
     dest: Optional[str] = ...,
-) -> Dict[str, Any]: ...
-async def resource_url(root: str, path: str, ttl: int = ...) -> str: ...
+) -> _FetchResult: ...
+async def resource_url(root: str, path: str, ttl: float = ...) -> str: ...
 async def resource_revoke(url: str) -> bool: ...
 async def list_dir(
     root: str,
     path: str = ...,
     *,
-    hidden: bool = ...,
-    dirs_only: bool = ...,
+    hidden: Optional[bool] = ...,
+    dirs_only: Optional[bool] = ...,
     exts: Optional[Sequence[str]] = ...,
-) -> Dict[str, Any]: ...
+) -> _DirectoryResult: ...
 def companion(name: str) -> Path: ...

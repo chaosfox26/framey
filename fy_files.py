@@ -53,7 +53,7 @@ def roots(home, dirs, extra):
             continue
         base = re.sub(r"[^A-Za-z0-9._-]", "_", Path(item).name) or "root"
         name, n = base, 2
-        while name in out:
+        while name in out or name in ("data", "config", "home", "media"):
             name = "%s-%d" % (base, n)
             n += 1
         out[name] = Path(item)
@@ -164,6 +164,8 @@ def stat_file(rts, root, rel):
     full = safe_join(base, rel)
     try:
         st = os.stat(full)
+    except PermissionError:
+        raise FileError("denied", "That item cannot be opened")
     except OSError:
         raise FileError("not_found", "That item was not found")
     link = bool(rel) and os.path.islink(os.path.join(str(base), *rel.split("/")))
@@ -200,16 +202,17 @@ def _extra(host):
         return []
 
 
-async def hostcall(host, pid, arg, page=False):
+def _hostcall(host, pid, arg, page):
     a = arg if isinstance(arg, dict) else {}
     dirs = plugin_dirs(host, pid)
     if page and dirs:
         dirs = types.SimpleNamespace(data=getattr(dirs, "data", None))
     rts = roots(host.HOME, dirs, _extra(host))
+    if page:
+        rts.pop("media", None)
     if page and a.get("root") is None:
         return {"root": "", "path": "", "parent": None, "entries": [], "truncated": False, "roots": root_list(rts)}
-    return await asyncio.to_thread(
-        list_dir,
+    return list_dir(
         rts,
         a.get("root") if isinstance(a.get("root"), str) else next(iter(rts), ""),
         a.get("path", ""),
@@ -217,6 +220,10 @@ async def hostcall(host, pid, arg, page=False):
         dirs_only=bool(a.get("dirs_only")),
         exts=a.get("exts"),
     )
+
+
+async def hostcall(host, pid, arg, page=False):
+    return await asyncio.to_thread(_hostcall, host, pid, arg, page)
 
 
 async def files_list(host, arg):

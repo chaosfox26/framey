@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import types
+from collections.abc import Mapping
 from pathlib import Path
 
 import fy_store
@@ -39,7 +40,8 @@ class _LazyDirs:
 def build(pid, meta, dirs, runtime, rpc, max_events=50):
     meta = meta if isinstance(meta, dict) else {}
     rt = runtime if isinstance(runtime, dict) else {}
-    paths = fy_store.Dirs(*(Path(dirs[k] if isinstance(dirs, dict) else getattr(dirs, k)) for k in fy_store.Dirs._fields))
+    raw_paths = (dirs[k] if isinstance(dirs, dict) else getattr(dirs, k) for k in fy_store.Dirs._fields)
+    paths = fy_store.Dirs(*(Path(p) if p is not None else None for p in raw_paths))
     plugin_dir = rt.get("plugin_dir") or meta.get("plugin_dir")
     api = rt["api"] if type(rt.get("api")) is int else API_GENERATION
 
@@ -58,22 +60,33 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
     window = [0.0, 0]
     window_lock = threading.Lock()
 
+    def event_dropped():
+        try:
+            hook = getattr(rpc, "event_dropped", None)
+            if callable(hook):
+                hook(1)
+        except Exception:
+            pass
+        return False
+
     def emit(name, payload=None):
         if not isinstance(name, str) or not EVENT_NAME.fullmatch(name):
-            return False
+            return event_dropped()
         try:
             size = len(json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8"))
         except (TypeError, ValueError, RecursionError):
-            return False
+            return event_dropped()
         if size > EVENT_MAX:
-            return False
+            return event_dropped()
         now = time.monotonic()
         with window_lock:
             if not 0 <= now - window[0] < 1.0:
                 window[0], window[1] = now, 0
-            if window[1] >= max_events:
-                return False
-            window[1] += 1
+            accepted = window[1] < max_events
+            if accepted:
+                window[1] += 1
+        if not accepted:
+            return event_dropped()
         return bool(rpc.emit(name, payload))
 
     async def host(op, arg):
@@ -95,7 +108,7 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
             raise FrameyApiError("bad_argument", "url must be a string")
         for name, value, kind in (
             ("method", method, str),
-            ("headers", headers, dict),
+            ("headers", headers, Mapping),
             ("body", body, str),
             ("dest", dest, str),
             ("timeout", timeout, (int, float)),
@@ -106,7 +119,7 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
         arg = {"url": url, "method": method, "timeout": timeout, "max_bytes": max_bytes}
         for name, value in (("headers", headers), ("body", body), ("dest", dest)):
             if value is not None:
-                arg[name] = value
+                arg[name] = dict(value) if name == "headers" else value
         r = await host("fetch", arg)
         if not isinstance(r, dict):
             raise FrameyApiError("bad_result", "unexpected fetch reply")
@@ -130,10 +143,10 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
         if token is None:
             return False
         r = await host("resource", {"revoke": token})
-        tokens.pop(url, None)
-        if isinstance(r, dict):
-            return r.get("revoked", r.get("ok", True)) is not False
-        return bool(r)
+        revoked = r.get("revoked", r.get("ok", True)) is not False if isinstance(r, dict) else bool(r)
+        if revoked and tokens.get(url) == token:
+            tokens.pop(url, None)
+        return revoked
 
     async def list_dir(root, path="", *, hidden=None, dirs_only=None, exts=None):
         arg = {"root": root, "path": path}
@@ -169,10 +182,16 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
         except OSError:
             entries = []
         for e in entries:
-            if pattern.fullmatch(e.name) and e.is_dir(follow_symlinks=False):
+            if not pattern.fullmatch(e.name):
+                continue
+            try:
+                if not e.is_dir(follow_symlinks=False):
+                    continue
                 key = (e.stat(follow_symlinks=False).st_mtime_ns, e.name)
-                if best is None or key > best[0]:
-                    best = (key, Path(e.path))
+            except OSError:
+                continue
+            if best is None or key > best[0]:
+                best = (key, Path(e.path))
         if best is None:
             raise FrameyApiError("not_installed", "companion %s is not installed" % name)
         exe = best[1] / name

@@ -288,6 +288,145 @@ t("no K.ready hook call is left in fy-dev.js", () => {
   assert.ok(!/K\.ready/.test(fs.readFileSync(path.join(ROOT, "fy-dev.js"), "utf8")));
 });
 
+t("hot reload controls name their module and reject duplicate writes while pending", async () => {
+  const h = await open();
+  const off = h.buttons().find(b => b.textContent === "Off");
+  assert.equal(off.getAttribute("aria-label"), "Hot reload for Alpha: off");
+  assert.equal(off.getAttribute("aria-pressed"), "false");
+  off.click();
+  off.click();
+  assert.equal(h.env.sent("dev_set").length, 1);
+  assert.equal(off.disabled, true);
+  assert.equal(off.getAttribute("aria-busy"), "true");
+  h.answer("dev_set", STATUS());
+  await settle();
+  h.answer("dev_status", STATUS({ hot: [{ id: "alpha", mode: "inotify", remaining_s: 60 }] }));
+  h.answer("list", LIST);
+  await settle();
+  const on = h.buttons().find(b => b.textContent === "On");
+  assert.equal(on.disabled, false);
+  assert.equal(on.getAttribute("aria-pressed"), "true");
+});
+
+t("an old status request cannot overwrite a newer refresh", async () => {
+  const h = await open();
+  h.button("Refresh status").click();
+  h.button("Refresh status").click();
+  const statuses = h.env.sent("dev_status").filter(c => !c.done);
+  const lists = h.env.sent("list").filter(c => !c.done);
+  assert.equal(statuses.length, 2);
+  const reply = (call, value) => { call.done = true; h.env.answer(call, value); };
+  reply(statuses[1], STATUS({ hot: [{ id: "beta", mode: "inotify", remaining_s: 60 }] }));
+  reply(lists[1], LIST);
+  await settle();
+  assert.ok(h.box.textContent.includes("<b>Beta</b>  (inotify, 1 min left)"));
+  reply(statuses[0], STATUS({ enabled: false }));
+  reply(lists[0], []);
+  await settle();
+  assert.ok(h.box.textContent.includes("<b>Beta</b>  (inotify, 1 min left)"));
+  assert.ok(!h.box.textContent.includes("Developer mode is off."));
+});
+
+t("leaving the developer page suppresses a late write result and its refresh", async () => {
+  const h = await open();
+  h.buttons().find(b => b.textContent === "Off").click();
+  h.box.replaceChildren(h.d.createElement("div"));
+  h.answer("dev_set", { error: "late write error" });
+  await settle();
+  assert.equal(h.env.sent("dev_status").length, 1);
+  assert.ok(!h.d.body.textContent.includes("late write error"));
+});
+
+t("a repeated render does not let old diagnostics populate either view", async () => {
+  const h = await open();
+  h.button("Run diagnostics").click();
+  const old = h.box.querySelector("textarea");
+  h.FY.dev.render(h.box);
+  const current = h.box.querySelector("textarea");
+  assert.notStrictEqual(current, old);
+  h.answer("diag", { stale: true });
+  h.answer("dev_status", STATUS());
+  h.answer("list", LIST);
+  await settle();
+  assert.equal(old.value, "");
+  assert.equal(current.value, "");
+  assert.equal(h.box.querySelectorAll("textarea").length, 1);
+});
+
+t("debug lookup and diagnostics cannot be submitted twice while pending", async () => {
+  const h = await open();
+  h.button("Find debug targets").click();
+  h.button("Find debug targets").click();
+  assert.equal(h.env.sent("devtools_info").length, 1);
+  assert.equal(h.button("Find debug targets").getAttribute("aria-busy"), "true");
+  h.button("Run diagnostics").click();
+  h.button("Run diagnostics").click();
+  assert.equal(h.env.sent("diag").length, 1);
+  h.answer("devtools_info", { available: false, error: "closed", targets: [] });
+  h.answer("diag", { error: "could not read status" });
+  await settle();
+  assert.equal(h.button("Find debug targets").disabled, false);
+  assert.equal(h.button("Run diagnostics").disabled, false);
+  assert.ok(h.box.textContent.includes("Diagnostics failed: could not read status"));
+  assert.ok(!h.box.textContent.includes("Diagnostics ready."));
+  assert.equal(h.box.querySelector("textarea").getAttribute("aria-label"), "Diagnostics output");
+});
+
+t("copy reports an unavailable or rejected clipboard instead of silent success", async () => {
+  const h = await open();
+  h.button("Copy").click();
+  assert.ok(h.box.textContent.includes("Nothing to copy yet."));
+  h.button("Run diagnostics").click();
+  h.answer("diag", {});
+  await settle();
+  h.w.navigator.clipboard.writeText = () => Promise.reject(new Error("permission denied"));
+  h.button("Copy").click();
+  await settle();
+  assert.ok(h.box.textContent.includes("Copy failed: permission denied"));
+  Object.defineProperty(h.w.navigator, "clipboard", { configurable: true, value: undefined });
+  h.button("Copy").click();
+  await settle();
+  assert.ok(h.box.textContent.includes("Copy failed: Clipboard is unavailable"));
+  assert.ok(!h.box.textContent.includes("Copied."));
+});
+
+t("module-list failure is visible and a status refresh can recover it", async () => {
+  const h = await open(STATUS(), { error: "module list unavailable" });
+  assert.ok(h.box.textContent.includes("Could not load modules: module list unavailable"));
+  h.button("Refresh status").click();
+  h.answer("dev_status", STATUS());
+  h.answer("list", LIST);
+  await settle();
+  assert.ok(h.box.textContent.includes("Alpha"));
+  assert.ok(!h.box.textContent.includes("module list unavailable"));
+});
+
+t("partial debug lookup errors remain visible alongside usable targets", async () => {
+  const h = await open(STATUS(), [null, false, ...LIST]);
+  h.button("Find debug targets").click();
+  h.answer("devtools_info", { available: true, error: "Some targets could not be read", targets: [null, { name: "main", inspector: "http://127.0.0.1:8080/" }] });
+  await settle();
+  assert.ok(h.box.textContent.includes("Some targets could not be read"));
+  assert.equal(h.buttons().filter(b => b.textContent === "Copy address").length, 1);
+  assert.ok(h.box.textContent.includes("recent log lines"));
+  assert.ok(h.box.textContent.includes("review before sharing"));
+});
+
+t("hot reload persistence warnings remain visible without pretending the choice was saved", async () => {
+  const warning = "Hot reload is active for this session, but its settings could not be saved.";
+  const h = await open(STATUS({ warning }));
+  assert.ok(h.box.textContent.includes(warning));
+  h.buttons().find(b => b.textContent === "Off").click();
+  h.answer("dev_set", STATUS({ warning }));
+  await settle();
+  assert.ok(h.d.body.textContent.includes(warning));
+  h.answer("dev_status", STATUS({ warning, hot: [{ id: "alpha", mode: "inotify", remaining_s: 60 }] }));
+  h.answer("list", LIST);
+  await settle();
+  assert.ok(h.box.textContent.includes(warning));
+  assert.equal(h.buttons().find(b => b.textContent === "On").disabled, false);
+});
+
 (async () => {
   for (const [name, fn] of queue) {
     try { await fn(); pass++; console.log("ok   " + name); } catch (e) { fail++; console.log("FAIL " + name + "\n" + (e.stack || e)); }

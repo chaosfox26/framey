@@ -10,46 +10,82 @@
       const k = make(box);
       const { btn, sw } = k;
       let ld = {}, st = { prefs: {} }, auto = {}, mp = {}, ss = null, lres = null, cand = null, info = null, line = null;
+      const saving = new Set();
       k.names = id => (id === "_loader" ? T("s.framey") : "");
-      const draw = () =>
-        Promise.all([call("loader"), call("state_get"), call("autocheck_status"), call("maint_prefs"), call("status")]).then(([l, s, a, m, x]) => {
+      const draw = () => {
+        k.show(tx(TITLE, T("s.title")), col(GREY, T("c.loading")));
+        return Promise.all([call("loader"), call("state_get"), call("autocheck_status"), call("maint_prefs"), call("status")]).then(k.guard(([l, s, a, m, x]) => {
+          if (l.error || s.error || !s.prefs || typeof s.prefs !== "object" || Array.isArray(s.prefs)) return k.bad(new Error(l.error || s.error || T("c.noanswer")));
           ld = l;
           st = s;
           auto = a;
           mp = m;
           ss = obj(x).settings_state;
           home();
-        }).catch(k.bad);
+        }), k.guard(e => k.bad(e)));
+      };
       const back = () => draw();
+      k.back = back;
       k.bad = e => k.show(tx(TITLE, T("s.title")), col(BAD, T("c.failed", { msg: String((e && e.message) || T("c.noanswer")).slice(0, 200) })), row(btn(T("c.retry"), draw)));
+      const write = (method, key, value, el, previous, apply, after) => {
+        if (saving.has(key)) {
+          if (el) el.value = previous;
+          return;
+        }
+        saving.add(key);
+        if (el) {
+          el.disabled = true;
+          el.setAttribute("aria-busy", "true");
+        }
+        const done = k.guard(r => {
+          const values = method === "prefs_set" ? r.prefs : r;
+          const saved = values && values[key];
+          if (el) {
+            el.disabled = false;
+            el.removeAttribute("aria-busy");
+          }
+          if (r.error || typeof saved !== typeof value) {
+            if (el) el.value = previous;
+            warn(r.error || T("c.noanswer"));
+            return;
+          }
+          apply(saved);
+          if (el) el.value = saved;
+          if (after) after();
+        });
+        return call(method, { [key]: value }).then(r => {
+          saving.delete(key);
+          done(r);
+        }, e => {
+          saving.delete(key);
+          done({ error: String((e && e.message) || T("c.noanswer")) });
+        });
+      };
+      const savePref = (key, value, el, after) =>
+        write("prefs_set", key, value, el, obj(st.prefs)[key], saved => { st = { ...st, prefs: { ...obj(st.prefs), [key]: saved } }; }, after);
       const pref = (label, key, value, after) =>
-        sw(label, value, (v, el) =>
-          call("prefs_set", { [key]: v }).then(r => {
-            if (r.error) {
-              el.value = !v;
-              warn(r.error);
-              return;
-            }
-            if (r.prefs) st = r;
-            if (after) after();
-          }),
-        );
-      const check = el => {
+        sw(label, value, (v, el) => savePref(key, v, el, after));
+      const checkedCandidate = c => c && typeof c.tag === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(c.tag) && typeof c.commit === "string" && /^[0-9a-f]{40}$/.test(c.commit);
+      const check = (el, after) => {
         k.hold(true);
-        el.textContent = T("c.checking");
-        el.style.color = GREY;
-        call("loader_check").then(r => {
+        if (el) {
+          el.textContent = T("c.checking");
+          el.style.color = GREY;
+        }
+        call("loader_check").then(k.guard(r => {
           k.hold(false);
           lres = r.loader || null;
           cand = r.candidate || (lres && lres.candidate) || null;
           info = r.installed || null;
           line = lres ? null : T("c.failed", { msg: r.error || T("c.noanswer") });
+          if (after && checkedCandidate(cand) && lres && lres.state !== "error") return after();
+          if (after && !line && (!lres || lres.state !== "current")) line = T("c.failed", { msg: (lres && lres.msg) || T("c.noanswer") });
           home();
-        });
+        }));
       };
-      const loaderUpdate = confirm =>
-        k.work(T("s.updating"), () => call("loader_update", { confirm }), (r, out) => {
-          if (r.confirm) return k.ask(T("s.downgrade_title"), r.confirm, [[T("s.update_now"), () => loaderUpdate(true), DANGER]], back);
+      const loaderUpdate = (confirm, selected) =>
+        k.work(T("s.updating"), () => call("loader_update", { confirm, candidate: selected }), (r, out) => {
+          if (r.confirm) return k.ask(T("s.downgrade_title"), r.confirm, [[T("s.update_now"), () => loaderUpdate(true, selected), DANGER]], back);
           if (r.current) {
             lres = { state: "current" };
             return k.result(out, {}, T("s.already"), back);
@@ -64,42 +100,43 @@
           k.result(out, r, "", back);
         });
       const identity = c => [T("s.candidate", { tag: c.tag, c: String(c.commit || "").slice(0, 7) }), day(c.published) && T("s.published", { d: day(c.published) })].filter(Boolean).join(", ");
-      const updateAsk = () =>
-        k.ask(
+      const updateAsk = () => {
+        if (!checkedCandidate(cand)) return check(null, updateAsk);
+        const selected = { tag: cand.tag, commit: cand.commit };
+        return k.ask(
           T("s.update_title"),
           [cand ? identity(cand) : T("s.update_nocheck"), lres && lres.downgrade && T("v.limits"), lres && lres.notes && T("s.notes_head") + "\n" + lres.notes].filter(Boolean).join("\n\n"),
-          [[T("s.update_now"), () => loaderUpdate(false), { primary: true }]],
+          [[T("s.update_now"), () => loaderUpdate(false, selected), { primary: true }]],
           back,
         );
+      };
       const lazyDev = () => {
         k.hold(true);
         FY.lazy("dev").then(
-          () => {
+          k.guard(() => {
             k.hold(false);
             if (FY.dev && FY.open) FY.open("#developer");
             else warn("Restart Framey to open Developer tools.");
-          },
-          e => {
+          }),
+          k.guard(e => {
             k.hold(false);
             warn(e.message);
-          },
+          }),
         );
       };
       const maintPref = key => (v, el) =>
-        call("maint_prefs", { [key]: v }).then(r => {
-          if (r.error) {
-            if (el) el.value = !v;
-            warn(r.error);
-          } else mp = r;
-        });
-      const maintBox = () =>
-        mp.error || typeof mp["maint.window_days"] !== "number"
-          ? [col(GREY, T("mt.unavailable"), 16)]
-          : [
-              sw(T("mt.bg"), mp["maint.enabled_background"] === true, maintPref("maint.enabled_background")),
-              col(GREY, T("mt.bg_text"), 16),
-              ui().slider({ label: T("mt.window_label"), min: 30, max: 1825, step: 5, value: mp["maint.window_days"], format: v => T("mt.days", { count: v }), onchange: v => maintPref("maint.window_days")(v) }),
-            ];
+        write("maint_prefs", key, v, el, mp[key], saved => { mp = { ...mp, [key]: saved }; });
+      const maintBox = () => {
+        if (mp.error || typeof mp["maint.window_days"] !== "number") return [col(GREY, T("mt.unavailable"), 16)];
+        const window = ui().slider({ label: T("mt.window_label"), min: 30, max: 1825, step: 5, value: mp["maint.window_days"], format: v => T("mt.days", { count: v }), onchange: v => maintPref("maint.window_days")(v, window) });
+        return [sw(T("mt.bg"), mp["maint.enabled_background"] === true, maintPref("maint.enabled_background")), col(GREY, T("mt.bg_text"), 16), window];
+      };
+      const workerBox = () => {
+        const value = obj(st.prefs).workers_max;
+        if (!Number.isInteger(value) || value < 1 || value > 3) return [];
+        const control = ui().slider({ label: T("s.workers"), min: 1, max: 3, step: 1, value, onchange: v => savePref("workers_max", v, control) });
+        return [control, col(GREY, T("s.workers_text"), 16)];
+      };
       const finish = (method, title, okKey) => k.work(title, () => call(method), (r, out) => k.result(out, r, T(okKey), back));
       const home = () => {
         const p = obj(st.prefs);
@@ -141,12 +178,13 @@
           pref(T("s.notify_loader"), "notify_loader", p.notify_loader === true),
           pref(T("s.notify_plugins"), "notify_plugins", p.notify_plugins === true),
           ...maintBox(),
+          ...workerBox(),
           col(GREY, T("s.lang"), 16),
           col(GREY, T("s.safe_ro", { state: T(st.safe === true ? "s.on" : "s.off") }), 16),
           col(GREY, T("s.safe_text"), 16),
           col(GREY, T("s.dev_ro", { state: T(dev ? "s.on" : "s.off") }), 16),
           dev && row(btn(T("s.dev_open"), lazyDev), btn(T("s.diag"), lazyDev)),
-          row(btn(T("s.reload"), () => { k.hold(true); call("reload").then(r => { k.hold(false); if (r.error) warn(r.error); else say(T("s.reloaded")); }); })),
+          row(btn(T("s.reload"), () => { k.hold(true); call("reload").then(k.guard(r => { k.hold(false); if (r.error) warn(r.error); else say(T("s.reloaded")); })); })),
           col(GREY, T("s.trust"), 18),
         );
       };

@@ -38,6 +38,9 @@ const rec = (label, id, over) =>
 const defaults = () => ({
   list: [mod("a", "Alpha"), mod("b", "Beta")],
   store: [],
+  loader: { commit: "1234567", kept: false },
+  autocheck_status: { enabled: false },
+  status: { settings_state: "ok" },
   state_get: { order: ["a", "b"], sort: "custom", hidden: [], frozen: {}, prefs: { channel: "stable" }, safe: false },
   maint_prefs: { "maint.enabled_background": false, "maint.window_days": 365 },
   maint_get: arg => ({ records: Object.fromEntries(arg.ids.map(id => [id, rec("recent", id)])) }),

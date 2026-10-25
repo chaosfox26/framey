@@ -20,7 +20,12 @@ SHA = "a" * 40
 
 
 def repo_files():
-    return [f for f in REPO.iterdir() if f.is_file() and (f.suffix in (".py", ".js", ".svg"))]
+    files = [f for f in REPO.iterdir() if f.is_file() and (f.suffix in (".py", ".js", ".svg"))]
+    return files + [REPO / "catalog" / "index.json"]
+
+
+def full_tree():
+    return {f.relative_to(REPO).as_posix(): f.read_text() for f in repo_files()}
 
 
 def mkzip(files, top=None):
@@ -88,7 +93,10 @@ class Loader:
         (self.home / ".config" / "framey").mkdir(parents=True)
         (self.base / "run").mkdir()
         for f in files if files is not None else repo_files():
-            shutil.copy(f, self.root / f.name)
+            relative = f.relative_to(REPO) if f.is_relative_to(REPO) else pathlib.Path(f.name)
+            target = self.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(f, target)
         (self.root / ".version").write_text(SHA)
         self.env = {k: os.environ.get(k) for k in ("XDG_RUNTIME_DIR",)}
         os.environ["XDG_RUNTIME_DIR"] = str(self.base / "run")
@@ -210,7 +218,7 @@ class Page:
             del req["t"]
         elif req.get("plugin") and "t" not in req:
             req["t"] = next((t for t, p in toks.items() if p == req["plugin"]), None)
-        self.q.put_nowait(json.dumps({"method": "Runtime.bindingCalled", "params": {"payload": json.dumps(req)}}))
+        self.q.put_nowait(json.dumps({"method": "Runtime.bindingCalled", "params": {"name": "fyCall", "payload": json.dumps(req)}}))
 
     def trace(self, since=0):
         out = []

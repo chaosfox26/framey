@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import collections
 import contextlib
 import inspect
 import io
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import tokenize
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -171,7 +173,7 @@ class PyiAgreementTest(Base):
         self.assertNotIn("#", PYI.read_text(encoding="utf-8"))
 
     def test_sources_follow_project_rules(self):
-        allowed = {"collections", "errno", "json", "os", "re", "shutil", "stat", "sys", "tempfile", "threading", "time", "types",
+        allowed = {"collections", "errno", "hashlib", "json", "os", "re", "shutil", "stat", "sys", "tempfile", "threading", "time", "types",
                    "datetime", "pathlib", "typing", "fy_store"}
         for name in ("fy_store.py", "fy_sdk.py"):
             path = ROOT / name
@@ -231,6 +233,19 @@ class RuntimeTest(Base):
         self.assertEqual(a.dirs.logs, self.dirs.logs)
         a = fy_sdk.build("demo", self.meta, mock.Mock(**{k: str(v) for k, v in self.dirs._asdict().items()}), self.rt, self.rpc)
         self.assertEqual(a.dirs.config, self.dirs.config)
+
+    def test_unavailable_runtime_does_not_prevent_other_sdk_use(self):
+        dirs = self.dirs._replace(runtime=None)
+        for supplied in (dirs, dirs._asdict()):
+            api = fy_sdk.build("demo", self.meta, supplied, self.rt, self.rpc)
+            self.assertEqual(api.runtime.platform, "linux-aarch64")
+            self.assertTrue(api.events.emit("ready"))
+            api.settings.set("available", True)
+            self.assertTrue(api.settings.get("available"))
+            self.assertEqual(api.dirs.data, self.dirs.data)
+            with self.assertRaisesRegex(RuntimeError, "runtime directory unavailable"):
+                _ = api.dirs.runtime
+        self.assertFalse(self.tmp.joinpath("run").exists())
 
 
 class DirsTest(Base):
@@ -322,6 +337,36 @@ class EventsTest(Base):
             ok = sum(self.api.events.emit("e", i) for i in range(80))
         self.assertEqual(ok, 50)
 
+    def test_internal_hook_counts_each_sdk_rejection_once(self):
+        self.rpc.event_dropped = mock.Mock()
+        api = self.make(max_events=1)
+        cycle = []
+        cycle.append(cycle)
+        for name, payload in (("Bad Name", 1), ("e", object()), ("e", cycle),
+                              ("e", float("nan")), ("e", "x" * fy_sdk.EVENT_MAX)):
+            self.assertFalse(api.events.emit(name, payload))
+        with mock.patch.object(fy_sdk.time, "monotonic", return_value=1000.0):
+            self.assertTrue(api.events.emit("e", 1))
+            self.assertFalse(api.events.emit("e", 2))
+            self.assertFalse(api.events.emit("e", 3))
+        self.assertEqual(self.rpc.event_dropped.call_args_list, [mock.call(1)] * 7)
+        self.assertEqual(self.rpc.emitted, [("e", 1)])
+
+    def test_rpc_rejection_is_not_counted_by_the_sdk_hook(self):
+        self.rpc.event_dropped = mock.Mock()
+        self.rpc.emit_result = False
+        self.assertFalse(self.api.events.emit("e", 1))
+        self.rpc.event_dropped.assert_not_called()
+
+    def test_drop_hook_is_optional_and_preserves_false_return(self):
+        self.assertFalse(hasattr(self.rpc, "event_dropped"))
+        self.assertFalse(self.api.events.emit("Bad Name"))
+        self.rpc.event_dropped = None
+        self.assertFalse(self.api.events.emit("Bad Name"))
+        self.rpc.event_dropped = mock.Mock(side_effect=RuntimeError("hook unavailable"))
+        self.assertFalse(self.api.events.emit("Bad Name"))
+        self.rpc.event_dropped.assert_called_once_with(1)
+
 
 class FetchTest(Base):
     def test_defaults_and_forwarding(self):
@@ -338,6 +383,15 @@ class FetchTest(Base):
             self.rpc.calls[0][1],
             {"url": "https://e.org", "method": "POST", "timeout": 3.5, "max_bytes": 10, "headers": {"A": "b"}, "body": "{}", "dest": "data:f.bin"},
         )
+
+    def test_headers_accept_declared_mapping_contract(self):
+        self.rpc.replies["fetch"] = {"status": 204}
+        for headers in (types.MappingProxyType({"A": "b"}), collections.UserDict({"A": "b"})):
+            self.run_async(self.api.fetch("https://e.org", headers=headers))
+            sent = self.rpc.calls[-1][1]["headers"]
+            self.assertIs(type(sent), dict)
+            self.assertEqual(sent, {"A": "b"})
+            self.assertIsNot(sent, headers)
 
     def test_positional_options_are_rejected(self):
         with self.assertRaises(TypeError):
@@ -437,14 +491,45 @@ class ResourceAndFilesTest(Base):
             n[0] += 1
             if n[0] == 1:
                 raise HostFailure("busy", "later")
-            return {"ok": False}
+            return {"ok": n[0] > 2}
 
         self.rpc.replies["resource"] = reply
         self.run_async(self.api.resource_url("data", "a"))
         with self.assertRaises(fy_sdk.FrameyApiError):
             self.run_async(self.api.resource_revoke("u1"))
         self.assertFalse(self.run_async(self.api.resource_revoke("u1")))
-        self.assertEqual([c[1] for c in self.rpc.calls if "revoke" in c[1]], [{"revoke": "t1"}, {"revoke": "t1"}])
+        self.assertTrue(self.run_async(self.api.resource_revoke("u1")))
+        self.assertFalse(self.run_async(self.api.resource_revoke("u1")))
+        self.assertEqual([c[1] for c in self.rpc.calls if "revoke" in c[1]], [{"revoke": "t1"}] * 3)
+
+    def test_revoke_does_not_forget_a_replacement_token(self):
+        async def scenario():
+            pending = asyncio.get_running_loop().create_future()
+            started = asyncio.Event()
+            minted = 0
+
+            async def host(op, arg):
+                nonlocal minted
+                self.rpc.calls.append((op, arg))
+                if "root" in arg:
+                    minted += 1
+                    return {"url": "u1", "token": "t%d" % minted}
+                if arg["revoke"] == "t1":
+                    started.set()
+                    return await pending
+                return {"ok": True}
+
+            self.rpc.host = host
+            await self.api.resource_url("data", "a")
+            first = asyncio.create_task(self.api.resource_revoke("u1"))
+            await started.wait()
+            await self.api.resource_url("data", "a")
+            pending.set_result({"ok": True})
+            self.assertTrue(await first)
+            self.assertTrue(await self.api.resource_revoke("u1"))
+            self.assertEqual(self.rpc.calls[-1], ("resource", {"revoke": "t2"}))
+
+        self.run_async(scenario())
 
     def test_token_map_is_bounded(self):
         counter = [0]
@@ -578,6 +663,20 @@ class CompanionTest(Base):
         (self.dirs.data / "bin" / "tool-1.0").write_text("not a folder")
         with self.assertRaises(fy_sdk.FrameyApiError):
             self.api.companion("tool")
+
+    def test_skips_entries_removed_during_the_scan(self):
+        d = self.install("tool-1.0", "tool")
+        with os.scandir(d.parent) as entries:
+            good = list(entries)
+        vanished_dir = mock.Mock(name="vanished_dir")
+        vanished_dir.name = "tool-2.0"
+        vanished_dir.is_dir.side_effect = FileNotFoundError()
+        vanished_stat = mock.Mock(name="vanished_stat")
+        vanished_stat.name = "tool-3.0"
+        vanished_stat.is_dir.return_value = True
+        vanished_stat.stat.side_effect = FileNotFoundError()
+        with mock.patch.object(fy_sdk.os, "scandir", return_value=[vanished_dir, vanished_stat] + good):
+            self.assertEqual(self.api.companion("tool"), d / "tool")
 
     def test_bad_names(self):
         for bad in ("", "../x", "a/b", "a b", None, 5, "x" * 65):

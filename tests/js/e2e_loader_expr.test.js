@@ -14,17 +14,30 @@ const d = dump();
 const TOKS = [d.core, ...Object.values(d.tokens)];
 const url = "https://steamloopback.host/";
 
+const CATALOG_SOURCE = { id: "stable", label: "Stable", url: "https://catalog.example/index.json" };
+const CATALOG_ROW = { id: "demo", name: "Demo", version: "1.0.0", description: "Example module", category: "Tools", tags: [], source: { repository: "https://github.com/example/demo", commit: "a".repeat(40), path: "" }, homepage: "", compat: { state: "compatible", badge: "ok", msg: "Compatible", reasons: [] }, installed: false, linked: false, eligible: true, reason: "", identity: "b".repeat(64), channel: "stable", platform: ["linux-aarch64"], platform_declared: true, kind: "plugin" };
+
+const DECKY_SOURCE = { id: "decky_stable", label: "Decky Store", url: "https://plugins.deckbrew.xyz/plugins", format: "decky" };
+const DECKY_ROW = { id: "decky-1", name: "Example Decky plugin", version: "1.0.0", description: "Community plugin", category: "utilities", tags: [], author: "Example maintainer", format: "decky", read_only: true, kind: "decky", eligible: false, reason: "Needs a Framey port; ARM64 compatibility is unverified", architecture: "unknown", platform_declared: false, version_count: 1, identity: "c".repeat(64), compat: { state: "incompatible", badge: "port", msg: "Decky package format requires a Framey port", reasons: [] }, source: { repository: "", url: DECKY_SOURCE.url }, installed: false, linked: false };
+const DECKY_VERSION = { name: "1.0.0", hash: "d".repeat(64), created: "", downloads: 1, updates: 0, identity: "e".repeat(64) };
+const isDecky = arg => arg && ["decky_stable", "decky_testing"].includes(arg.source);
+
 const CANNED = {
   list: () => [{ id: "fan", name: "Fan", short: "Fan", version: "1.0.0" }],
   store: () => [],
-  state_get: () => ({ order: [], hidden: [] }),
+  catalog_sources: () => ({ source: CATALOG_SOURCE, sources: [{ id: "stable", label: "Stable" }, { id: "testing", label: "Testing" }, { id: "custom", label: "Custom" }], decky_sources: [DECKY_SOURCE, { id: "decky_testing", label: "Decky Store Testing", url: "https://testing.deckbrew.xyz/plugins", format: "decky" }], custom_url: "" }),
+  catalog_list: arg => ({ rows: [isDecky(arg) ? DECKY_ROW : CATALOG_ROW], total: 1, categories: [isDecky(arg) ? "utilities" : "Tools"], source: isDecky(arg) ? DECKY_SOURCE : CATALOG_SOURCE, origin: "downloaded", stale: false, error: null, warning: "" }),
+  catalog_details: arg => ({ entry: isDecky(arg) ? { ...DECKY_ROW, versions: [DECKY_VERSION] } : CATALOG_ROW, source: isDecky(arg) ? DECKY_SOURCE : CATALOG_SOURCE, origin: "downloaded", stale: false, error: null, warning: "" }),
+  catalog_assess: () => ({ id: DECKY_ROW.id, format: "decky", read_only: true, version: DECKY_VERSION.name, hash: DECKY_VERSION.hash, assessment: { state: "port_required", label: "Needs a Framey port", architecture: "unknown", root_required: null, native_binaries: [], has_frontend: true, has_backend: true, flags: [], dependencies: [], reasons: ["Adapt Decky frontend APIs"], warnings: [], verified_sha256: true, bytes: 10, files: 2, not_executed: true } }),
+  state_get: () => ({ order: [], hidden: [], prefs: { channel: "stable", autocheck: false, notify_loader: false, notify_plugins: false, dev: { enabled: false } } }),
+  loader: () => ({ commit: "a".repeat(40), kept: false }),
   maint_get: () => ({ records: { fan: { label: "recent" } } }),
   files_list: () => ({ roots: [{ root: "data", label: "Data" }, { root: "home", label: "Home" }], entries: [] }),
 };
 
 const answer = m => {
   if (m.plugin === "fan" && m.method === "get") return { applied: {}, profiles: [], rpm: null, temp: null, zone: null, pwm: null };
-  if (m.plugin === "_core" && CANNED[m.method]) return CANNED[m.method]();
+  if (m.plugin === "_core" && CANNED[m.method]) return CANNED[m.method](m.arg);
   return {};
 };
 
@@ -185,12 +198,12 @@ const check = async (name, fn) => {
     assert.ok(w.Framey.plugins.find(p => p.id === "beta"), "beta did not register");
   });
 
-  await check("the panel opens and the rail shows Modules, Store, Settings in order", async () => {
+  await check("the panel opens and the rail shows Modules, Store, Decky Store, Settings in order", async () => {
     w.Framey.toggle();
     await sleep(60);
     const labels = [...rail(w).children].map(x => x.textContent.trim());
-    const at = ["Modules", "Store", "Settings"].map(n => labels.indexOf(n));
-    assert.ok(at.every(i => i >= 0) && at[0] < at[1] && at[1] < at[2], "rail was " + JSON.stringify(labels));
+    const at = ["Modules", "Store", "Decky Store", "Settings"].map(n => labels.indexOf(n));
+    assert.ok(at.every(i => i >= 0) && at[0] < at[1] && at[1] < at[2] && at[2] < at[3], "rail was " + JSON.stringify(labels));
   });
 
   await check("Modules renders its list from the canned list reply and the maintenance chip", async () => {
@@ -209,10 +222,45 @@ const check = async (name, fn) => {
     assert.ok(sent.some(m => m.plugin === "_core" && m.method === "loader"), "loader was not requested");
   });
 
-  await check("Store says Coming soon", async () => {
+  await check("Store renders its catalog through the core bridge", async () => {
     tileNamed(w, "Store").click();
     await sleep(40);
-    assert.ok(body(w).includes("Coming soon"), "Store text missing");
+    assert.ok(body(w).includes("Demo"), "catalog entry missing");
+    assert.ok(body(w).includes("Search"), "catalog search missing");
+    assert.ok(sent.some(m => m.plugin === "_core" && m.method === "catalog_list"), "catalog_list was not requested");
+  });
+
+  await check("Decky Store delegates to the upstream community page without changing the Framey catalog", async () => {
+    tileNamed(w, "Decky Store").click();
+    await sleep(60);
+    assert.ok(body(w).includes("Example Decky plugin"), "Decky community entry missing");
+    assert.ok(body(w).includes("not affiliated with the Decky project"), "community ownership notice missing");
+    assert.ok(body(w).includes("Not compatible") && body(w).includes("needs a Framey version before it can run here"), "port requirement missing");
+    assert.ok(body(w).includes("ARM64: Not checked"), "unverified architecture was not stated");
+    assert.ok(sent.some(m => m.plugin === "_core" && m.method === "catalog_list" && isDecky(m.arg)), "Decky source was not requested");
+    assert.ok(!sent.some(m => m.method === "catalog_sources" && isDecky(m.arg)), "browsing Decky changed the saved Framey source");
+    const details = [...w.document.querySelectorAll('[role="button"]')].find(x => x.getAttribute("aria-label") === "Details: Example Decky plugin");
+    assert.ok(details, "Decky details control missing");
+    details.click();
+    await sleep(50);
+    assert.ok(body(w).includes("By Example maintainer"), "upstream author attribution missing");
+    assert.ok(body(w).includes("Decky plugins cannot be installed in Framey"), "read-only port explanation missing");
+    assert.ok([...w.document.querySelectorAll('[role="button"]')].some(x => x.getAttribute("aria-label") === "Inspect compatibility"), "explicit archive inspection is unavailable");
+    assert.ok(![...w.document.querySelectorAll('[role="button"]')].some(x => /^(Install|Review installation)$/.test(x.getAttribute("aria-label") || "")), "Decky package offered direct installation");
+    assert.ok(!sent.some(m => m.method === "catalog_assess"), "opening details automatically inspected an archive");
+    [...w.document.querySelectorAll('[role="button"]')].find(x => x.getAttribute("aria-label") === "Inspect compatibility").click();
+    await sleep(40);
+    const inspections = sent.filter(m => m.method === "catalog_assess");
+    assert.equal(inspections.length, 1, "an explicit inspection must issue one request");
+    assert.equal(inspections[0].t, d.core, "inspection did not use the held core capability");
+    assert.deepStrictEqual(inspections[0].arg, { id: DECKY_ROW.id, identity: DECKY_ROW.identity, version_identity: DECKY_VERSION.identity, confirm: true, source: "decky_stable" });
+    assert.ok(body(w).includes("Archive SHA-256 verified."), "verified fixture assessment was not rendered");
+    assert.ok(body(w).includes("ARM64: Not checked"), "unknown architecture became a compatibility claim");
+    assert.ok(!sent.some(m => m.method === "catalog_install"), "read-only Decky flow installed a package");
+    tileNamed(w, "Store").click();
+    await sleep(50);
+    assert.ok(body(w).includes("Demo"), "Framey catalog did not return");
+    assert.ok(!body(w).includes("Example Decky plugin"), "Decky content remained in the Framey Store");
   });
 
   await check("the picker opens through a bound plugin api and lists the roots", async () => {

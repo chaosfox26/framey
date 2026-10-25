@@ -124,7 +124,7 @@ class PayloadAndFrameTests(unittest.IsolatedAsyncioTestCase):
         page, task = await H.attach(loader)
         self.addCleanup(task.cancel)
         big = json.dumps({"gen": "g", "id": 9, "plugin": "_core", "method": "list", "arg": "x" * (300 << 10), "t": page.tok})
-        page.q.put_nowait(json.dumps({"method": "Runtime.bindingCalled", "params": {"payload": big}}))
+        page.q.put_nowait(json.dumps({"method": "Runtime.bindingCalled", "params": {"name": "fyCall", "payload": big}}))
         self.assertTrue(await H.settle(lambda: any(r[2] == {"error": "too large"} for r in page.replies())))
         self.assertEqual(page.replies()[-1], ["g", 9, {"error": "too large"}])
 
@@ -210,7 +210,7 @@ class RecoverTests(unittest.IsolatedAsyncioTestCase):
         loader.plugin("a", {"api": 1})
         (loader.root / "store" / "keep.txt").write_text("k")
         net = loader.net
-        full = {f.name: f.read_text() for f in H.repo_files()}
+        full = H.full_tree()
         net.archive("chaosfox26", "framey", "b" * 40, H.mkzip(full, top="framey-" + "b" * 40))
         return loader
 
@@ -276,6 +276,67 @@ class RecoverTests(unittest.IsolatedAsyncioTestCase):
         (loader.plugins / ".old-zz" / "main.js").write_text("1")
         fy.recover()
         self.assertFalse((loader.plugins / "zz").exists())
+
+    async def test_interrupted_same_version_repair_preserves_the_original_rollback(self):
+        loader = H.Loader()
+        self.addAsyncCleanup(loader.close)
+        live = loader.plugin("a", {"version": "1.0.0"})
+        old = loader.plugins / ".old-a"
+        hold = loader.plugins / ".hold-a"
+        shutil.copytree(live, old)
+        shutil.copytree(live, hold)
+        (old / "generation").write_text("damaged same-version copy")
+        (hold / "generation").write_text("original rollback")
+        (hold / "plugin.json").write_text(json.dumps({"id": "a", "name": "a", "version": "0.9.0"}))
+        (live / "generation").write_text("repaired live copy")
+
+        loader.fy.recover()
+        loader.fy.recover()
+
+        self.assertEqual((live / "generation").read_text(), "repaired live copy")
+        self.assertEqual((old / "generation").read_text(), "original rollback")
+        self.assertFalse(hold.exists())
+        loader.fy.restore(live)
+        self.assertEqual((live / "generation").read_text(), "original rollback")
+
+    async def test_interrupted_repair_recovers_live_before_promoting_the_original_rollback(self):
+        loader = H.Loader()
+        self.addAsyncCleanup(loader.close)
+        live = loader.plugin("a", {"version": "1.0.0"})
+        old = loader.plugins / ".old-a"
+        hold = loader.plugins / ".hold-a"
+        live.rename(old)
+        shutil.copytree(old, hold)
+        (old / "generation").write_text("previous live copy")
+        (hold / "generation").write_text("original rollback")
+        (hold / "plugin.json").write_text(json.dumps({"id": "a", "name": "a", "version": "0.9.0"}))
+
+        loader.fy.recover()
+
+        self.assertEqual((live / "generation").read_text(), "previous live copy")
+        self.assertEqual((old / "generation").read_text(), "original rollback")
+        self.assertFalse(hold.exists())
+        loader.fy.recover()
+        self.assertEqual((old / "generation").read_text(), "original rollback")
+
+    async def test_finishing_a_loader_update_preserves_unmigrated_backup_content(self):
+        for name, live_present in (("store", False), ("store", True), ("plugins", True)):
+            with self.subTest(folder=name, live_present=live_present):
+                loader = H.Loader()
+                try:
+                    bak = loader.home / "framey.bak"
+                    kept = bak / name
+                    kept.mkdir(parents=True)
+                    (kept / "keep.txt").write_text("unmigrated content")
+                    if not live_present:
+                        shutil.rmtree(loader.root / name)
+
+                    result = await loader.core("loader_done")
+
+                    self.assertIn("error", result)
+                    self.assertEqual((kept / "keep.txt").read_text(), "unmigrated content")
+                finally:
+                    await loader.close()
 
     async def test_uninstall_clears_held_copies_before_removing_the_plugin(self):
         loader = H.Loader()

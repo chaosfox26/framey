@@ -25,6 +25,7 @@ except ImportError:
 PR_SET_PDEATHSIG = 1
 PR_SET_NO_NEW_PRIVS = 38
 EMIT_RATE = 50
+DROP_MAX = (1 << 31) - 1
 CALLS_MAX = 32
 READ_MAX = fy_proto.LINE_MAX + 2
 PLUGIN_ID = re.compile(r"[a-z0-9_-]{1,32}\Z")
@@ -130,15 +131,21 @@ def limit_boot():
 
 def privileges():
     if not sys.platform.startswith("linux"):
-        return
+        return True, None
     try:
         import ctypes
         libc = ctypes.CDLL(None, use_errno=True)
         arg = ctypes.c_ulong
-        libc.prctl(PR_SET_PDEATHSIG, arg(int(signal.SIGKILL)), arg(0), arg(0), arg(0))
-        libc.prctl(PR_SET_NO_NEW_PRIVS, arg(1), arg(0), arg(0), arg(0))
-    except Exception:
-        pass
+        parent = os.getppid()
+        if libc.prctl(PR_SET_PDEATHSIG, arg(int(signal.SIGKILL)), arg(0), arg(0), arg(0)) != 0:
+            print("framey worker: parent-death signal unavailable: %s" % os.strerror(ctypes.get_errno()), file=sys.stderr)
+        elif os.getppid() != parent:
+            leave(0)
+        if libc.prctl(PR_SET_NO_NEW_PRIVS, arg(1), arg(0), arg(0), arg(0)) != 0:
+            return False, "no_new_privs unavailable: %s" % os.strerror(ctypes.get_errno())
+    except Exception as e:
+        return False, "no_new_privs unavailable: %s" % e
+    return True, None
 
 
 def optional(name):
@@ -153,11 +160,6 @@ def optional(name):
 
 
 def leave(code):
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.flush()
-        except Exception:
-            pass
     os._exit(code)
 
 
@@ -167,6 +169,9 @@ class Rpc:
 
     def emit(self, name, payload=None):
         return self.worker.emit(name, payload)
+
+    def event_dropped(self, count=1):
+        self.worker.event_dropped(count)
 
     async def host(self, op, arg=None):
         return await self.worker.host(op, arg)
@@ -178,6 +183,10 @@ class Worker:
         self.lock = threading.Lock()
         self.window, self.count, self.dropped = 0.0, 0, 0
         self.tasks, self.calls, self.waiting = set(), {}, {}
+        self.cancelled, self.hook_tasks = set(), set()
+        self.lifecycle = None
+        self.closing = False
+        self.limits_configured = False
         self.host_ids = itertools.count(1)
         self.inited = self.ready = self.migrated = self.limits_applied = False
         self.limits_reason = "startup incomplete"
@@ -188,12 +197,21 @@ class Worker:
     def write(self, obj):
         data = fy_proto.encode(obj)
         with self.lock:
-            try:
-                view = memoryview(data)
-                while view:
-                    view = view[os.write(self.out, view):]
-            except OSError:
-                leave(0)
+            return self.write_data(data)
+
+    def write_data(self, data):
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(self.out, view)
+                if written <= 0:
+                    leave(0)
+                    return False
+                view = view[written:]
+        except OSError:
+            leave(0)
+            return False
+        return True
 
     def reply(self, rid, result=None, err=None):
         msg = {"re": rid, "ok": err is None}
@@ -204,6 +222,8 @@ class Worker:
             self.write({"re": rid, "ok": False, "error": fy_proto.error("too_large", "reply too large")})
 
     def term(self):
+        if self.closing:
+            return
         self.on_line(b'{"op":"unload","reason":"shutdown","id":0}\n')
 
     def die(self, code, message):
@@ -214,18 +234,28 @@ class Worker:
 
     def emit(self, name, payload=None):
         if not fy_proto.event_ok(name, payload):
-            self.dropped += 1
+            self.event_dropped()
             return False
         now = time.monotonic()
         with self.lock:
             if now - self.window >= 1.0:
                 self.window, self.count = now, 0
             if self.count >= EMIT_RATE:
-                self.dropped += 1
+                self.dropped = min(DROP_MAX, self.dropped + 1)
                 return False
             self.count += 1
-        self.write({"ev": "emit", "name": name, "payload": payload})
-        return True
+            msg = {"ev": "emit", "name": name, "payload": payload}
+            if self.dropped:
+                msg["dropped"] = self.dropped
+            if not self.write_data(fy_proto.encode(msg)):
+                return False
+            self.dropped = 0
+            return True
+
+    def event_dropped(self, count=1):
+        if type(count) is int and count > 0:
+            with self.lock:
+                self.dropped = min(DROP_MAX, self.dropped + count)
 
     async def host(self, op, arg):
         hid = next(self.host_ids)
@@ -242,7 +272,7 @@ class Worker:
 
     def host_reply(self, m):
         hid = m.get("id")
-        fut = self.waiting.get(hid) if isinstance(hid, int) else None
+        fut = self.waiting.get(hid) if type(hid) is int else None
         if fut is None or fut.done():
             return
         if m.get("ok"):
@@ -265,27 +295,53 @@ class Worker:
             return self.reply(rid, {"pong": True})
         if op == "cancel":
             target = m.get("target")
-            task = self.calls.get(target) if isinstance(target, int) else None
-            return self.reply(rid, {"cancelled": bool(task and task.cancel())})
+            task = self.calls.get(target) if type(target) is int else None
+            cancelled = bool(task and task not in self.cancelled and task.cancel())
+            if cancelled:
+                self.cancelled.add(task)
+            return self.reply(rid, {"cancelled": cancelled})
         if op not in OPS:
             return self.reply(rid, err=fy_proto.error("exception", "unknown op"))
-        task = self.loop.create_task(self.run(rid, getattr(self, "op_" + op)(rid, m)))
+        if self.closing:
+            return self.reply(rid, err=fy_proto.error("not_ready", "backend is stopping"))
+        if op == "call":
+            if rid in self.calls or len(self.calls) >= CALLS_MAX:
+                return self.reply(rid, err=fy_proto.error("busy", "too many calls running" if rid not in self.calls else "call id already running"))
+        elif op == "unload":
+            self.closing = True
+            self.ready = False
+        elif self.lifecycle is not None or self.hook_tasks:
+            return self.reply(rid, err=fy_proto.error("busy", "backend lifecycle operation is running", stage=op))
+        task = self.loop.create_task(self.run(rid, getattr(self, "op_" + op), m))
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
         if op == "call":
             self.calls[rid] = task
-            task.add_done_callback(lambda _, r=rid: self.calls.pop(r, None))
+            def call_done(done, r=rid):
+                if self.calls.get(r) is done:
+                    self.calls.pop(r, None)
+                self.cancelled.discard(done)
+            task.add_done_callback(call_done)
+        elif op != "unload":
+            self.lifecycle = task
+            def lifecycle_done(done):
+                if self.lifecycle is done:
+                    self.lifecycle = None
+            task.add_done_callback(lifecycle_done)
 
-    async def run(self, rid, coro):
+    async def run(self, rid, operation, message):
+        err = None
+        result = None
         try:
-            result = await coro
+            result = await operation(rid, message)
         except asyncio.CancelledError:
             return
         except Fail as f:
-            return self.reply(rid, err=f.err)
+            err = f.err
         except Exception as e:
-            return self.reply(rid, err=describe(e))
-        self.reply(rid, result)
+            err = describe(e)
+        if asyncio.current_task() not in self.cancelled:
+            self.reply(rid, result, err)
 
     def init(self, m):
         if self.inited:
@@ -296,8 +352,10 @@ class Worker:
                 raise ValueError("bad startup message")
             limits = m.get("limits") if isinstance(m.get("limits"), dict) else {}
             self.startup_timeout = clamp(limits.get("startup_timeout"), 10.0, 1.0, 60.0)
-            self.limits_applied, self.limits_reason = limit_data(clamp(limits.get("memory_mb"), 32, 16, 64))
-            paths = {k: pathlib.Path(d[k]) for k in DIR_KEYS}
+            paths = {k: None if k == "runtime" and d[k] is None else pathlib.Path(d[k]) for k in DIR_KEYS}
+            if not self.limits_configured:
+                self.limits_applied, self.limits_reason = limit_data(clamp(limits.get("memory_mb"), 32, 16, 64))
+                self.limits_configured = True
             store = self.store_module
             self.dirs = store.Dirs(**paths) if store is not None and hasattr(store, "Dirs") else Box(paths)
             meta = Box(m.get("meta") if isinstance(m.get("meta"), dict) else {})
@@ -340,14 +398,29 @@ class Worker:
         func = getattr(self.mod, name, None)
         if not callable(func):
             return False
+        async def checked():
+            try:
+                return await invoke(func, arg)
+            except (Exception, SystemExit) as e:
+                raise Fail(describe(e, stage))
+        task = self.loop.create_task(checked())
+        self.tasks.add(task)
+        self.hook_tasks.add(task)
+        def hook_done(done):
+            self.tasks.discard(done)
+            self.hook_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(hook_done)
         try:
-            await asyncio.wait_for(invoke(func, arg), limit)
-        except asyncio.TimeoutError:
-            raise failure("timeout", "%s hook timed out after %g s" % (name, limit), stage)
+            done, _ = await asyncio.wait((task,), timeout=limit)
+            if not done:
+                task.cancel()
+                raise failure("timeout", "%s hook timed out after %g s" % (name, limit), stage)
+            task.result()
         except asyncio.CancelledError:
+            task.cancel()
             raise
-        except (Exception, SystemExit) as e:
-            raise Fail(describe(e, stage))
         return True
 
     async def op_startup(self, rid, m):
@@ -360,6 +433,8 @@ class Worker:
         return {"hooks": hooks, "migrated": self.migrated, "limits_applied": self.limits_applied, "limits_reason": self.limits_reason}
 
     async def op_migrate(self, rid, m):
+        if self.ready:
+            raise failure("stage", "backend already started", "migrate")
         self.init(m)
         ctx = self.context(from_version=m.get("from_version"), to_version=m.get("to_version"), data_from=m.get("data_from"), data_to=m.get("data_to"))
         ran = await self.hook("migrate", ctx, self.startup_timeout, "migrate")
@@ -375,8 +450,6 @@ class Worker:
     async def op_call(self, rid, m):
         if not self.ready:
             raise failure("not_ready", "backend is not started")
-        if len(self.calls) > CALLS_MAX:
-            raise failure("busy", "too many calls running")
         func = getattr(self.mod, "call", None)
         if not callable(func):
             raise failure("exception", "backend has no call()")
@@ -399,18 +472,30 @@ class Worker:
         return result
 
     async def op_unload(self, rid, m):
+        self.closing = True
+        self.ready = False
         reason = m.get("reason") if isinstance(m.get("reason"), str) else "reload"
         err = None
+        others = [t for t in self.tasks if t is not asyncio.current_task()]
+        self.cancelled.update(self.calls.values())
+        for task in others:
+            task.cancel()
+        for fut in tuple(self.waiting.values()):
+            fut.cancel()
+        self.waiting.clear()
         if self.inited:
             try:
                 await self.hook("unload", reason, 3.0, "unload")
             except Fail as f:
                 err = f.err
-        others = [t for t in self.tasks if t is not asyncio.current_task()]
+        others = [t for t in self.tasks if t is not asyncio.current_task() and not t.done()]
         for task in others:
             task.cancel()
         if others:
             await asyncio.wait(others, timeout=1.0)
+        for fut in tuple(self.waiting.values()):
+            fut.cancel()
+        self.waiting.clear()
         close = getattr(getattr(self.sdk, "log", None), "close", None)
         if callable(close):
             try:
@@ -422,18 +507,27 @@ class Worker:
 
     def read(self, fd):
         stream = os.fdopen(fd, "rb")
-        while True:
-            line = stream.readline(READ_MAX)
-            if not line:
-                leave(0)
-            if not line.endswith(b"\n"):
-                if len(line) >= READ_MAX:
-                    self.die("too_large", "line too large")
-                leave(0)
-            try:
-                self.loop.call_soon_threadsafe(self.on_line, line)
-            except RuntimeError:
-                return
+        try:
+            while True:
+                line = stream.readline(READ_MAX)
+                if not line:
+                    break
+                if not line.endswith(b"\n"):
+                    if len(line) >= READ_MAX:
+                        self.die("too_large", "line too large")
+                    break
+                try:
+                    self.loop.call_soon_threadsafe(self.on_line, line)
+                except RuntimeError:
+                    return
+        except OSError:
+            pass
+        finally:
+            stream.close()
+        try:
+            self.loop.call_soon_threadsafe(self.term)
+        except RuntimeError:
+            leave(0)
 
 
 def main():
@@ -453,11 +547,16 @@ def main():
             pass
     if hasattr(os, "nice"):
         try:
-            os.nice(19)
+            os.nice(max(0, 19 - os.nice(0)))
         except OSError:
             pass
     limit_boot()
-    privileges()
+    safe, reason = privileges()
+    if not safe:
+        worker = Worker(None, wfd)
+        worker.reply(0, err=fy_proto.error("exception", reason, stage="import"))
+        leave(3)
+        return
     sdk_module, store_module = optional("fy_sdk"), optional("fy_store")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

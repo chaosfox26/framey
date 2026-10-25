@@ -284,6 +284,82 @@ class PrivilegedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r["code"], "protected")
         self.assertEqual(self.sudo_calls(), [])
 
+    async def test_signed_package_version_must_match_the_selected_release_before_swap(self):
+        loader = await self.start()
+        data = H.mktar({"plugin.json": meta("1.2.0", loader.priv), "main.js": "NEW"})
+        loader.net.routes[DL + "relpkg.tar.gz"] = data
+        loader.net.routes[DL + "relpkg.tar.gz.sig"] = self.sign(data)
+        before = self.tree(loader.dir)
+        result = await loader.core("update", "rel")
+        self.assertIn("error", result)
+        self.assertIn("version", result["error"].lower())
+        self.assertTrue(self.untouched(loader, before))
+        self.assertEqual(self.sudo_calls(), [])
+        self.assertEqual(loader.marker.read_text(), "1.0.0")
+
+    async def test_root_rollback_version_mismatch_keeps_the_user_copy_and_backup(self):
+        loader = await self.start()
+        self.assertEqual((await loader.core("update", "rel"))["ok"], "rel")
+        cfg = json.loads(self.cfg.read_text())
+        cfg["rollback"] = {"write": "0.9.0"}
+        self.cfg.write_text(json.dumps(cfg))
+        before = self.tree(loader.dir)
+        old = loader.plugins / ".old-rel"
+        previous = self.tree(old)
+        result = await loader.core("rollback", "rel")
+        self.assertIn("error", result)
+        self.assertEqual(self.tree(loader.dir), before)
+        self.assertEqual(self.tree(old), previous)
+        self.assertEqual(loader.marker.read_text(), "0.9.0")
+        self.assertIsNotNone(loader.fy.pending("rel"))
+
+    @unittest.skipUnless(os.name == "posix", "directory links require POSIX in this fixture")
+    async def test_protected_rollback_restores_an_accepted_linked_destination_basename(self):
+        loader = await self.start()
+        destination = loader.home / "Fan Control"
+        loader.dir.rename(destination)
+        loader.dir.symlink_to(destination, target_is_directory=True)
+        self.assertEqual(loader.fy.real("rel"), destination)
+        self.assertEqual((await loader.core("update", "rel"))["ok"], "rel")
+        result = await loader.core("rollback", "rel")
+        self.assertEqual(result, {"ok": "rel"})
+        self.assertTrue(loader.dir.is_symlink())
+        self.assertEqual((destination / "main.js").read_text(), "OLD")
+        self.assertEqual(loader.marker.read_text(), "1.0.0")
+        self.assertFalse(destination.with_name(".old-" + destination.name).exists())
+
+    async def test_newer_root_release_stays_pending_instead_of_reporting_success(self):
+        loader = await self.start()
+        cfg = json.loads(self.cfg.read_text())
+        cfg["update"] = {"write": "1.2.0"}
+        self.cfg.write_text(json.dumps(cfg))
+        for operation in ("update", "retry"):
+            result = await loader.core(operation, "rel")
+            self.assertIn("Partial update", result["error"])
+            self.assertEqual((loader.dir / "main.js").read_text(), "NEW")
+            self.assertEqual(json.loads((loader.dir / "plugin.json").read_text())["version"], "1.1.0")
+            self.assertEqual(loader.marker.read_text(), "1.2.0")
+            self.assertIsNotNone(loader.fy.pending("rel"))
+            self.assertTrue((loader.plugins / ".old-rel").is_dir())
+
+    @unittest.skipUnless(os.name == "posix", "directory links require POSIX in this fixture")
+    async def test_invalid_user_backup_is_refused_before_root_rollback(self):
+        loader = await self.start()
+        self.assertEqual((await loader.core("update", "rel"))["ok"], "rel")
+        old = loader.plugins / ".old-rel"
+        retained = loader.home / "retained-backup"
+        old.rename(retained)
+        old.symlink_to(retained, target_is_directory=True)
+        before = self.tree(loader.dir)
+        result = await loader.core("rollback", "rel")
+        self.assertIn("error", result)
+        self.assertEqual(self.sudo_calls()[0]["argv"][1:], ["update"])
+        self.assertEqual(len(self.sudo_calls()), 1)
+        self.assertEqual(loader.marker.read_text(), "1.1.0")
+        self.assertEqual(self.tree(loader.dir), before)
+        self.assertTrue(old.is_symlink())
+        self.assertEqual((retained / "main.js").read_text(), "OLD")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ FILE_MAX = 65536
 READ_MAX = 262144
 LIST_MAX = 200
 ID = re.compile(r"[a-z0-9_-]{1,32}")
+RESERVED = frozenset(("_core", "core", "modules", "settings", "store", "discover", "developer", "dev", "decky-store"))
 LOCALE = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?")
 VERSION = re.compile(r"[0-9A-Za-z.+~_-]{0,40}")
 TARGET = re.compile(r"[a-z0-9_-]{1,24}")
@@ -27,7 +28,7 @@ class StateError(Exception):
 
 
 def _id(v):
-    return isinstance(v, str) and ID.fullmatch(v) is not None
+    return isinstance(v, str) and ID.fullmatch(v) is not None and v not in RESERVED
 
 
 def _int(v, lo, hi):
@@ -213,8 +214,9 @@ SAVED_CORRUPT = 3
 def keep_bad(path, raw):
     bad = Path(str(path) + ".bad")
     try:
-        if not bad.exists():
-            bad.write_bytes(raw)
+        fd = os.open(str(bad), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
     except OSError:
         pass
 
@@ -276,10 +278,13 @@ def repair(path):
     _UNREADABLE.pop(key, None)
     pat = re.compile(re.escape(path.name) + r"\.corrupt-(\d+)")
     kept = []
-    for p in path.parent.iterdir():
-        m = pat.fullmatch(p.name)
-        if m and p.is_file():
-            kept.append((int(m.group(1)), p))
+    try:
+        for p in path.parent.iterdir():
+            m = pat.fullmatch(p.name)
+            if m and p.is_file() and not p.is_symlink():
+                kept.append((int(m.group(1)), p))
+    except OSError:
+        return {"ok": True}
     for _, p in sorted(kept, key=lambda t: t[0])[:-SAVED_CORRUPT]:
         try:
             p.unlink()
@@ -293,10 +298,13 @@ def save(path, state):
         raise StateError("state must be an object", "bad_state")
     if os.path.abspath(str(path)) in _UNREADABLE:
         raise StateError("settings could not be read; not overwriting them", "unreadable")
+    load(path)
+    if os.path.abspath(str(path)) in _UNREADABLE:
+        raise StateError("settings could not be read; not overwriting them", "unreadable")
     clean = validate(state)[0]
     try:
-        data = json.dumps(clean, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    except (TypeError, ValueError):
+        data = json.dumps(clean, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, RecursionError, OverflowError):
         raise StateError("state is not serialisable", "bad_state") from None
     if len(data) > FILE_MAX:
         raise StateError("state too large", "too_large")
@@ -378,10 +386,11 @@ def set_order(state, ids):
 
 
 def move(state, rows, pid, delta):
+    _need_id(pid)
     names = _names(rows)
     if pid not in names:
         raise StateError("module not found", "not_found")
-    if isinstance(delta, bool) or delta not in (1, -1):
+    if not _int(delta, -1, 1) or delta == 0:
         raise StateError("delta must be 1 or -1", "bad_value")
     cur = _custom(names, state)
     i = cur.index(pid)

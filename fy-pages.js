@@ -2,7 +2,7 @@
   const FY = __FY;
   if (!FY || FY.panelPages) return;
   const MAX = 8;
-  const RESERVED = ["modules", "settings", "discover", "developer"];
+  const RESERVED = ["core", "modules", "settings", "store", "discover", "developer", "dev"];
   const ID = /^[A-Za-z0-9_.-]{1,40}$/;
   const ZONES = new Map([
     ["corner", "position:fixed;right:16px;bottom:16px;z-index:99991;display:flex;flex-direction:column;align-items:flex-end;gap:8px"],
@@ -33,21 +33,53 @@
     return z;
   };
   const ctx = e => ({ id: e.id, plugin: e.plugin, mode: e.mode, api: e.api, close: () => leave(e) });
+  const rendered = (el, layer) => {
+    for (let node = el; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" || style.contentVisibility === "hidden") return false;
+      if (node === layer) return true;
+    }
+    return false;
+  };
+  const focusable = layer => [...layer.querySelectorAll("button,input,select,textarea,a[href],[tabindex],[contenteditable='true']")]
+    .filter(el => el.tabIndex >= 0 && !el.matches(":disabled") && !el.closest("[hidden],[inert],[aria-hidden='true']") && rendered(el, layer));
+  const top = () => full[full.length - 1];
+  const syncFull = () => full.forEach(e => {
+    const active = e === top();
+    e.layer.toggleAttribute("inert", !active);
+    e.layer.setAttribute("aria-modal", String(active));
+    if (active) e.layer.removeAttribute("aria-hidden");
+    else e.layer.setAttribute("aria-hidden", "true");
+  });
+  const focusFull = (e, preferred) => {
+    const items = focusable(e.layer);
+    const to = items.includes(preferred) ? preferred : items[0] || e.layer;
+    safe(() => to.focus());
+  };
   const finish = e => {
     if (!e.shown) return;
+    const modal = e.mode === "full", wasTop = e === top(), reopen = modal && e.panel;
+    const from = e.from;
     e.shown = false;
+    e.generation++;
+    e.panel = false;
     full = full.filter(x => x !== e);
     if (e.layer) { e.layer.remove(); e.layer = null; }
-    if (e.from && e.from.isConnected) safe(() => e.from.focus());
+    if (reopen && full.length) full[0].panel = true;
+    syncFull();
+    if (modal && top()) {
+      if (wasTop || !top().layer.contains(document.activeElement)) focusFull(top(), from);
+    } else {
+      if (reopen && FY.open) safe(FY.open);
+      if (from && from.isConnected) safe(() => from.focus());
+    }
     e.from = null;
     if (e.onclose) safe(e.onclose);
   };
   const leave = e => {
-    const was = e.shown, reopen = e.panel;
-    e.panel = false;
+    const was = e.shown;
     finish(e);
     if (was && e.mode === "panel" && FY.open) safe(FY.open, e.plugin);
-    else if (reopen && FY.open) safe(FY.open);
   };
   const drop = (e, quiet) => {
     finish(e);
@@ -70,10 +102,20 @@
     layer.setAttribute("role", "dialog");
     layer.setAttribute("aria-modal", "true");
     layer.setAttribute("aria-label", e.title);
+    layer.tabIndex = -1;
     layer.addEventListener("keydown", ev => {
-      if (ev.key !== "Escape") return;
-      ev.stopPropagation();
-      leave(e);
+      if (e !== top()) return;
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        leave(e);
+      } else if (ev.key === "Tab") {
+        const items = focusable(layer), first = items[0] || layer, last = items[items.length - 1] || layer;
+        if (!items.includes(document.activeElement) || ev.shiftKey && document.activeElement === first || !ev.shiftKey && document.activeElement === last) {
+          ev.preventDefault();
+          (ev.shiftKey ? last : first).focus();
+        }
+      }
     });
     const body = FY.el("");
     const b = back(e);
@@ -83,12 +125,26 @@
     e.layer = layer;
     e.shown = true;
     full.push(e);
+    syncFull();
     b.focus();
-    try { e.render(body, ctx(e)); } catch (x) {
-      leave(e);
-      safe(() => FY.fail(e.plugin, x));
-    }
+    render(e, body);
     return true;
+  };
+  const render = (e, box) => {
+    const generation = ++e.generation;
+    const failed = error => {
+      if (pages.get(e.key) !== e || !e.shown || e.generation !== generation) return;
+      if (e.mode === "full") leave(e);
+      else {
+        box.textContent = "Module error: " + String(error && error.message || error);
+        finish(e);
+      }
+      safe(() => FY.fail(e.plugin, error));
+    };
+    try {
+      const result = e.render(box, ctx(e));
+      if (result && typeof result.then === "function") Promise.resolve(result).catch(failed);
+    } catch (error) { failed(error); }
   };
   const tab = e => e.tab || (e.tab = {
     id: e.key,
@@ -96,7 +152,11 @@
     name: e.title,
     short: e.title.split(" ")[0],
     leave: () => finish(e),
-    render(box) { e.shown = true; e.render(box, ctx(e)); },
+    render(box) {
+      if (pages.get(e.key) !== e || e.p.dead) return;
+      e.shown = true;
+      render(e, box);
+    },
   });
   Object.defineProperty(FY, "pages", { value: FY.pages || {} });
   Object.defineProperty(FY, "panelPages", { value: () => FY.plugins.flatMap(p => [...pages.values()].filter(e => e.mode === "panel" && e.p === p).map(tab)) });
@@ -141,6 +201,7 @@
           render: o.render,
           onclose: typeof o.onclose === "function" ? o.onclose : null,
           shown: false,
+          generation: 0,
           layer: null,
           tab: null,
         };
@@ -172,7 +233,15 @@
         m.el.dataset.fyMount = id;
         mounts.set(id, m);
         zone(name).append(m.el);
-        try { o.render(m.el); } catch (x) {
+        const failed = error => {
+          if (mounts.get(id) !== m || p.dead) return;
+          unmount(m);
+          safe(() => FY.fail(pid, error));
+        };
+        try {
+          const result = o.render(m.el);
+          if (result && typeof result.then === "function") Promise.resolve(result).catch(failed);
+        } catch (x) {
           unmount(m);
           safe(() => FY.fail(pid, x));
           return err(String(x && x.message || x));

@@ -375,10 +375,10 @@ t("no api.cleanup: dispose still resolves null through api.on", async () => {
   assert.equal(d.querySelector('[role="dialog"]'), null);
 });
 
-t("pick on a disposed module rejects with a clear error and opens no dialog", async () => {
+t("pick on a disposed module resolves null and opens no dialog", async () => {
   const { api, FY, d } = boot();
   FY.dispose("t", TOK);
-  await assert.rejects(api.pickFile(), /module disposed/);
+  assert.equal(await api.pickFile(), null);
   assert.equal(d.querySelector('[role="dialog"]'), null);
 });
 
@@ -564,6 +564,240 @@ t("each dismissed pick releases its cleanup registration: 300 picks in a row all
 t("no K.ready hook call is left in fy-picker.js", () => {
   const fs = require("fs"), path = require("path");
   assert.ok(!/K\.ready/.test(fs.readFileSync(path.join(require("./harness").ROOT, "fy-picker.js"), "utf8")));
+});
+
+
+t("folder Select stays disabled until a usable location has loaded", async () => {
+  const { api, sim, view, button } = boot();
+  let release;
+  sim.delay[""] = new Promise(r => { release = r; });
+  const p = api.pickFolder();
+  assert.equal(button("Select").getAttribute("aria-disabled"), "true");
+  assert.equal(view().getAttribute("aria-busy"), "true");
+  button("Select").click();
+  assert.ok(view());
+  await settle();
+  release();
+  await settle();
+  assert.equal(view().getAttribute("aria-busy"), "false");
+  assert.equal(button("Select").getAttribute("aria-disabled"), "false");
+  button("Select").click();
+  assert.deepEqual(await p, { root: "data", path: "" });
+});
+
+t("navigation cannot confirm the previously displayed folder while loading", async () => {
+  const { api, sim, row, view, button } = boot();
+  const p = api.pickFolder();
+  await settle();
+  let release;
+  sim.delay.Downloads = new Promise(r => { release = r; });
+  row("Downloads").click();
+  assert.equal(button("Select").getAttribute("aria-disabled"), "true");
+  button("Select").click();
+  assert.ok(view());
+  await settle();
+  release();
+  await settle();
+  button("Select").click();
+  assert.deepEqual(await p, { root: "data", path: "Downloads" });
+});
+
+t("loading another location clears a selected file immediately", async () => {
+  const { api, sim, row, button, view } = boot();
+  const p = api.pickFile({ root: "data", path: "Downloads" });
+  await settle();
+  row("a.png").click();
+  assert.equal(button("Select").getAttribute("aria-disabled"), "false");
+  let release;
+  sim.delay[""] = new Promise(r => { release = r; });
+  button("Up").click();
+  assert.equal(button("Select").getAttribute("aria-disabled"), "true");
+  row("a.png").click();
+  assert.equal(button("Select").getAttribute("aria-disabled"), "true");
+  button("Cancel").click();
+  assert.equal(await p, null);
+  release();
+  await settle();
+  assert.equal(view(), null);
+});
+
+t("request failures remain cancellable and can retry", async () => {
+  const { api, sim, view, button, errLine } = boot();
+  sim.errors[""] = "Connection unavailable";
+  const p = api.pickFolder();
+  await settle();
+  assert.equal(errLine().textContent, "Connection unavailable");
+  assert.equal(view().getAttribute("aria-busy"), "false");
+  assert.equal(button("Select").getAttribute("aria-disabled"), "true");
+  assert.ok(button("Retry"));
+  delete sim.errors[""];
+  button("Retry").click();
+  await settle();
+  assert.equal(button("Retry"), undefined);
+  assert.equal(button("Select").getAttribute("aria-disabled"), "false");
+  button("Cancel").click();
+  assert.equal(await p, null);
+});
+
+t("Retry repeats the failed location instead of the previous location", async () => {
+  const { api, sim, row, button, view } = boot();
+  sim.errors.Downloads = "Try again when the drive is ready";
+  const p = api.pickFolder();
+  await settle();
+  row("Downloads").click();
+  await settle();
+  assert.equal(button("Select").getAttribute("aria-disabled"), "true");
+  delete sim.errors.Downloads;
+  button("Retry").click();
+  await settle();
+  assert.equal(sim.calls[sim.calls.length - 1].arg.path, "Downloads");
+  assert.ok(view().textContent.includes("data / Downloads"));
+  button("Select").click();
+  assert.deepEqual(await p, { root: "data", path: "Downloads" });
+});
+
+t("Tab and Shift+Tab remain inside the picker", async () => {
+  const { api, w, d, button, key } = boot();
+  const outside = d.body.appendChild(d.createElement("button"));
+  outside.focus();
+  const p = api.pickFolder();
+  await settle();
+  button("Select").focus();
+  const forward = key(button("Select"), "Tab");
+  assert.ok(forward.defaultPrevented);
+  assert.equal(d.activeElement, button("data"));
+  const backward = new w.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+  button("data").dispatchEvent(backward);
+  assert.ok(backward.defaultPrevented);
+  assert.equal(d.activeElement, button("Select"));
+  button("Cancel").click();
+  assert.equal(await p, null);
+  assert.equal(d.activeElement, outside);
+});
+
+
+t("Tab ignores hidden, inert, and disabled ancestors", async () => {
+  const { api, d, button, row, key } = boot();
+  const p = api.pickFolder();
+  await settle();
+  const roots = button("data").parentElement;
+  for (const state of ["css", "aria", "inert", "disabled"]) {
+    if (state === "css") roots.style.display = "none";
+    if (state === "aria") roots.setAttribute("aria-hidden", "true");
+    if (state === "inert") roots.setAttribute("inert", "");
+    if (state === "disabled") roots.setAttribute("aria-disabled", "true");
+    button("Select").focus();
+    const event = key(button("Select"), "Tab");
+    assert.ok(event.defaultPrevented, state);
+    assert.equal(d.activeElement, row("<b>x</b>"), state);
+    roots.style.display = "";
+    roots.removeAttribute("aria-hidden");
+    roots.removeAttribute("inert");
+    roots.removeAttribute("aria-disabled");
+  }
+  button("Cancel").click();
+  await p;
+});
+
+t("Tab recovers when its focused control becomes hidden", async () => {
+  const { api, d, button, row, key } = boot();
+  const p = api.pickFolder();
+  await settle();
+  const roots = button("data").parentElement;
+  button("data").focus();
+  roots.style.visibility = "hidden";
+  const event = key(button("data"), "Tab");
+  assert.ok(event.defaultPrevented);
+  assert.equal(d.activeElement, row("<b>x</b>"));
+  button("Cancel").click();
+  await p;
+});
+
+
+t("immediate dismissal does not send a listing for the closed picker", async () => {
+  const { api, sim, button } = boot();
+  const p = api.pickFolder();
+  button("Cancel").click();
+  assert.equal(await p, null);
+  await settle();
+  assert.equal(sim.calls.length, 0);
+});
+
+
+const coreRoutes = ({ FY, d }) => {
+  FY.pages = {
+    store: { render(box) { const b = d.createElement("button"); b.dataset.pickOpener = "true"; b.textContent = "Pick from Store"; box.append(b); } },
+    decky_store: { render(box) { const b = d.createElement("button"); b.dataset.nextRoute = "true"; b.textContent = "Decky Store is current"; box.append(b); } },
+  };
+  FY.open("#discover");
+  const opener = d.querySelector("[data-pick-opener]");
+  opener.focus();
+  return opener;
+};
+
+t("switching core Store routes cancels a pending picker and ignores its listing", async () => {
+  const e = boot();
+  coreRoutes(e);
+  let release, result = "pending";
+  e.sim.delay[""] = new Promise(r => { release = r; });
+  const p = e.api.pickFile().then(v => { result = v; });
+  await settle();
+  const sent = e.sim.calls.filter(c => c.method === "files_list").length;
+  assert.equal(sent, 1);
+  e.FY.open("#decky-store");
+  await settle();
+  assert.equal(result, null);
+  assert.equal(e.view(), null);
+  assert.equal(e.d.activeElement, e.d.querySelector("[data-next-route]"));
+  release();
+  await settle();
+  assert.equal(e.sim.calls.filter(c => c.method === "files_list").length, sent);
+  assert.equal(e.view(), null);
+  await p;
+});
+
+t("hiding the opener's view cancels the picker without restoring hidden focus", async () => {
+  const e = boot();
+  const wrapper = e.d.createElement("div"), opener = e.d.createElement("button");
+  wrapper.append(opener);
+  e.d.body.append(wrapper);
+  opener.focus();
+  let result = "pending";
+  const p = e.api.pickFolder().then(v => { result = v; });
+  await settle();
+  wrapper.setAttribute("aria-hidden", "true");
+  await settle();
+  assert.equal(result, null);
+  assert.equal(e.view(), null);
+  assert.notEqual(e.d.activeElement, opener);
+  await p;
+});
+
+t("a view removed before the queued request sends cannot retain that request", async () => {
+  const e = boot();
+  const opener = coreRoutes(e);
+  let result = "pending";
+  const p = e.api.pickFolder().then(v => { result = v; });
+  opener.remove();
+  await settle();
+  assert.equal(result, null);
+  assert.equal(e.view(), null);
+  assert.equal(e.sim.calls.filter(c => c.method === "files_list").length, 0);
+  await p;
+});
+
+t("closing the underlying Framey panel cancels its open picker", async () => {
+  const e = boot();
+  const opener = coreRoutes(e);
+  let result = "pending";
+  const p = e.api.pickFolder().then(v => { result = v; });
+  await settle();
+  e.FY.toggle();
+  await settle();
+  assert.equal(result, null);
+  assert.equal(e.view(), null);
+  assert.notEqual(e.d.activeElement, opener);
+  await p;
 });
 
 (async () => {

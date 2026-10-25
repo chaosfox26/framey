@@ -84,7 +84,7 @@ class ImportTests(unittest.TestCase):
             fy = loader.fy
             have = {f.name for f in REPO.iterdir() if f.is_file() and (f.name.startswith("fy_") and f.suffix == ".py" or f.name.startswith("fy-") and f.suffix == ".js")}
             self.assertEqual(have - set(fy.MANIFEST), set())
-            self.assertEqual(set(fy.MANIFEST) - have - set(fy.LEGACY), set())
+            self.assertEqual(set(fy.MANIFEST) - have - set(fy.LEGACY), {"catalog/index.json"})
             for name in fy.LEGACY:
                 self.assertIn(name, fy.MANIFEST)
             self.assertEqual(len(fy.MANIFEST), len(set(fy.MANIFEST)))
@@ -148,7 +148,7 @@ class DegradeTests(unittest.IsolatedAsyncioTestCase):
         net = loader.net
         net.json("chaosfox26/framey/releases/latest", {"tag_name": "v9.0.0", "body": "n"})
         net.commit("chaosfox26", "framey", "v9.0.0", "b" * 40)
-        full = {f.name: f.read_text() for f in H.repo_files()}
+        full = H.full_tree()
         net.archive("chaosfox26", "framey", "b" * 40, H.mkzip(full, top="framey-" + "b" * 40))
         r = await loader.core("loader_update")
         self.assertEqual(r, {"ok": "framey", "tag": "v9.0.0", "restart": True})

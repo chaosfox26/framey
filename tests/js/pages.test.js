@@ -601,6 +601,279 @@ test("full pages close in LIFO order: Escape leaves the top page and the one und
   eq(layers(), []);
 });
 
+test("page ids reserve the same core names as the loader", () => {
+  const e = make(), api = e.plugin("a");
+  ["core", "store", "dev", "modules", "settings", "discover", "developer"].forEach(id => {
+    eq(api.pages.register({ id, render() {} }), { error: "invalid or reserved page id" });
+  });
+});
+
+test("full pages contain keyboard focus and only the top page handles Escape", () => {
+  const e = make(), api = e.plugin("a");
+  const under = api.pages.register({ id: "under", mode: "full", render() {} });
+  const top = api.pages.register({ id: "top", mode: "full", render(box) {
+    const input = e.d.createElement("input");
+    box.append(input);
+  } });
+  under.open();
+  top.open();
+  const layers = [...e.d.querySelectorAll('[role="dialog"]')];
+  assert.strictEqual(layers[0].hasAttribute("inert"), true);
+  assert.strictEqual(layers[0].getAttribute("aria-hidden"), "true");
+  assert.strictEqual(layers[0].getAttribute("aria-modal"), "false");
+  const first = layers[1].querySelector('[role="button"]'), last = layers[1].querySelector("input");
+  first.focus();
+  let key = new e.w.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+  first.dispatchEvent(key);
+  assert.strictEqual(key.defaultPrevented, true);
+  assert.strictEqual(e.d.activeElement, last);
+  key = new e.w.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+  last.dispatchEvent(key);
+  assert.strictEqual(key.defaultPrevented, true);
+  assert.strictEqual(e.d.activeElement, first);
+  layers[0].dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.strictEqual(e.d.querySelectorAll('[role="dialog"]').length, 2);
+  let propagated = false;
+  e.d.addEventListener("keydown", () => { propagated = true; });
+  key = new e.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  layers[1].dispatchEvent(key);
+  assert.strictEqual(key.defaultPrevented, true);
+  assert.strictEqual(propagated, false);
+  assert.strictEqual(layers[0].hasAttribute("inert"), false);
+  assert.strictEqual(layers[0].hasAttribute("aria-hidden"), false);
+  assert.strictEqual(layers[0].contains(e.d.activeElement), true);
+});
+
+test("full-page focus boundaries ignore controls inside CSS-hidden wrappers", () => {
+  for (const css of ["display:none", "visibility:hidden", "visibility:collapse", "content-visibility:hidden"]) {
+    const e = make(), api = e.plugin("a");
+    let visible, hidden;
+    api.pages.register({ id: "full", mode: "full", render(box) {
+      visible = e.d.createElement("button");
+      const wrapper = e.d.createElement("div"), inner = e.d.createElement("div");
+      wrapper.style.cssText = css;
+      hidden = e.d.createElement("button");
+      inner.append(hidden);
+      wrapper.append(inner);
+      box.append(visible, wrapper);
+    } }).open();
+    const layer = e.d.querySelector('[role="dialog"]'), first = layer.querySelector('[role="button"]');
+    visible.focus();
+    let key = new e.w.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    visible.dispatchEvent(key);
+    assert.strictEqual(key.defaultPrevented, true, css);
+    assert.strictEqual(e.d.activeElement, first, css);
+    key = new e.w.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+    first.dispatchEvent(key);
+    assert.strictEqual(key.defaultPrevented, true, css);
+    assert.strictEqual(e.d.activeElement, visible, css);
+    assert.notStrictEqual(e.d.activeElement, hidden, css);
+  }
+});
+
+test("closing a full page falls back when its opener is no longer focusable", () => {
+  const e = make(), api = e.plugin("a");
+  let opener;
+  const under = api.pages.register({ id: "under", mode: "full", render(box) {
+    opener = e.d.createElement("button");
+    box.append(opener);
+  } });
+  const top = api.pages.register({ id: "top", mode: "full", render() {} });
+  under.open();
+  const layer = e.d.querySelector('[role="dialog"]');
+  opener.focus();
+  top.open();
+  opener.disabled = true;
+  top.close();
+  assert.strictEqual(layer.contains(e.d.activeElement), true);
+  assert.notStrictEqual(e.d.activeElement, opener);
+  assert.strictEqual(e.d.activeElement.getAttribute("role"), "button");
+});
+
+test("closing a covered full page keeps focus above it and restores the panel after the last page", () => {
+  const e = make(), api = e.plugin("a");
+  let panel = true;
+  Object.defineProperty(e.FY, "panelOpen", { get: () => panel, configurable: true });
+  e.FY.toggle = () => { panel = !panel; };
+  const under = api.pages.register({ id: "under", mode: "full", render() {} });
+  const top = api.pages.register({ id: "top", mode: "full", render() {} });
+  under.open();
+  top.open();
+  const active = e.d.activeElement;
+  under.remove();
+  assert.strictEqual(e.d.activeElement, active);
+  assert.strictEqual(e.opened.length, 0);
+  top.remove();
+  assert.strictEqual(e.opened.length, 1);
+  assert.strictEqual(e.d.querySelector('[role="dialog"]'), null);
+});
+
+test("removing or disposing a full page restores the panel it hid", () => {
+  for (const dispose of [false, true]) {
+    const e = make(), api = e.plugin("a");
+    let panel = true;
+    Object.defineProperty(e.FY, "panelOpen", { get: () => panel, configurable: true });
+    e.FY.toggle = () => { panel = !panel; };
+    const page = api.pages.register({ id: "full", mode: "full", render() {} });
+    page.open();
+    if (dispose) e.FY.dispose("a", TOK);
+    else page.remove();
+    assert.strictEqual(e.opened.length, 1);
+    assert.strictEqual(e.d.querySelector('[role="dialog"]'), null);
+  }
+});
+
+test("a rejected full render closes the page and calls onclose once", async () => {
+  const e = make(), api = e.plugin("a");
+  let reject, closed = 0;
+  api.pages.register({ id: "full", mode: "full", render() { return new Promise((resolve, no) => { reject = no; }); }, onclose() { closed++; } }).open();
+  reject(new Error("render unavailable"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(closed, 1);
+  assert.strictEqual(api.pages.list()[0].open, false);
+  assert.strictEqual(e.d.querySelector('[role="dialog"]'), null);
+});
+
+test("late render rejection cannot close a reopened full page", async () => {
+  const e = make(), api = e.plugin("a");
+  let reject, renders = 0;
+  const page = api.pages.register({ id: "full", mode: "full", render() {
+    if (!renders++) return new Promise((resolve, no) => { reject = no; });
+  } });
+  page.open();
+  page.close();
+  page.open();
+  const current = e.d.querySelector('[role="dialog"]');
+  reject(new Error("old render failed"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(e.d.querySelector('[role="dialog"]'), current);
+  assert.strictEqual(api.pages.list()[0].open, true);
+});
+
+test("panel render errors reset shown state and contain their message", () => {
+  const e = make(), api = e.plugin("a");
+  let closed = 0;
+  api.pages.register({ id: "bad", render() { throw new Error("panel render failed"); }, onclose() { closed++; } });
+  const box = e.d.createElement("div");
+  e.FY.panelPages()[0].render(box);
+  assert.strictEqual(box.textContent, "Module error: panel render failed");
+  assert.strictEqual(api.pages.list()[0].open, false);
+  assert.strictEqual(closed, 1);
+});
+
+test("late panel render rejection cannot reset a newer rendered page", async () => {
+  const e = make(), api = e.plugin("a");
+  let reject, renders = 0;
+  api.pages.register({ id: "panel", render(box) {
+    box.textContent = "render " + ++renders;
+    if (renders === 1) return new Promise((resolve, no) => { reject = no; });
+  } });
+  const tab = e.FY.panelPages()[0], old = e.d.createElement("div"), current = e.d.createElement("div");
+  tab.render(old);
+  tab.render(current);
+  reject(new Error("old render failed"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(current.textContent, "render 2");
+  assert.strictEqual(api.pages.list()[0].open, true);
+});
+
+test("rejected mount renders clean up only the current mount", async () => {
+  const e = make(), api = e.plugin("a");
+  let reject;
+  const failed = api.global.mount("failed", { render() { return Promise.reject(new Error("mount failed")); } });
+  const old = api.global.mount("same", { render() { return new Promise((resolve, no) => { reject = no; }); } });
+  const current = api.global.mount("same", { render(el) { el.textContent = "current"; } });
+  reject(new Error("old render failed"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(failed.el.isConnected, false);
+  assert.strictEqual(old.el.isConnected, false);
+  assert.strictEqual(current.el.isConnected, true);
+  assert.strictEqual(current.el.textContent, "current");
+});
+
+test("removed panel tab objects cannot render or change lifecycle state", () => {
+  const e = make(), api = e.plugin("a");
+  let renders = 0;
+  const page = api.pages.register({ id: "panel", render() { renders++; } });
+  const tab = e.FY.panelPages()[0];
+  page.remove();
+  tab.render(e.d.createElement("div"));
+  assert.strictEqual(renders, 0);
+  eq(api.pages.list(), []);
+});
+
+const realCorePages = () => {
+  const h = makeDom({ loadFiles: ["fy-api.js", "fy-pages.js"] });
+  const FY = h.window.Framey, d = h.document;
+  FY.pages.store = { render(box) {
+    const button = d.createElement("button");
+    button.textContent = "Framey catalog action";
+    box.append(button);
+  } };
+  FY.pages.decky_store = { render(box) {
+    const button = d.createElement("button");
+    button.textContent = "Decky catalog action";
+    box.append(button);
+  } };
+  const panel = [...d.body.children].find(el => el.getAttribute("aria-label") === "Framey");
+  const content = panel.children[0];
+  return { h, FY, d, panel, content, current: () => FY._k(TOK).tab() };
+};
+
+test("full plugin pages restore the independent core catalog view on close, removal and disposal", () => {
+  for (const route of ["#discover", "#decky-store"]) {
+    for (const operation of ["close", "remove", "dispose"]) {
+      const e = realCorePages(), api = e.h.plugin("routing");
+      e.FY.open(route);
+      e.content.querySelector("button").focus();
+      const page = api.pages.register({ id: "details", mode: "full", render(box) { box.textContent = "Plugin details"; } });
+      page.open();
+      assert.strictEqual(e.panel.style.display, "none", route + " " + operation);
+      if (operation === "dispose") e.FY.dispose("routing", TOK);
+      else page[operation]();
+      assert.strictEqual(e.current(), route, route + " " + operation);
+      assert.strictEqual(e.panel.style.display, "flex", route + " " + operation);
+      assert.strictEqual(e.d.querySelector('[role="dialog"]'), null, route + " " + operation);
+      assert.strictEqual(e.content.textContent, route === "#discover" ? "Framey catalog action" : "Decky catalog action");
+      assert.strictEqual(e.panel.contains(e.d.activeElement), true, route + " " + operation);
+    }
+  }
+});
+
+test("switching core catalogs during a full plugin page preserves the newer route on return", () => {
+  for (const [from, to] of [["#discover", "#decky-store"], ["#decky-store", "#discover"]]) {
+    const e = realCorePages(), api = e.h.plugin("routing");
+    e.FY.open(from);
+    const page = api.pages.register({ id: "details", mode: "full", render() {} });
+    page.open();
+    e.FY.open(to);
+    assert.strictEqual(e.current(), to);
+    page.close();
+    assert.strictEqual(e.current(), to);
+    assert.strictEqual(e.content.textContent, to === "#discover" ? "Framey catalog action" : "Decky catalog action");
+    assert.strictEqual(e.panel.contains(e.d.activeElement), true);
+  }
+});
+
+test("a namespaced plugin page called decky-store does not collide with the core Decky Store route", () => {
+  const e = realCorePages(), api = e.h.plugin("routing");
+  const page = api.pages.register({ id: "decky-store", title: "Plugin catalog", render(box) { box.textContent = "Plugin-owned page"; } });
+  assert.strictEqual(typeof page.open, "function");
+  page.open();
+  assert.strictEqual(e.current(), "routing:decky-store");
+  assert.strictEqual(e.content.textContent, "Plugin-owned page");
+  e.FY.open("#decky-store");
+  assert.strictEqual(e.current(), "#decky-store");
+  assert.strictEqual(e.content.textContent, "Decky catalog action");
+  assert.strictEqual(api.pages.list()[0].open, false);
+  page.remove();
+  assert.strictEqual(e.current(), "#decky-store");
+  assert.strictEqual(e.content.textContent, "Decky catalog action");
+  e.FY.open("#discover");
+  assert.strictEqual(e.current(), "#discover");
+  assert.strictEqual(e.content.textContent, "Framey catalog action");
+});
+
 (async () => {
   let pass = 0;
   for (const [name, fn] of tests) {

@@ -7,6 +7,7 @@ const boot = (opts = {}) => {
   const env = makeDom({
     before(w) {
       w.FY_ICON_URL = "icon.svg";
+      if (opts.now) w.Date.now = () => opts.now.value;
       w.Element.prototype.getBoundingClientRect = function () {
         const width = this.tagName === "IMG" ? 50 : 300;
         return { left: 0, top: 0, right: width, bottom: 40, width, height: 40 };
@@ -198,6 +199,91 @@ t("dispose() removes the Framey button and its style", () => {
   bar.dispose();
   assert.equal(btn(), null);
   assert.equal(d.getElementById("fy-bar-style"), null);
+});
+
+t("badge updates only the owned button when another element has the same class", () => {
+  const { d, bar, btn } = boot();
+  const owned = btn();
+  const unrelated = d.createElement("div");
+  unrelated.className = "fy-bb";
+  unrelated.setAttribute("aria-label", "Other control");
+  d.body.prepend(unrelated);
+  bar.badge(4);
+  assert.equal(unrelated.getAttribute("aria-label"), "Other control");
+  assert.equal(unrelated.children.length, 0);
+  assert.equal(owned.getAttribute("aria-label"), "Framey, 4 updates");
+  assert.equal(owned.querySelectorAll(".fy-bdg").length, 1);
+});
+
+t("dispose removes the badge style and stale callbacks cannot affect a replacement", () => {
+  const { env, w, d, bar, btn } = boot();
+  const owned = btn();
+  bar.badge(4);
+  bar.dispose();
+  assert.equal(d.getElementById("fy-badge-style"), null);
+  assert.equal(w.FYBar, undefined);
+  assert.equal(w.FYObs, undefined);
+  const calls = env.calls.length;
+  owned.click();
+  bar.badge(8);
+  bar.set(true);
+  assert.equal(env.calls.length, calls);
+  env.load("bar.js");
+  env.load("fy-badge.js");
+  const replacement = w.FYBar;
+  const observer = w.FYObs;
+  replacement.badge(2);
+  bar.dispose();
+  bar.set(true);
+  bar.badge(9);
+  assert.equal(w.FYBar, replacement);
+  assert.equal(w.FYObs, observer);
+  assert.equal(d.querySelectorAll(".fy-bb").length, 1);
+  assert.equal(d.querySelector(".fy-bb").getAttribute("aria-label"), "Framey, 2 updates");
+  assert.equal(d.querySelector(".fy-bb").getAttribute("aria-pressed"), "false");
+  replacement.dispose();
+});
+
+t("Enter and Space activate the original toggle binding once per press", () => {
+  const { env, w, btn, bar } = boot();
+  for (const key of ["Enter", " "]) {
+    const press = new w.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    btn().dispatchEvent(press);
+    assert.ok(press.defaultPrevented);
+    btn().dispatchEvent(new w.KeyboardEvent("keydown", { key, repeat: true, bubbles: true }));
+  }
+  assert.equal(env.calls.length, 2);
+  env.calls.forEach(call => assert.deepEqual(call, { id: 0, plugin: "_core", method: "toggle" }));
+  bar.dispose();
+});
+
+t("attachment retries after the move budget without needing another page mutation", async () => {
+  const now = { value: 100000 };
+  const { env, bar, btn } = boot({ now });
+  const owned = btn();
+  for (let i = 0; i < 20; i++) {
+    owned.remove();
+    await new Promise(r => setImmediate(r));
+    env.clock.tick(300);
+  }
+  assert.equal(owned.isConnected, false);
+  now.value += 10001;
+  env.clock.tick(10001);
+  assert.equal(owned.isConnected, true);
+  assert.equal(owned.parentNode.children[1], owned);
+  bar.dispose();
+  assert.equal(env.clock.pending(), 0);
+});
+
+t("uncoercible badge values clear the indication without throwing", () => {
+  const { bar, btn, dots } = boot();
+  for (const value of [Symbol("unknown"), { valueOf() { throw new Error("bad count"); } }]) {
+    bar.badge(2);
+    assert.doesNotThrow(() => bar.badge(value));
+    assert.equal(dots().length, 0);
+    assert.equal(btn().getAttribute("aria-label"), "Framey");
+  }
+  bar.dispose();
 });
 
 (async () => {

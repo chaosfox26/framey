@@ -6,6 +6,8 @@
   let badge = null;
   let details = null;
   let ready = null;
+  let disposed = false;
+  let renderVersion = 0;
 
   const ask = (method, arg) => api.call(method, arg).then(r => r || {});
   const el = (css, text) => {
@@ -27,6 +29,7 @@
   };
 
   const say = text => {
+    if (disposed) return;
     state.note = text;
     paint(true);
     api.timeout(() => {
@@ -52,6 +55,7 @@
 
   const choose = () =>
     api.pickFile({ title: api.t("file.choose") }).then(r => {
+      if (disposed) return;
       state.file = r ? r.name : null;
       paint(true);
     });
@@ -70,7 +74,7 @@
   const apply = r => {
     if (r.error) return;
     if (typeof r.enabled === "boolean") state.enabled = r.enabled;
-    if (typeof r.level === "number") state.level = r.level;
+    if (Number.isInteger(r.level) && r.level >= 0 && r.level <= 100) state.level = r.level;
     if (MODES.includes(r.mode)) state.mode = r.mode;
   };
 
@@ -104,6 +108,7 @@
     if (!ready) {
       const langs = api.lang === "en" ? ["en"] : ["en", api.lang];
       ready = Promise.all(langs.map(l => api.i18n.load(l)).concat(ask("get"))).then(done => {
+        if (disposed) return;
         apply(done[done.length - 1]);
         setup();
       });
@@ -135,8 +140,17 @@
     paint(true);
   };
 
-  api = Framey.register({ render: box => boot().then(() => draw(box)) });
+  api = Framey.register({
+    render: box => {
+      const version = ++renderVersion;
+      return boot().then(() => {
+        if (!disposed && version === renderVersion) draw(box);
+      });
+    },
+  });
   api.cleanup(() => {
+    disposed = true;
+    renderVersion++;
     view = badge = details = null;
   });
 })();

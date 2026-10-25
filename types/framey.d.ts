@@ -1,3 +1,88 @@
+type FrameyUnsubscribe = () => void;
+type FrameyLogLevel = "debug" | "info" | "warning" | "error";
+type FrameyPageMode = "panel" | "full";
+type FrameyMountZone = "corner" | "overlay" | "bar";
+type FrameyTranslationVars = Readonly<Record<string, string | number>>;
+
+interface FrameyErrorResult {
+  error: string;
+  code?: string;
+}
+
+/** Backend calls and target operations resolve with errors; fetch/resource reject. */
+type FrameyResult<T> = T | FrameyErrorResult;
+
+/** The code can be absent for transport failures. */
+interface FrameyApiError extends Error {
+  code?: string;
+}
+
+/** Loader catalog UI terminology: unverified is displayed as "Not checked". */
+type FrameyCatalogCompatibilityStatus = "compatible" | "incompatible" | "unverified";
+type FrameyDeckyBinaryFormat = "ELF" | "PE" | "Mach-O";
+type FrameyDeckyBinaryArchitecture = "aarch64" | "x86_64" | "x86" | "arm" | "unknown";
+type FrameyDeckyArchiveArchitecture = "unknown" | "mixed" | "aarch64" | "x86_64" | "other";
+type FrameyDeckyArchitectureStatus = "unverified" | "incompatible" | "evidence_only";
+
+interface FrameyDeckyNativeBinary {
+  path: string;
+  format: FrameyDeckyBinaryFormat;
+  architecture: FrameyDeckyBinaryArchitecture;
+}
+
+interface FrameyDeckyCatalogSource {
+  id: "decky_stable" | "decky_testing";
+  label: string;
+  url: string;
+  format: "decky";
+}
+
+/** Internal loader inspection data; binary evidence does not verify runtime support. */
+interface FrameyDeckyArchiveAssessment {
+  state: "port_required";
+  status: "incompatible";
+  label: string;
+  architecture: FrameyDeckyArchiveArchitecture;
+  architecture_status: FrameyDeckyArchitectureStatus;
+  root_required: boolean;
+  native_binaries: FrameyDeckyNativeBinary[];
+  native_binary_count: number;
+  native_binaries_truncated: boolean;
+  target_platform: string;
+  runtime_verified: false;
+  basis: "static_package_inspection";
+  has_frontend: boolean;
+  has_backend: boolean;
+  flags: string[];
+  dependencies: string[];
+  hardware_assumptions: string[];
+  reasons: string[];
+  warnings: string[];
+  verified_sha256: true;
+  bytes: number;
+  files: number;
+  not_executed: true;
+}
+
+/** Core-only catalog_assess success; plugins have no catalog inspection method. */
+interface FrameyDeckyAssessmentReply {
+  id: string;
+  format: "decky";
+  read_only: true;
+  version: string;
+  hash: string;
+  source: FrameyDeckyCatalogSource;
+  artifact: string;
+  /** Lowercase SHA-256 identities validated by the loader. */
+  identity: string;
+  version_identity: string;
+  checked_at: number;
+  downloaded_at: number;
+  assessment: FrameyDeckyArchiveAssessment;
+}
+
+type FrameyDeckyAssessmentResult = FrameyResult<FrameyDeckyAssessmentReply>;
+
 interface FrameyRuntime {
   readonly framey: string;
   readonly api: number;
@@ -14,10 +99,12 @@ interface FrameyEventInfo {
   tab: string;
 }
 
+type FrameyEventHandler<T = unknown> = (payload: T, info: FrameyEventInfo) => void;
+
 interface FrameyEvents {
-  on(name: string, fn: (payload: any, info: FrameyEventInfo) => void): () => void;
-  once(name: string, fn: (payload: any, info: FrameyEventInfo) => void): () => void;
-  off(name: string, fn: (payload: any, info: FrameyEventInfo) => void): void;
+  on<T = unknown>(name: string, fn: FrameyEventHandler<T>): FrameyUnsubscribe;
+  once<T = unknown>(name: string, fn: FrameyEventHandler<T>): FrameyUnsubscribe;
+  off<T = unknown>(name: string, fn: FrameyEventHandler<T>): void;
 }
 
 interface FrameyNotifyAction {
@@ -41,7 +128,7 @@ interface FrameyNotification {
 }
 
 interface FrameyApiI18n {
-  add(lang: string, dict: Record<string, string>): number;
+  add(lang: string, dict: Readonly<Record<string, string>>): number;
   load(lang: string): Promise<boolean>;
 }
 
@@ -60,12 +147,13 @@ interface FrameyFetchResult {
   b64: string | null;
   bytes: number;
   truncated: boolean;
-  path: string | null;
+  path: null;
 }
 
 interface FrameyUiButtonOptions {
   label: string;
-  onclick?: (event: Event) => void;
+  /** Promise returns are observed for busy state and failure reporting. */
+  onclick?: (event: MouseEvent | KeyboardEvent) => void;
   disabled?: boolean;
   primary?: boolean;
   css?: string;
@@ -90,8 +178,11 @@ interface FrameyUiSliderOptions {
   format?: (value: number) => string;
 }
 
+type FrameyUiListId = string | number;
+type FrameyUiListSelection = FrameyUiListId | FrameyUiListId[] | null;
+
 interface FrameyUiListItem {
-  id?: string | number;
+  id?: FrameyUiListId;
   label: string;
   sub?: string;
   disabled?: boolean;
@@ -99,25 +190,63 @@ interface FrameyUiListItem {
 
 interface FrameyUiListOptions {
   items?: FrameyUiListItem[];
-  selected?: string | number | Array<string | number> | null;
-  onselect?: (value: any) => void;
+  selected?: FrameyUiListSelection;
+  onselect?: (value: FrameyUiListSelection) => void;
   multi?: boolean;
   empty?: string;
 }
 
+interface FrameyUiSingleListOptions extends Omit<FrameyUiListOptions, "selected" | "onselect" | "multi"> {
+  selected?: FrameyUiListId | null;
+  onselect?: (value: FrameyUiListId | null) => void;
+  multi?: false;
+}
+
+interface FrameyUiMultiListOptions extends Omit<FrameyUiListOptions, "onselect" | "multi"> {
+  onselect?: (value: FrameyUiListId[]) => void;
+  multi: true;
+}
+
+interface FrameyUiControl extends HTMLDivElement {
+  disabled: boolean;
+}
+
+interface FrameyUiToggle extends FrameyUiControl {
+  value: boolean;
+}
+
+interface FrameyUiSlider extends FrameyUiControl {
+  value: number;
+}
+
+interface FrameyUiList extends HTMLDivElement {
+  readonly selected: FrameyUiListSelection;
+  setItems(items: FrameyUiListItem[]): void;
+}
+
+interface FrameyUiSingleList extends FrameyUiList {
+  readonly selected: FrameyUiListId | null;
+}
+
+interface FrameyUiMultiList extends FrameyUiList {
+  readonly selected: FrameyUiListId[];
+}
+
 interface FrameyUi {
-  button(options: FrameyUiButtonOptions): HTMLElement;
-  toggle(options: FrameyUiToggleOptions): HTMLElement;
-  slider(options: FrameyUiSliderOptions): HTMLElement;
-  list(options: FrameyUiListOptions): HTMLElement;
-  group(...children: HTMLElement[]): HTMLElement;
-  focus(element: HTMLElement): void;
+  button(options: FrameyUiButtonOptions): FrameyUiControl;
+  toggle(options: FrameyUiToggleOptions): FrameyUiToggle;
+  slider(options: FrameyUiSliderOptions): FrameyUiSlider;
+  list(options: FrameyUiMultiListOptions): FrameyUiMultiList;
+  list(options?: FrameyUiSingleListOptions): FrameyUiSingleList;
+  list(options: FrameyUiListOptions): FrameyUiList;
+  group(...children: (Node | string)[]): HTMLDivElement;
+  focus(element: HTMLElement | null | undefined): void;
 }
 
 interface FrameyPageContext {
   id: string;
   plugin: string;
-  mode: "panel" | "full";
+  mode: FrameyPageMode;
   api: FrameyApi;
   close(): void;
 }
@@ -125,7 +254,8 @@ interface FrameyPageContext {
 interface FrameyPageOptions {
   id: string;
   title?: string;
-  mode?: "panel" | "full";
+  mode?: FrameyPageMode;
+  /** May be async; rejected promises are reported by the runtime. */
   render(box: HTMLElement, ctx: FrameyPageContext): void;
   onclose?: () => void;
 }
@@ -140,35 +270,40 @@ interface FrameyPageInfo {
   id: string;
   key: string;
   title: string;
-  mode: "panel" | "full";
+  mode: FrameyPageMode;
   open: boolean;
 }
 
 interface FrameyPages {
-  register(options: FrameyPageOptions): FrameyPageHandle | { error: string };
+  register(options: FrameyPageOptions): FrameyResult<FrameyPageHandle>;
   open(id: string): boolean;
   close(): void;
   list(): FrameyPageInfo[];
 }
 
 interface FrameyMountOptions {
+  /** May be async; rejected promises are reported by the runtime. */
   render(element: HTMLElement): void;
-  zone?: "corner" | "overlay" | "bar";
+  zone?: FrameyMountZone;
 }
 
 interface FrameyMountHandle {
-  el: HTMLElement;
+  el: HTMLDivElement;
   unmount(): void;
 }
 
 interface FrameyGlobalZones {
-  mount(id: string, options: FrameyMountOptions): FrameyMountHandle | { error: string };
+  mount(id: string, options: FrameyMountOptions): FrameyResult<FrameyMountHandle>;
+}
+
+interface FrameyTargetSuccess {
+  ok: true;
 }
 
 interface FrameyTarget {
-  css(key: string, text: string): Promise<any>;
-  js(key: string, code: string, teardown?: string): Promise<any>;
-  remove(key: string): Promise<any>;
+  css(key: string, text: string): Promise<FrameyResult<FrameyTargetSuccess>>;
+  js(key: string, code: string, teardown?: string): Promise<FrameyResult<FrameyTargetSuccess>>;
+  remove(key?: string): Promise<FrameyResult<FrameyTargetSuccess>>;
 }
 
 interface FrameyPickOptions {
@@ -184,6 +319,14 @@ interface FrameyPickResult {
   name?: string;
 }
 
+interface FrameyPickFileResult extends FrameyPickResult {
+  name: string;
+}
+
+interface FrameyPickFolderResult extends FrameyPickResult {
+  name?: never;
+}
+
 interface FrameyApi {
   readonly id: string;
   readonly runtime: FrameyRuntime;
@@ -194,38 +337,53 @@ interface FrameyApi {
   timeout(fn: () => void, ms: number): number;
   interval(fn: () => void, ms: number): number;
   clear(handle: number): void;
-  on(target: EventTarget, type: string, fn: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): () => void;
-  cleanup(fn: () => void): () => void;
-  call(method: string, arg?: any): Promise<any>;
+  on<K extends keyof HTMLElementEventMap>(target: HTMLElement, type: K, fn: (event: HTMLElementEventMap[K]) => void, options?: boolean | AddEventListenerOptions): FrameyUnsubscribe;
+  on<K extends keyof DocumentEventMap>(target: Document, type: K, fn: (event: DocumentEventMap[K]) => void, options?: boolean | AddEventListenerOptions): FrameyUnsubscribe;
+  on<K extends keyof WindowEventMap>(target: Window, type: K, fn: (event: WindowEventMap[K]) => void, options?: boolean | AddEventListenerOptions): FrameyUnsubscribe;
+  on(target: EventTarget, type: string, fn: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): FrameyUnsubscribe;
+  /** Returns a function that unregisters this cleanup without running it. */
+  cleanup(fn: () => void): FrameyUnsubscribe;
+  /** T describes your backend's success payload; errors still resolve. */
+  call<T = unknown>(method: string, arg?: unknown, timeoutMs?: number): Promise<FrameyResult<T>>;
   raf(fn: (time: number) => void): number;
   notify(options: FrameyNotifyOptions): FrameyNotification;
-  onVisible(fn: (visible: boolean) => void): () => void;
-  t(key: string, vars?: Record<string, string | number>): string;
+  onVisible(fn: (visible: boolean) => void): FrameyUnsubscribe;
+  t(key: string, vars?: FrameyTranslationVars): string;
   fetch(url: string, options?: FrameyFetchOptions): Promise<FrameyFetchResult>;
-  resource(root: string, path: string, ttl?: number): Promise<string>;
+  resource(root: "data" | "runtime", path: string, ttl?: number): Promise<string>;
   revoke(url: string): Promise<boolean>;
-  log(level: "debug" | "info" | "warning" | "error", msg: string): void;
+  log(level: FrameyLogLevel, msg: string): void;
   readonly ui: FrameyUi;
   readonly pages: FrameyPages;
   readonly global: FrameyGlobalZones;
   target(name: string): FrameyTarget;
-  pickFile?(options?: FrameyPickOptions): Promise<FrameyPickResult | null>;
-  pickFolder?(options?: FrameyPickOptions): Promise<FrameyPickResult | null>;
+  /** Available once fy-picker.js is loaded. Cancellation resolves to null. */
+  pickFile?(options?: FrameyPickOptions): Promise<FrameyPickFileResult | null>;
+  pickFolder?(options?: FrameyPickOptions): Promise<FrameyPickFolderResult | null>;
 }
 
 interface FrameyPlugin {
   id?: string;
   name?: string;
   short?: string;
+  /** May be async; only failures of the current live render are reported. */
   render(box: HTMLElement, api: FrameyApi): void;
   dispose?(): void;
+}
+
+interface FrameyRegisteredPlugin extends FrameyPlugin {
+  readonly id: string;
+  readonly name: string;
+  readonly short: string;
+  readonly meta: Readonly<Record<string, unknown>>;
+  readonly dead?: true;
 }
 
 interface FrameyI18n {
   lang(): string;
   setLang(lang: string): boolean;
-  add(plugin: string, lang: string, dict: Record<string, string>): number;
-  t(plugin: string, key: string, vars?: Record<string, string | number>): string;
+  add(plugin: string, lang: string, dict: Readonly<Record<string, string>>): number;
+  t(plugin: string, key: string, vars?: FrameyTranslationVars): string;
 }
 
 interface FrameyDiagPlugin {
@@ -250,48 +408,67 @@ interface FrameyDiag {
   untrusted_clicks: number;
 }
 
+/** The lexical Framey object supplied to plugin main.js. */
 interface FrameyBinding {
-  readonly _meta: Record<string, any>;
+  readonly _meta: Readonly<Record<string, unknown>>;
   register(plugin: FrameyPlugin): FrameyApi;
-  call(_plugin: string, method: string, arg?: any): Promise<any>;
+  call<T = unknown>(_plugin: string, method: string, arg?: unknown, timeoutMs?: number): Promise<FrameyResult<T>>;
   dispose(): void;
   readonly panelOpen: boolean;
-  el(css: string, text?: string): HTMLElement;
-  button(text: string, css: string, fn: (ev?: Event) => void): HTMLElement;
+  el(css: string, text?: string): HTMLDivElement;
+  button(text: string, css: string, fn: (ev: MouseEvent | KeyboardEvent) => void): HTMLDivElement;
   toast(text: string, ms?: number): void;
   fail(id: string, error: Error): void;
-  listen(name: string, fn: (payload: any, info: FrameyEventInfo) => void): () => void;
+  listen<T = unknown>(name: string, fn: FrameyEventHandler<T>): FrameyUnsubscribe;
   notify(options: FrameyNotifyOptions): FrameyNotification;
-  onPanel(fn: (open: boolean) => void): () => void;
+  onPanel(fn: (open: boolean) => void): FrameyUnsubscribe;
   lazy(name: "picker" | "dev"): Promise<void>;
-  open(tab: string): void;
+  open(tab?: string): void;
   toggle(): void;
   restore(): void;
   redraw(page?: string): void;
 }
 
+interface FrameyBuiltinPage {
+  render(box: HTMLElement): void | PromiseLike<void>;
+}
+
+interface FrameyPanelPage {
+  id: string;
+  plugin: string;
+  name: string;
+  short: string;
+  leave(): void;
+  render(box: HTMLElement): void;
+}
+
+/** The loader object on window.Framey is separate from the plugin binding. */
 interface FrameyGlobal {
-  readonly plugins: FrameyPlugin[];
+  readonly plugins: readonly Readonly<FrameyRegisteredPlugin>[];
   readonly panelOpen: boolean;
-  readonly pages: Record<string, any>;
+  readonly pages: Readonly<Partial<Record<string, FrameyBuiltinPage>>>;
   dev?: { render(box: HTMLElement): Promise<void>; text(): Promise<string> };
-  open(tab: string): void;
+  open(tab?: string): void;
   toggle(): void;
   redraw(page?: string): void;
   restore(): void;
-  panelPages(): any[];
+  panelPages(): FrameyPanelPage[];
   fail(id: string, error: Error): void;
-  i18n: FrameyI18n;
+  readonly i18n: FrameyI18n;
   dispose(id?: string, token?: string): void;
-  call(plugin: string, method: string, arg?: any): Promise<any>;
+  call<T = unknown>(plugin: string, method: string, arg?: unknown): Promise<FrameyResult<T>>;
   toast(text: string, ms?: number): void;
-  el(css: string, text?: string): HTMLElement;
-  button(text: string, css: string, fn: (ev?: Event) => void): HTMLElement;
+  el(css: string, text?: string): HTMLDivElement;
+  button(text: string, css: string, fn: (ev: MouseEvent | KeyboardEvent) => void): HTMLDivElement;
   lazy(name: "picker" | "dev"): Promise<void>;
-  onPanel(fn: (open: boolean) => void): () => void;
+  onPanel(fn: (open: boolean) => void): FrameyUnsubscribe;
   notify(options: FrameyNotifyOptions): FrameyNotification;
   diag(): FrameyDiag;
   _panel(open: boolean): void;
 }
 
-declare const Framey: FrameyGlobal;
+interface Window {
+  readonly Framey: FrameyGlobal;
+}
+
+declare const Framey: FrameyBinding;

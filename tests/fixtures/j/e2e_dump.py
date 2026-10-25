@@ -9,7 +9,7 @@ sys.path.insert(0, str(HERE))
 
 import jharness as H
 
-FAN = pathlib.Path(os.environ.get("FRAMEY_FAN_MAIN", "D:/Test/frame-fan/main.js"))
+FAN = pathlib.Path(os.environ.get("FRAMEY_FAN_MAIN", str(HERE / "legacy_plugin.js")))
 
 BETA = """
 window.__betaApi = Framey.register({ render(box) { box.textContent = "beta"; }, dispose() { window.__betaGone = (window.__betaGone || 0) + 1; } });

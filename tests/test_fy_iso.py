@@ -85,7 +85,12 @@ class DefaultTests(Base):
         banned = {"Page.enable", "Page.getFrameTree", "Page.createIsolatedWorld", "Runtime.enable", "Runtime.removeBinding", "Runtime.disable", "Page.disable"}
         self.assertEqual(banned & set(page.methods()), set())
         for p in page.evaluates():
-            self.assertEqual(set(p), {"expression", "returnByValue"} if is_probe(p) else {"expression"})
+            allowed = {"expression", "returnByValue"} if is_probe(p) else {"expression"}
+            if "objectGroup" in p:
+                self.assertIsInstance(p["objectGroup"], str)
+                self.assertTrue(p["objectGroup"].startswith("framey-"))
+                allowed.add("objectGroup")
+            self.assertEqual(set(p), allowed)
         self.assertEqual(page.worlds(), [])
         self.assertTrue(page.sees(page.main, "fyCall"))
         self.assertIn("Framey", page.main.globals)
@@ -468,7 +473,7 @@ class ShutdownTests(Base):
         self.assertEqual(bar.iso().evals[-1], fy.WIPE_BAR)
         wipes = [p for p in main.evaluates() if p["expression"] == fy.WIPE and p.get("contextId") == main.iso().id]
         self.assertEqual(len(wipes), 2)
-        self.assertTrue(any("[data-fy-target]" in e and "remove()" in e for e in main.main.evals))
+        self.assertTrue(any("data-fy-target" in e and "remove()" in e for e in main.main.evals))
 
 
 if __name__ == "__main__":

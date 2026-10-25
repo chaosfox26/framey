@@ -9,6 +9,7 @@ HOME = pathlib.Path.home()
 CONF = HOME / ".config/framey/settings.json"
 CDP = ("127.0.0.1", 8080)
 NAME = re.compile(r"[a-z0-9_-]{1,32}")
+RESERVED_IDS = frozenset(("_core", "core", "modules", "settings", "store", "discover", "developer", "dev", "decky-store"))
 ENTRIES, ENTRY_MAX, TOTAL_MAX, DEPTH = 500, 5_000_000, 20_000_000, 8
 MAX_MSG = 4 << 20
 PAYLOAD_IN = 256 << 10
@@ -17,6 +18,7 @@ REQUIRED = {
     "fy_state": ("load", "save", "PREF_F", "module_state", "set_module_state", "forget_module", "StateError"),
     "fy_supervisor": ("Supervisor", "BackendError"),
     "fy_updates": ("Updates",),
+    "fy_catalog": ("METHODS",),
     "fy_iso": ("mode", "Iso", "wanted"),
     "fy_store": ("dirs", "purge", "discard_held", "snapshot_settings", "drop_snapshot", "restore_snapshot", "Log", "read_locale", "clean_tmp"),
     "fy_net": ("hostcall", "sync_disk", "_target", "_resolve", "_connect"),
@@ -29,7 +31,7 @@ REQUIRED = {
 }
 EDIT = ("install", "add", "enable", "disable", "uninstall", "reload", "settings_repair")
 UPDATED = ("update", "rollback", "retry", "ver_install", "repair", "batch_apply")
-RELOAD = EDIT + ("finish",)
+RELOAD = EDIT + ("finish", "catalog_install")
 SCOPED = frozenset(("fetch", "files_list", "resource", "log", "locale", "target_add", "target_remove"))
 PAGE_FORBIDDEN = ("file_roots", "safe", "channel")
 NOAUTH = {"error": "not authorized"}
@@ -46,19 +48,19 @@ PRINCIPAL = "framey-release"
 HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 NOSETUP = "Protected updater not set up: run Install / Update in the Framey App once (it asks for your password a single time)"
 BUSY = {"busy": True, "error": "Busy: another check or update is running"}
-MANIFEST = ("framey.py", "inject.js", "bar.js", "icon.svg", "fy_proto.py", "fy_worker.py", "fy_supervisor.py", "fy_store.py", "fy_sdk.py", "fy_net.py", "fy_files.py", "fy_media.py", "fy_targets.py", "fy_state.py", "fy_pkg.py", "fy_updates.py", "fy_dev.py", "fy_diag.py", "fy_maint.py", "fy_iso.py", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-modules.js", "fy-settings.js", "fy-badge.js", "fy-picker.js", "fy-dev.js", "fy-strings-en.js")
+MANIFEST = ("framey.py", "inject.js", "bar.js", "icon.svg", "fy_proto.py", "fy_worker.py", "fy_supervisor.py", "fy_store.py", "fy_sdk.py", "fy_net.py", "fy_files.py", "fy_media.py", "fy_targets.py", "fy_state.py", "fy_pkg.py", "fy_updates.py", "fy_dev.py", "fy_diag.py", "fy_maint.py", "fy_iso.py", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-modules.js", "fy-settings.js", "fy-badge.js", "fy-picker.js", "fy-dev.js", "fy-strings-en.js", "fy_catalog.py", "fy_decky_catalog.py", "fy-catalog.js", "catalog/index.json")
 LEGACY = MANIFEST[:4]
 SMOKE = "import importlib.util as u,sys;s=u.spec_from_file_location('framey_smoke',sys.argv[1]);m=u.module_from_spec(s);s.loader.exec_module(m);print('framey-smoke-ok' if callable(getattr(m,'main',None)) and isinstance(getattr(m,'VERSION',None),str) else '')"
-PANEL_JS = ("inject.js", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-modules.js", "fy-settings.js", "fy-picker.js")
+PANEL_JS = ("inject.js", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-modules.js", "fy-catalog.js", "fy-settings.js", "fy-picker.js")
 EVENT = "function(p,n,y,d){return this.event(p,n,y,d)}"
 REPLY = "function(g,i,v){return this.reply(g,i,v)}"
 BIND = "function(i,t,m){return this.bind(i,t,m)}"
 RUN = "function(p){return this(p)}"
 DISPOSE = "function(p){return this.dispose(p)}"
 OWNER = {}
-for _mod, _names in (("fy_state", "state_get mod_order mod_sort mod_hide mod_freeze prefs_set"), ("fy_updates", "ver_list ver_install repair notes batch_plan batch_apply loader_check badge autocheck_status companion_fetch"), ("fy_targets", "target_add target_remove"), ("fy_net", "fetch"), ("fy_files", "files_list"), ("fy_media", "resource"), ("fy_dev", "dev_set dev_status devtools_info"), ("fy_diag", "diag"), ("fy_maint", "maint_get maint_refresh maint_prefs")):
+for _mod, _names in (("fy_state", "state_get mod_order mod_sort mod_hide mod_freeze prefs_set"), ("fy_updates", "ver_list ver_install repair notes batch_plan batch_apply loader_check badge autocheck_status companion_fetch"), ("fy_targets", "target_add target_remove"), ("fy_net", "fetch"), ("fy_files", "files_list"), ("fy_media", "resource"), ("fy_dev", "dev_set dev_status devtools_info"), ("fy_diag", "diag"), ("fy_maint", "maint_get maint_refresh maint_prefs"), ("fy_catalog", "catalog_list catalog_details catalog_install catalog_sources catalog_assess")):
     OWNER.update(dict.fromkeys(_names.split(), _mod))
-LOCKED = frozenset(("loader_check", "ver_install", "repair", "batch_apply", "companion_fetch"))
+LOCKED = frozenset(("catalog_install", "catalog_sources", "loader_check", "ver_install", "repair", "batch_apply", "companion_fetch"))
 DEV_OFF = {"dev_status": {"enabled": False, "hot": [], "exposure": {"state": "unknown", "addresses": []}}}
 LOCK = None
 LIVE = {}
@@ -155,7 +157,7 @@ def use(name):
 
 
 def ok_id(x):
-    return isinstance(x, str) and bool(NAME.fullmatch(x)) and x != "_core"
+    return isinstance(x, str) and bool(NAME.fullmatch(x)) and x not in RESERVED_IDS
 
 
 def finite(c):
@@ -358,6 +360,13 @@ def loader_ok(d):
     return True
 
 
+def loader_stage_owned(path):
+    try:
+        return not _link(path) and (path / ".framey-stage").read_bytes() == b"framey-update-stage-v1\n"
+    except OSError:
+        return False
+
+
 def heal_loader():
     L, new, bak = ROOT.resolve(), sib(".new"), sib(".bak")
     if bak.is_dir() and not loader_ok(L) and loader_ok(bak):
@@ -368,7 +377,10 @@ def heal_loader():
                 (bak / k).rename(L / k)
         (L / "plugins").mkdir(exist_ok=True)
     if new.exists() and loader_ok(L):
-        rmtree(new)
+        if loader_stage_owned(new):
+            rmtree(new)
+        else:
+            log("loader recovery kept unrecognised staging folder:", new.name)
 
 
 def _link(p):
@@ -376,6 +388,35 @@ def _link(p):
 
 
 def recover():
+    def usable(path, pid):
+        if _link(path) or not path.is_dir():
+            return False
+        try:
+            meta = json.loads((path / "plugin.json").read_text())
+            return valid(meta) and meta.get("id", pid) == pid
+        except (OSError, ValueError, TypeError):
+            return False
+
+    ids = {p.name.partition("-")[2] for p in entries(PLUGINS) if p.name.startswith((".old-", ".hold-"))}
+    for pid in sorted(ids):
+        if not ok_id(pid):
+            continue
+        live, old, hold = PLUGINS / pid, PLUGINS / (".old-" + pid), PLUGINS / (".hold-" + pid)
+        try:
+            if not os.path.lexists(live):
+                if usable(old, pid):
+                    old.rename(live)
+                elif usable(hold, pid) and not os.path.lexists(old):
+                    hold.rename(live)
+            if live.is_dir() and usable(hold, pid):
+                if _link(old):
+                    log("recover", old.name, "refused: link")
+                    continue
+                if os.path.lexists(old):
+                    rmtree(old)
+                hold.rename(old)
+        except OSError as e:
+            log("recover", pid, "failed:", e)
     for p in entries(PLUGINS):
         kind, _, pid = p.name.partition("-")
         try:
@@ -524,7 +565,7 @@ def flush():
         return
     evs = supervisor.events.take(10)
     if evs:
-        spawn(emit_all(evs))
+        spawn(emit_all(evs, event_context(evs)))
     if supervisor.events._size:
         events_ready()
 
@@ -555,9 +596,27 @@ async def call_core(f, fn, args):
         await f("Runtime.callFunctionOn", objectId=f.core, functionDeclaration=fn, arguments=[{"value": a} for a in args], returnByValue=True)
 
 
-async def emit_all(evs):
+def event_context(evs):
+    sender = LIVE.get("main")
+    registrations = getattr(supervisor, "_ws", {})
+    owners = {}
+    for event in evs:
+        pid = event["plugin"]
+        worker = registrations.get(pid)
+        owners[pid] = (worker, getattr(worker, "epoch", None), tuple(t for t, owner in TOKS.items() if owner == pid))
+    return sender, getattr(sender, "core", None), supervisor, owners
+
+
+async def emit_all(evs, context=None):
+    sender, core, active, owners = context if context is not None else event_context(evs)
     for e in evs:
-        await call_core(LIVE.get("main"), EVENT, [e["plugin"], e["name"], e["payload"], e["dropped"]])
+        if LIVE.get("main") is not sender or getattr(sender, "core", None) != core or supervisor is not active:
+            break
+        worker = getattr(active, "_ws", {}).get(e["plugin"])
+        current = (worker, getattr(worker, "epoch", None), tuple(t for t, owner in TOKS.items() if owner == e["plugin"]))
+        if current != owners[e["plugin"]]:
+            continue
+        await call_core(sender, EVENT, [e["plugin"], e["name"], e["payload"], e["dropped"]])
 
 
 async def notify_page(plugin, name, payload):
@@ -591,7 +650,7 @@ def sync_watches():
         WATCH.pop(n).cancel()
     for n in want:
         if n not in WATCH:
-            WATCH[n] = spawn(watch(n, lambda u, p=t.urlpart(n): p in u, lambda n=n: t.replay(n), "typeof window.__framey_targets"))
+            WATCH[n] = spawn(watch(n, lambda u, n=n: bool(t.urlpart(n)) and t.urlpart(n) in u, lambda n=n: t.replay(n), "typeof window.__framey_targets"))
 
 
 def replay(name):
@@ -869,13 +928,25 @@ def guard(path):
         p.replace_guard(path)
 
 
-def restore(dest):
+def restore_ready(dest):
     old, bad = dest.with_name(".old-" + dest.name), dest.with_name(".stage-" + dest.name)
-    if not ok_id(dest.name) or not old.is_dir():
+    if not dest.is_dir() or _link(dest) or not old.is_dir():
         raise OSError("no previous version to restore")
     if _link(old):
-        log("restore refused:", old.name, "is a link")
         raise OSError("previous copy is a link")
+    try:
+        meta = json.loads((old / "plugin.json").read_text())
+    except (OSError, ValueError, TypeError):
+        raise OSError("previous copy has no valid manifest") from None
+    if not valid(meta):
+        raise OSError("previous copy has no valid manifest")
+    if os.path.lexists(bad) and (_link(bad) or bad.parent != PLUGINS and not (bad / ".version").is_file()):
+        raise OSError("unrecognised staging folder: " + bad.name)
+    return old, bad, meta
+
+
+def restore(dest):
+    old, bad, _ = restore_ready(dest)
     sweep(bad)
     dest.rename(bad)
     try:
@@ -895,6 +966,8 @@ def vet(data, loader=False):
         z = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
         return {"error": "not a zip"}
+    if any(i.orig_filename != i.filename for i in z.infolist()):
+        return {"error": "zip has ambiguous entry names"}
     infos = {i.filename: i for i in z.infolist() if not i.filename.endswith("/")}
     names = list(infos)
     if len(z.infolist()) > ENTRIES or any(n.startswith("/") or "\\" in n or len(n.split("/")) > DEPTH or any(x in ("", ".", "..") for x in n.split("/")) for n in names):
@@ -924,6 +997,10 @@ def vet(data, loader=False):
     pid = meta.get("id") if valid(meta) else None
     if not ok_id(pid):
         return {"error": "bad plugin id"}
+    native_entry = any(base + f in infos for f in ("main.js", "backend.py"))
+    decky_layout = "api_version" in meta or any(base + f in infos for f in ("main.py", "dist/index.js"))
+    if decky_layout and (not native_entry or "api_version" in meta and (type(meta.get("api")) is not int or meta["api"] < 1)):
+        return {"error": "This is a Decky plugin. It needs a Framey port before it can run on this headset", "code": "unsupported_format"}
     return z, infos, base, pid, meta
 
 
@@ -1039,6 +1116,9 @@ def gh(src):
 
 
 def source(m):
+    receipt = PLUGINS / m["id"] / ".catalog.json"
+    if os.path.lexists(receipt):
+        return None, "Pinned catalog package: manage updates and repairs in Store"
     found = [x for x in (read(PLUGINS / m["id"] / ".source"), m.get("source")) if isinstance(x, str) and x.strip()]
     for x in found:
         g = gh(x)
@@ -1339,7 +1419,9 @@ async def rel_update(pid, m, p, g, dest):
         meta = json.loads((stage / "plugin.json").read_text())
         if not valid(meta) or meta.get("id") != pid:
             raise ValueError("rejected: the package is a different plugin")
-        if not vkey(meta.get("version")) or vkey(meta["version"]) <= (vkey(cur) or ZERO):
+        if not vkey(meta.get("version")) or vkey(meta["version"]) != new:
+            raise ValueError("rejected: the package version does not match the selected release")
+        if vkey(meta["version"]) <= (vkey(cur) or ZERO):
             raise ValueError("rejected: the package is not newer than the installed version")
         if not priv(meta):
             raise ValueError("rejected: the package has no protected-component declaration")
@@ -1424,14 +1506,19 @@ async def do_rollback(pid):
         return {"error": "nothing to roll back"}
     p = priv(manifest(PLUGINS / pid))
     try:
-        oldv = json.loads((d.with_name(".old-" + d.name) / "plugin.json").read_text()).get("version", "")
-    except Exception:
-        oldv = ""
+        _, _, oldmeta = restore_ready(d)
+        oldv = oldmeta.get("version", "")
+        if p and not vkey(oldv):
+            raise OSError("previous protected copy has no valid version")
+    except OSError as e:
+        return {"error": "roll back failed: " + str(e)}
     cur = marker(p) if p else ""
-    if cur and cur != oldv:
+    if p and cur != oldv:
         err = await asyncio.to_thread(helper, p, "rollback")
         if err:
             return {"error": "Roll back stopped: " + err}
+        if marker(p) != oldv:
+            return {"error": "Roll back stopped: the protected part reports %s, expected %s; user files were kept" % (marker(p) or "nothing", oldv)}
     try:
         restore(d)
     except OSError as e:
@@ -1480,6 +1567,8 @@ async def install_loader(tag, sha):
     L, new, bak = ROOT.resolve(), sib(".new"), sib(".bak")
     if bak_busy():
         return bak_busy()
+    if os.path.lexists(new) and not loader_stage_owned(new):
+        return {"error": "Framey staging folder is occupied; existing files were kept"}
     u = upd()
     job = u._job("_loader", use("fy_updates").STAGES) if u else None
     await loader_step(job, "check", "ok")
@@ -1501,6 +1590,8 @@ async def install_loader(tag, sha):
     z, infos, base = v[:3]
 
     def fill(stage):
+        if base + ".framey-stage" in infos:
+            raise ValueError("package uses a reserved staging marker")
         unpack(z, infos, base)(stage)
         for k in ("plugins", "store"):
             rmtree(stage / k)
@@ -1510,7 +1601,7 @@ async def install_loader(tag, sha):
         src = (stage / "framey.py").read_text()
         compile(src, "framey.py", "exec")
         for f in needs(src):
-            if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", f) or not (stage / f).is_file():
+            if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:/[A-Za-z0-9_.-]{1,64})*", f) or any(x in (".", "..") for x in f.split("/")) or not (stage / f).is_file():
                 raise ValueError("the package has no " + f)
             if f.endswith(".py"):
                 compile((stage / f).read_text(), f, "exec")
@@ -1521,7 +1612,10 @@ async def install_loader(tag, sha):
         if not (out and out.stdout.rstrip().endswith(b"framey-smoke-ok")):
             raise ValueError("the new loader does not start")
 
-    rmtree(new)
+    if loader_stage_owned(new):
+        rmtree(new)
+    new.mkdir(mode=0o700)
+    (new / ".framey-stage").write_bytes(b"framey-update-stage-v1\n")
     at = "unpack"
     try:
         await loader_step(job, "unpack", "running")
@@ -1545,7 +1639,8 @@ async def install_loader(tag, sha):
         await loader_step(job, at, "fail", str(e) or type(e).__name__)
         return {"error": "Framey update not applied: " + (str(e) or type(e).__name__)}
     finally:
-        rmtree(new)
+        if loader_stage_owned(new):
+            rmtree(new)
     await loader_step(job, "reload", "ok")
     return {"ok": "framey", "tag": tag, "restart": True}
 
@@ -1554,6 +1649,9 @@ loader_install = install_loader
 
 
 async def loader_update(arg):
+    candidate = arg.get("candidate") if isinstance(arg, dict) else None
+    if candidate is not None and (not isinstance(candidate, dict) or not isinstance(candidate.get("tag"), str) or not isinstance(candidate.get("commit"), str) or not SHA.fullmatch(candidate["commit"])):
+        return {"error": "Invalid Framey release selection; check for updates again"}
     g, u = gh(LOADER), upd()
     if bak_busy():
         return bak_busy()
@@ -1571,6 +1669,8 @@ async def loader_update(arg):
             sha = await asyncio.to_thread(latest, g[0], g[1], tag)
     except Exception as e:
         return {"error": why(e)}
+    if candidate is not None and (candidate["tag"] != tag or candidate["commit"] != sha):
+        return {"error": "Framey release changed; check for updates again"}
     return await install_loader(tag, sha)
 
 
@@ -1578,8 +1678,8 @@ async def loader_done(_):
     bak = sib(".bak")
     if not bak.is_dir():
         return {"error": "nothing to finish"}
-    if (bak / "plugins").exists() and not (ROOT.resolve() / "plugins").exists():
-        return {"error": "your plugins are still in the backup folder; not finishing"}
+    if any(os.path.lexists(bak / name) for name in ("plugins", "store")):
+        return {"error": "your plugins or store are still in the backup folder; not finishing"}
     rmtree(bak)
     return {"ok": True}
 
@@ -1851,27 +1951,56 @@ async def tabs():
     return json.loads(body)
 
 
-async def session(name, tab, code, probe_expr):
+async def session(name, tab, code, probe_expr, marker=None):
     ws = await WS.open(tab["webSocketDebuggerUrl"])
     ids = iter(range(1, 1 << 30))
     pending = {}
     waiters = {}
     probe = missed = 0
+    probe_world = None
+    load_epoch = 0
     held = False
     todo = []
     iso = boot = mod = mode = None
+    object_group = "framey-" + os.urandom(8).hex()
+
+    async def release(*objects):
+        for oid in set(x for x in objects if isinstance(x, str)):
+            try:
+                await send("Runtime.releaseObject", objectId=oid)
+            except Exception:
+                pass
+
+    async def matches():
+        if marker is None:
+            return True
+        current = next((x for x in await tabs() if (x.get("id") == tab["id"] if isinstance(tab.get("id"), str) else x.get("webSocketDebuggerUrl") == tab.get("webSocketDebuggerUrl"))), None)
+        return current is not None and marker(current.get("url", ""))
 
     async def send(method, _pid=None, _main=False, **p):
+        nonlocal load_epoch
+        if method in ("Runtime.evaluate", "Runtime.callFunctionOn"):
+            if LIVE.get(name) is not send:
+                raise ConnectionError("debugger session was replaced")
+            if (name not in WIPES or _main or _pid == "#core" or isinstance(_pid, tuple)) and not await matches():
+                ws.close()
+                raise ConnectionError("debugger target no longer matches")
         if p.get("expression") in WIPES.values():
+            load_epoch += 1
             await call_core(send, DISPOSE, [None])
+            if getattr(send, "core", None):
+                await send("Runtime.releaseObjectGroup", objectGroup=object_group)
             send.core = None
+        if method in ("Runtime.evaluate", "Runtime.callFunctionOn") and (_pid == "#core" or isinstance(_pid, tuple)):
+            p.setdefault("objectGroup", object_group)
         if iso and iso.on and method == "Runtime.evaluate" and not _main:
             if iso.ctx is None:
                 return 0
             p["contextId"] = iso.ctx
         i = next(ids)
         if _pid:
-            pending[i] = _pid
+            world = (iso.ctx, getattr(iso, "epoch", None)) if iso and iso.on else None
+            pending[i] = (_pid, load_epoch, world)
         await ws.send({"id": i, "method": method, "params": p})
         return i
 
@@ -1888,19 +2017,33 @@ async def session(name, tab, code, probe_expr):
         return m.get("result") or {}
 
     async def ping():
-        nonlocal probe
+        nonlocal probe, probe_world
         if held:
+            return
+        if not await matches():
+            ws.close()
             return
         if iso and iso.on and iso.ctx is None and not await iso.renew():
             if iso.dead:
                 await fallback("the isolated world could not be renewed")
             return
+        probe_world = (iso.ctx, getattr(iso, "epoch", None)) if iso and iso.on else None
         probe = await send("Runtime.evaluate", expression=probe_expr, returnByValue=True)
 
     async def legacy():
+        if not await matches():
+            ws.close()
+            return
         await send("Runtime.addBinding", name="fyCall")
         if name in WIPES:
             await send("Runtime.evaluate", expression=WIPES[name])
+        else:
+            target = getattr(host, "targets", None)
+            if target and hasattr(target, "reconcile"):
+                await target.reconcile(name)
+            else:
+                for expression, pid in code():
+                    await send("Runtime.evaluate", _pid=pid, expression=expression)
         if name == "main" and supervisor:
             supervisor.events.clear()
         await ping()
@@ -1919,6 +2062,10 @@ async def session(name, tab, code, probe_expr):
 
     async def setup():
         nonlocal held
+        if not await matches():
+            held = True
+            ws.close()
+            return
         if iso and await iso.start():
             await send("Runtime.evaluate", expression=WIPES[name], _main=True)
             await send("Runtime.evaluate", expression=WIPES[name])
@@ -1940,7 +2087,7 @@ async def session(name, tab, code, probe_expr):
         await send("Runtime.evaluate", expression="Framey.fail(%s,{message:%s})" % (json.dumps(pid), json.dumps(msg)))
 
     async def plug(m, tok, src, pid):
-        pending[await send("Runtime.evaluate", expression="(function(Framey){" + src + "\n})")] = ("#src", pid, tok, m)
+        await send("Runtime.evaluate", _pid=("#src", pid, tok, m), expression="(function(Framey){" + src + "\n})")
 
     async def step():
         while todo:
@@ -1948,11 +2095,12 @@ async def session(name, tab, code, probe_expr):
             if isinstance(expr, tuple):
                 await plug(*expr, pid)
                 continue
-            i = await send("Runtime.evaluate", expression=expr, _main=isinstance(expr, Main))
-            if pid:
-                pending[i] = pid
+            await send("Runtime.evaluate", _pid=pid, expression=expr, _main=isinstance(expr, Main))
             if pid == "#core":
                 return
+        target = getattr(host, "targets", None)
+        if name in WIPES and target and hasattr(target, "reconcile"):
+            await target.reconcile(name)
 
     send.ping = ping
     send.main = lambda expression: send("Runtime.evaluate", expression=expression, _main=True)
@@ -1975,7 +2123,10 @@ async def session(name, tab, code, probe_expr):
             out = {"error": str(e) or "failed"}
         i, gen = req.get("id"), req.get("gen")
         if i and isinstance(i, int) and isinstance(gen, str):
-            await call_core(send, REPLY, [gen, i, out])
+            try:
+                await call_core(send, REPLY, [gen, i, out])
+            except Exception as e:
+                log("reply failed:", str(e)[:200])
         if req.get("plugin") == "_core" and isinstance(out, dict):
             method = req.get("method")
             if out.get("restart"):
@@ -2019,11 +2170,15 @@ async def session(name, tab, code, probe_expr):
             if iso and iso.on:
                 iso.event(m)
             if m.get("id") == probe:
+                if probe_world is not None and iso and iso.on and probe_world != (iso.ctx, getattr(iso, "epoch", None)):
+                    continue
                 missed = 0
                 v = m.get("result", {}).get("result", {}).get("value")
                 if iso and iso.on:
                     if "error" in m:
                         iso.ctx = None
+                        if hasattr(iso, "epoch"):
+                            iso.epoch += 1
                         continue
                     act = iso.seen(v)
                     if act == "fallback":
@@ -2031,12 +2186,21 @@ async def session(name, tab, code, probe_expr):
                         continue
                     v = "undefined" if act == "inject" else None
                 if v == "undefined" and not stopping:
-                    todo[:] = code()
-                    send.core = None
-                    await step()
+                    target = getattr(host, "targets", None)
+                    if name not in WIPES and target and hasattr(target, "reconcile"):
+                        await target.reconcile(name)
+                    else:
+                        load_epoch += 1
+                        todo[:] = [(expression, pid) for expression, pid in code() if name not in WIPES or not isinstance(expression, Main)]
+                        send.core = None
+                        await step()
             elif m.get("id") in pending:
-                pid = pending.pop(m["id"])
+                pid, generation, world = pending.pop(m["id"])
                 res = m.get("result") or {}
+                current_world = (iso.ctx, getattr(iso, "epoch", None)) if iso and iso.on else None
+                if generation != load_epoch or world != current_world:
+                    await release((res.get("result") or {}).get("objectId"), *(pid[2:] if isinstance(pid, tuple) and pid[0] in ("#bind", "#run") else []))
+                    continue
                 if pid == "#core":
                     send.core = (res.get("result") or {}).get("objectId")
                     if send.core:
@@ -2050,18 +2214,23 @@ async def session(name, tab, code, probe_expr):
                     oid = (res.get("result") or {}).get("objectId")
                     if d or not send.core or (stage != "#run" and not oid):
                         await fail_load(who, d)
+                        await release(oid, *(rest if stage in ("#bind", "#run") else []))
                     elif stage == "#src":
                         tok, mf = rest
                         await send("Runtime.callFunctionOn", _pid=("#bind", who, oid), objectId=send.core, functionDeclaration=BIND, arguments=[{"value": mf["id"]}, {"value": tok}, {"value": mf}])
                     elif stage == "#bind":
-                        await send("Runtime.callFunctionOn", _pid=("#run", who), objectId=rest[0], functionDeclaration=RUN, arguments=[{"objectId": oid}])
+                        await send("Runtime.callFunctionOn", _pid=("#run", who, rest[0], oid), objectId=rest[0], functionDeclaration=RUN, arguments=[{"objectId": oid}])
+                    elif stage == "#run":
+                        await release(*rest, oid)
                     continue
                 d = res.get("exceptionDetails")
                 if d:
                     await fail_load(pid, d)
             elif m.get("method") == "Runtime.bindingCalled":
                 p = m.get("params") or {}
-                if iso and iso.on and (iso.ctx is None or p.get("executionContextId") != iso.ctx):
+                if p.get("name") != "fyCall":
+                    continue
+                if iso and iso.on and (iso.ctx is None or type(p.get("executionContextId")) is not int or p.get("executionContextId") != iso.ctx):
                     continue
                 payload = p.get("payload")
                 if isinstance(payload, str) and len(payload) > PAYLOAD_IN:
@@ -2079,9 +2248,15 @@ async def session(name, tab, code, probe_expr):
             t.cancel()
         if boot:
             boot.cancel()
-        LIVE.pop(name, None)
+        owns_session = LIVE.get(name) is send
+        if owns_session:
+            LIVE.pop(name, None)
+        try:
+            await asyncio.wait_for(send("Runtime.releaseObjectGroup", objectGroup=object_group), 1)
+        except Exception:
+            pass
         ws.close()
-        if name == "main" and not stopping:
+        if owns_session and name == "main" and not stopping:
             await panel(False)
 
 
@@ -2091,7 +2266,7 @@ async def watch(name, marker, code, probe_expr):
         try:
             tab = next((t for t in await tabs() if marker(t["url"])), None)
             if tab:
-                await session(name, tab, code, probe_expr)
+                await session(name, tab, code, probe_expr, marker)
         except Exception as e:
             if repr(e) != last:
                 last = repr(e)
@@ -2131,17 +2306,24 @@ async def main():
         watch("main", lambda u: overlay_key(u, "valve.steam.gamepadui.main"), main_code, "typeof window.Framey"),
         watch("bar", lambda u: overlay_key(u, "valve.steam.gamepadui.bar"), bar_code, "typeof window.FYBar"),
     )
-    await stop.wait()
-    stopping = True
-    await asyncio.gather(*(asyncio.wait_for(send("Runtime.evaluate", expression=WIPES[name]), 2) for name, send in list(LIVE.items())), return_exceptions=True)
     try:
-        await down()
-    except Exception:
-        pass
-    await asyncio.sleep(0.3)
-    for task in list(TASKS) + list(BG):
-        task.cancel()
-    work.cancel()
+        await stop.wait()
+    finally:
+        stopping = True
+        await asyncio.gather(*(asyncio.wait_for(send("Runtime.evaluate", expression=WIPES[name]), 2) for name, send in list(LIVE.items()) if name in WIPES), return_exceptions=True)
+        try:
+            await down()
+        except Exception as e:
+            log("shutdown failed:", str(e)[:200])
+        tasks = list(TASKS) + list(BG)
+        for task in tasks:
+            task.cancel()
+        work.cancel()
+        try:
+            await asyncio.wait_for(asyncio.gather(work, *tasks, return_exceptions=True), 3)
+        except asyncio.TimeoutError:
+            log("shutdown task cleanup timed out")
+
 
 
 def main_entry():

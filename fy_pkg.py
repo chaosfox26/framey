@@ -34,8 +34,10 @@ HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubus
 MEMORY_MAX = 64
 MEMORY_DEFAULT = 32
 MACHINE = {"amd64": "x86_64", "arm64": "aarch64"}
+PLATFORM_ALIASES = {"linux-arm64": "linux-aarch64", "linux-amd64": "linux-x86_64"}
 PLATFORM = "linux-" + MACHINE.get(_platform.machine().lower(), _platform.machine().lower())
 ID = re.compile(r"[a-z0-9_-]{1,32}")
+RESERVED_PLUGIN_IDS = frozenset(("_core", "core", "modules", "settings", "store", "discover", "developer", "dev", "decky-store"))
 PLAT = re.compile(r"linux-[a-z0-9_]{1,24}")
 LOCALE = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?")
 VER = re.compile(r"v?([0-9]{1,9}(?:\.[0-9]{1,9}){0,3})(?:-([0-9A-Za-z-]{1,32}(?:\.[0-9A-Za-z-]{1,32}){0,7}))?(?:\+[0-9A-Za-z.-]{1,32})?")
@@ -94,6 +96,10 @@ def _clean(s, n):
     return "".join(c for c in s if c.isprintable())[:n]
 
 
+def _platform_id(value):
+    return PLATFORM_ALIASES.get(value, value) if isinstance(value, str) else value
+
+
 def _constraints(m):
     errs = []
     out = {"api": None, "min": None, "max": None, "platform": None}
@@ -122,16 +128,18 @@ def _constraints(m):
         if not isinstance(pl, list) or len(pl) > 8 or not all(isinstance(x, str) and PLAT.fullmatch(x) for x in pl):
             errs.append("platform must be a list of up to 8 names like linux-aarch64")
         elif pl:
-            out["platform"] = list(dict.fromkeys(pl))
+            out["platform"] = list(dict.fromkeys(_platform_id(x) for x in pl))
     return out, errs
 
 
 def _over(lv, hi):
-    n = len(hi.text.partition("-")[0].split("."))
-    return lv[0][:n] > hi[0][:n] if n < 3 else lv > hi
+    release = hi.text.partition("+")[0].partition("-")[0]
+    n = len(release.split("."))
+    return lv[0][:n] > hi[0][:n] if n < 3 and not hi.prerelease else lv > hi
 
 
 def decide(m, loader_version, platform, api=API_GENERATION):
+    platform = _platform_id(platform)
     if not isinstance(m, dict):
         return {"state": "incompatible", "badge": "unknown", "msg": "plugin.json is not valid", "reasons": ["plugin.json is not valid"]}
     c, errs = _constraints(m)
@@ -188,7 +196,7 @@ def _companion(raw):
         rel = "/".join(parts)
         if rel not in names:
             names.append(rel)
-    return {"name": name, "version": ver.text, "platform": plat, "asset": asset, "sha256": sha.lower(), "size": size, "exec": names}, ""
+    return {"name": name, "version": ver.text, "platform": _platform_id(plat), "asset": asset, "sha256": sha.lower(), "size": size, "exec": names}, ""
 
 
 def companions(m, platform_id=None):
@@ -196,7 +204,7 @@ def companions(m, platform_id=None):
     out, seen = [], set()
     for x in raw[:16] if isinstance(raw, list) else []:
         d, _ = _companion(x)
-        if d and d["platform"] == (platform_id or PLATFORM) and d["name"] not in seen:
+        if d and d["platform"] == _platform_id(platform_id or PLATFORM) and d["name"] not in seen:
             seen.add(d["name"])
             out.append(d)
     return out
@@ -206,10 +214,10 @@ def _normalize(m):
     errs = []
     v = {}
     pid = m.get("id")
-    if isinstance(pid, str) and ID.fullmatch(pid) and pid != "_core":
+    if isinstance(pid, str) and ID.fullmatch(pid) and pid not in RESERVED_PLUGIN_IDS:
         v["id"] = pid
     else:
-        errs.append("id must match [a-z0-9_-]{1,32}")
+        errs.append("id is reserved for Framey" if isinstance(pid, str) and pid in RESERVED_PLUGIN_IDS else "id must match [a-z0-9_-]{1,32}")
         v["id"] = ""
     for key, cap in (("name", 80), ("version", 40), ("short", 200), ("source", 300)):
         x = m.get(key)
@@ -451,6 +459,9 @@ def _layout(items, strip, top):
 def _save(dest, parts, src, declared, run, exec_names):
     root = os.path.realpath(dest)
     target = Path(root).joinpath(*parts)
+    real = os.path.realpath(target.parent)
+    if real != root and not real.startswith(root + os.sep):
+        raise PkgError("archive path leaves the destination", "unsafe_path")
     target.parent.mkdir(parents=True, exist_ok=True)
     real = os.path.realpath(target.parent)
     if real != root and not real.startswith(root + os.sep):
@@ -529,7 +540,7 @@ def _zip_end_ok(data):
         raise PkgError("archive has more than %d entries" % ENTRIES, "too_many")
 
 
-def safe_extract_zip(data, dest, *, strip="auto", exec_names=()):
+def safe_extract_zip(data, dest, *, strip="auto", exec_names=(), preserve_exec=False):
     import zipfile
     _need_bytes(data)
     _zip_end_ok(bytes(data))
@@ -538,6 +549,8 @@ def safe_extract_zip(data, dest, *, strip="auto", exec_names=()):
         with zipfile.ZipFile(io.BytesIO(bytes(data))) as z:
             budget, items = _Budget(), []
             for info in z.infolist():
+                if info.orig_filename != info.filename:
+                    raise PkgError("archive has an ambiguous path", "unsafe_path")
                 budget.add(info.file_size)
                 kind = stat.S_IFMT(info.external_attr >> 16) if info.create_system == 3 else 0
                 if info.flag_bits & 1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
@@ -549,6 +562,8 @@ def safe_extract_zip(data, dest, *, strip="auto", exec_names=()):
             run, written = [0], []
             for parts, is_dir, size, info in _layout(items, strip, None):
                 if not is_dir:
+                    if preserve_exec is True and info.create_system == 3 and (info.external_attr >> 16) & stat.S_IXUSR:
+                        run_names.add("/".join(parts))
                     with z.open(info) as src:
                         _save(dest, parts, src, size, run, run_names)
                     written.append("/".join(parts))
@@ -594,8 +609,9 @@ def install_companion(archive_bytes, spec, dest_dir, *, platform_id=None):
     d, why = _companion(spec)
     if d is None:
         raise PkgError(why, "bad_spec")
-    if d["platform"] != (platform_id or PLATFORM):
-        raise PkgError("companion %s is built for %s; this headset is %s" % (d["name"], d["platform"], platform_id or PLATFORM), "platform")
+    platform_id = _platform_id(platform_id or PLATFORM)
+    if d["platform"] != platform_id:
+        raise PkgError("companion %s is built for %s; this headset is %s" % (d["name"], d["platform"], platform_id), "platform")
     _need_bytes(archive_bytes)
     if len(archive_bytes) != d["size"]:
         raise PkgError("companion %s has the wrong size" % d["name"], "size")

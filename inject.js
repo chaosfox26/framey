@@ -31,12 +31,13 @@ const __FY = (() => {
   ["click", "keydown", "pointerdown"].forEach(t => window.addEventListener(t, mark, true));
   const TOK = typeof __fyt === "string" ? __fyt : "";
   const ID = /^[a-z0-9_-]{1,32}$/;
-  const RESERVED = ["core", "modules", "settings", "store", "discover", "developer", "dev"];
-  const calls = {}, LONG = new Set(["check", "update", "finish", "retry", "rollback", "loader_update", "loader_done", "loader_roll", "install", "add", "enable", "disable", "uninstall", "reload", "reload_one", "ver_list", "ver_install", "repair", "notes", "batch_plan", "batch_apply", "loader_check", "companion_fetch", "maint_refresh", "settings_repair", "fetch"]);
-  const limit = (plugin, method, to) => (plugin !== "_core" ? (to || 50000) + 10000 : LONG.has(method) ? 600000 : method === "resource" ? 55000 : 15000);
+  const RESERVED = ["core", "modules", "settings", "store", "discover", "decky-store", "developer", "dev"];
+  const calls = {}, LONG = new Set(["check", "update", "finish", "retry", "rollback", "loader_update", "loader_done", "loader_roll", "install", "add", "enable", "disable", "uninstall", "reload", "reload_one", "ver_list", "ver_install", "repair", "notes", "batch_plan", "batch_apply", "loader_check", "companion_fetch", "maint_refresh", "settings_repair", "fetch", "catalog_install"]);
+  const READ = new Set(["resource", "catalog_sources", "catalog_list", "catalog_details", "catalog_assess"]);
+  const limit = (plugin, method, to) => (plugin !== "_core" ? (to || 50000) + 10000 : LONG.has(method) ? 600000 : READ.has(method) ? 55000 : 15000);
   const gen =Math.random().toString(36).slice(2);
   const bound = new Map();
-  const mods = [], gone = new WeakSet();
+  const mods = [], gone = new WeakSet(), gonePages = new WeakSet();
   const APIS = new WeakMap();
   const inst = {};
   let n = 0;
@@ -81,7 +82,11 @@ const __FY = (() => {
     if (!v || !Array.isArray(v.order) || !Array.isArray(v.hidden)) return;
     const was = stringify(st);
     st = { order: v.order, hidden: v.hidden };
-    if (isOpen() && stringify(st) !== was) paint();
+    if (isOpen() && stringify(st) !== was) {
+      const visible = shown();
+      if (!visible.some(t => key(t) === cur)) show(visible[0]);
+      else paint();
+    }
   };
   const reg = (i, p) => {
     if (i.used) throw new Error("this module is already registered");
@@ -98,28 +103,29 @@ const __FY = (() => {
     const tm = new Set();
     const iv = new Set();
     const ls = new Set();
-    const keep = (m, h) => {
-      if (m.size >= 256) m.delete(m.values().next().value);
-      m.add(h);
+    const room = (m, what) => {
+      if (m.size >= 256) throw new RangeError("too many " + what);
     };
     const api = {
       id,
       timeout(fn, ms) {
         if (p.dead) return 0;
+        room(tm, "timers");
         const h = later(() => {
           tm.delete(h);
           if (!p.dead) fn();
         }, ms);
-        keep(tm, h);
+        tm.add(h);
         return h;
       },
       interval(fn, ms) {
         if (p.dead) return 0;
+        room(iv, "intervals");
         const h = every(() => {
           if (p.dead) unevery(h);
           else fn();
         }, ms);
-        keep(iv, h);
+        iv.add(h);
         return h;
       },
       clear(h) {
@@ -155,7 +161,7 @@ const __FY = (() => {
     const x = io(id, i.tok);
     defProp(api, "_rpc", {
       value: (method, arg) =>
-        (p.dead ? P.reject(new Error("module disposed")) : x.core(method, arg)).then(r => {
+        (p.dead ? P.reject(O.assign(new Error("module disposed"), { code: "disposed" })) : x.core(method, arg)).then(r => {
           if (r && r.error) {
             const e = new Error(String(r.error));
             e.code = r.code;
@@ -201,16 +207,26 @@ const __FY = (() => {
   };
   const apiOf = t => APIS.get(t);
   const disposeMods = only => {
-    if (!only) ["click", "keydown", "pointerdown"].forEach(t => window.removeEventListener(t, mark, true));
+    if (!only) {
+      ["click", "keydown", "pointerdown"].forEach(t => window.removeEventListener(t, mark, true));
+      all().filter(t => !t.plugin && !apiOf(t)).forEach(t => { if (t.dispose) safe(t.dispose); });
+    }
     mods.forEach(p => {
       if (gone.has(p) || (only && p.id !== only)) return;
       gone.add(p);
       try { if (p.dispose) p.dispose(); } catch (e) { safe(() => FY.toast("Module " + p.id + " cleanup failed: " + (e && e.message), 4000)); }
       safe(() => APIS.get(p)._clear());
       safe(() => owned(p.id).forEach(e => e.remove()));
-      safe(() => O.keys(calls).forEach(k => { if (calls[k].p === p.id) { unlater(calls[k].t); delete calls[k]; } }));
       inst[p.id] = (inst[p.id] | 0) + 1;
     });
+    O.keys(calls).forEach(k => {
+      const c = calls[k];
+      if (only && c.p !== only) return;
+      unlater(c.t);
+      delete calls[k];
+      c.r({ error: c.p === "_core" ? "Framey panel disposed" : "module disposed", code: "disposed" });
+    });
+    if (!only) inst._core = (inst._core | 0) + 1;
   };
   const FY = {
     ext: [],
@@ -259,12 +275,15 @@ const __FY = (() => {
     reply: FY._reply,
   };
   FY._k = t => (TOK && t === TOK ? K : null);
-  const panel = el("position:fixed;top:11px;right:11px;z-index:99999;box-sizing:border-box;width:520px;max-height:585px;background:#101018;color:#fff;border-radius:16px;padding:14px;display:none;gap:12px;font:20px sans-serif");
+  const panel = el("position:fixed;top:11px;right:11px;z-index:99999;box-sizing:border-box;width:520px;max-width:calc(100vw - 22px);max-height:min(585px,calc(100vh - 22px));overflow:hidden;background:#101018;color:#fff;border-radius:16px;padding:14px;display:none;gap:12px;font:20px sans-serif");
   panel.setAttribute("role", "region");
   panel.setAttribute("aria-label", "Framey");
-  const content = el("flex:1;min-width:0;overflow:auto;max-height:557px;padding:6px");
-  const rail = el("box-sizing:border-box;width:104px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:557px;padding:6px");
+  const content = el("flex:1;min-width:0;min-height:0;overflow:auto;max-height:min(557px,calc(100vh - 50px));overscroll-behavior:contain;padding:6px");
+  const rail = el("box-sizing:border-box;width:104px;min-height:0;flex:none;display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:min(557px,calc(100vh - 50px));overscroll-behavior:contain;scroll-padding:6px;padding:6px");
+  content.id = "fy-content-" + gen;
+  content.setAttribute("role", "tabpanel");
   rail.setAttribute("role", "tablist");
+  rail.setAttribute("aria-label", "Framey pages");
   rail.setAttribute("aria-orientation", "vertical");
   panel.append(content, rail);
   const press = (t, fn) => {
@@ -296,22 +315,26 @@ const __FY = (() => {
     short: name,
     render(box) {
       const m = FY.pages && FY.pages[k];
-      if (m) m.render(box);
-      else box.textContent = name + " is not available.";
+      if (m && typeof m.render === "function") return m.render(box);
+      box.append(el("font-size:22px;font-weight:700;margin-bottom:12px", name + " is not available."));
+      if (k === "store" || k === "decky_store") {
+        box.append(el("font-size:19px;color:#b9b9cc;margin-bottom:12px", "Reload modules to try again. You can still install and manage modules from Modules."));
+        box.append(FY.button("Open Modules", "min-height:48px;padding:8px 14px", () => FY.open("#modules")));
+      }
+    },
+    leave() {
+      const m = FY.pages && FY.pages[k];
+      if (m && typeof m.leave === "function") return m.leave();
+    },
+    dispose() {
+      const m = FY.pages && FY.pages[k];
+      if (!m || gonePages.has(m)) return;
+      gonePages.add(m);
+      if (typeof m.dispose === "function") return m.dispose();
     },
   });
-  const store = {
-    id: "#discover",
-    name: "Store",
-    short: "Store",
-    render(box) {
-      box.append(
-        el("font-size:28px;font-weight:700;margin-bottom:12px", "Store"),
-        el("font-size:22px;font-weight:700;color:#5585ff;margin-bottom:12px", "Coming soon"),
-        el("font-size:19px;color:#8a8aa0", "Module discovery and search will arrive in a later update. Until then, install and manage modules from the Modules page."),
-      );
-    },
-  };
+  const store = page("#discover", "Store", "store");
+  const deckyStore = page("#decky-store", "Decky Store", "decky_store");
   const dev = {
     id: "#developer",
     name: "Developer",
@@ -325,35 +348,43 @@ const __FY = (() => {
     const o = st.order || [];
     const rank = p => { const i = o.indexOf(p.id); return i < 0 ? o.length : i; };
     const pg = FY.panelPages ? FY.panelPages() : [];
-    return [...FY.plugins.filter(p => !p.dead).sort((a, b) => rank(a) - rank(b)).flatMap(p => [p, ...pg.filter(g => g.plugin === p.id)]), page("#modules", "Modules", "modules"), store, page("#settings", "Settings", "settings"), ...(FY.dev ? [dev] : [])];
+    return [...FY.plugins.filter(p => !p.dead).sort((a, b) => rank(a) - rank(b)).flatMap(p => [p, ...pg.filter(g => g.plugin === p.id)]), page("#modules", "Modules", "modules"), store, deckyStore, page("#settings", "Settings", "settings"), ...(FY.dev ? [dev] : [])];
   };
   const find = id => all().find(t => key(t) === id);
   const shown = () => all().filter(t => !(st.hidden || []).includes(t.plugin || t.id));
   const tabs = () => [...rail.children];
   const stop = t => tabs().forEach(x => (x.tabIndex = x === t ? 0 : -1));
+  const reveal = t => { if (t) safe(() => t.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" })); };
   const focusTab = () => {
     const t = tabs().find(x => x.getAttribute("aria-selected") === "true") || tabs()[0];
-    if (t) t.focus();
+    if (t) { stop(t); t.focus({ preventScroll: true }); reveal(t); }
   };
   const focusFirst = () => {
     const c = content.querySelector('[tabindex="0"],input,textarea,select,button');
-    if (c) c.focus();
+    if (!c) return false;
+    c.focus();
+    return true;
   };
   const paint = () => {
     const had = rail.contains(document.activeElement);
     const o = owner;
     owner = "";
     rail.replaceChildren();
+    content.removeAttribute("aria-labelledby");
     shown().forEach(t => {
       const on = key(t) === cur;
       const txt = label(t);
-      const b = tile("height:72px;flex:none;box-sizing:border-box;overflow:hidden;overflow-wrap:anywhere;justify-content:center;text-align:center;font-weight:700;font-size:" + (txt.length > 8 ? 14 : 17) + "px;padding:0 4px;background:" + (on ? "#5585ff" : "#2a2a3a"), txt, () => show(t), "tab");
+      const b = tile("height:72px;flex:none;box-sizing:border-box;overflow:hidden;overflow-wrap:anywhere;justify-content:center;text-align:center;font-weight:700;font-size:" + (txt.length > 8 ? 14 : 17) + "px;padding:0 4px;background:" + (on ? "#3f68d0" : "#2a2a3a"), txt, () => show(t), "tab");
+      b.id = "fy-tab-" + gen + "-" + rail.childElementCount;
+      b.setAttribute("aria-controls", content.id);
       b.setAttribute("aria-selected", String(on));
+      if (on) content.setAttribute("aria-labelledby", b.id);
       b.tabIndex = on ? 0 : -1;
       rail.append(b);
     });
     owner = o;
     if (rail.firstChild && !tabs().some(x => x.tabIndex === 0)) rail.firstChild.tabIndex = 0;
+    reveal(tabs().find(x => x.getAttribute("aria-selected") === "true"));
     if (had) focusTab();
   };
   rail.addEventListener("keydown", ev => {
@@ -365,12 +396,13 @@ const __FY = (() => {
       focusFirst();
       return;
     }
-    const j = ev.key === "ArrowDown" ? i + 1 : ev.key === "ArrowUp" ? i - 1 : ev.key === "Home" ? 0 : ev.key === "End" ? a.length - 1 : -1;
-    if (j < 0) return;
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(ev.key)) return;
+    const j = ev.key === "ArrowDown" ? i + 1 : ev.key === "ArrowUp" ? i - 1 : ev.key === "Home" ? 0 : a.length - 1;
     ev.preventDefault();
     const t = a[Math.max(0, Math.min(a.length - 1, j))];
     stop(t);
-    t.focus();
+    t.focus({ preventScroll: true });
+    reveal(t);
   });
   panel.addEventListener("keydown", ev => {
     if (ev.defaultPrevented) return;
@@ -387,25 +419,35 @@ const __FY = (() => {
     const old = cur !== key(t) && find(cur);
     if (old && old.leave) safe(old.leave);
     cur = key(t);
+    content.setAttribute("aria-label", String(t.name || t.short || cur));
     ss("fyTab", cur);
     paint();
     content.replaceChildren();
     const body = el("");
     content.append(body);
     owner = t.plugin || (apiOf(t) ? t.id : "");
-    try { t.render(body, apiOf(t)); } catch (e) {
+    const source = owner || "_core", generation = stamp(source);
+    const failed = e => {
+      if (!body.isConnected || body.parentNode !== content || cur !== key(t) || generation !== stamp(source)) return;
       body.textContent = "Module error: " + (e && e.message);
       if (t.plugin || apiOf(t)) post("fail", { id: t.plugin || t.id, what: "render", msg: String(e && e.message) }, TOK);
-    }
+    };
+    try {
+      const result = t.render(body, apiOf(t));
+      if (result && typeof result.then === "function") P.resolve(result).catch(failed);
+    } catch (e) { failed(e); }
     owner = "";
-    if (inside) focusFirst();
+    if (inside && !focusFirst()) focusTab();
   };
   const note = () => post("panel", isOpen(), TOK);
   const go = (on, id) => {
     const was = isOpen();
     if (on && !was) returnTo = document.activeElement;
     panel.style.display = on ? "flex" : "none";
-    if (on) show(find(id) || find(ss("fyTab")) || shown()[0]);
+    if (on) {
+      const visible = shown();
+      show((id && find(id)) || visible.find(t => key(t) === ss("fyTab")) || visible[0]);
+    }
     if (on === was) return;
     ss("fyOpen", on ? "1" : "");
     if (on) {

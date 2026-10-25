@@ -44,9 +44,61 @@ class MediaError(Exception):
         self.message = message[:300]
 
 
-def _slice(path, limit):
-    with open(path, "rb") as f:
-        return f.read(limit)
+def _open_file(path):
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    if os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW"):
+        parts = Path(path).parts
+        parent = os.open(parts[0], flags | os.O_DIRECTORY)
+        try:
+            for part in parts[1:-1]:
+                child = os.open(part, flags | os.O_DIRECTORY, dir_fd=parent)
+                os.close(parent)
+                parent = child
+            fd = os.open(parts[-1], flags, dir_fd=parent)
+        finally:
+            os.close(parent)
+    else:
+        if os.path.realpath(path) != path:
+            raise OSError("Resource path changed")
+        fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or os.path.realpath(path) != path:
+            raise OSError("Resource is not a regular file")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _inspect(path, limit):
+    with _open_file(path) as f:
+        size = os.fstat(f.fileno()).st_size
+        return size, f.read(limit + 1) if size <= limit else None
+
+
+def _close_open(task):
+    try:
+        task.result().close()
+    except BaseException:
+        pass
+
+
+def _close_read(task, f):
+    try:
+        task.result()
+    except BaseException:
+        pass
+    finally:
+        f.close()
+
+
+async def _open(path):
+    pending = asyncio.create_task(asyncio.to_thread(_open_file, path))
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        pending.add_done_callback(_close_open)
+        raise
 
 
 def _chunk(f, n):
@@ -56,8 +108,9 @@ def _chunk(f, n):
 class Media:
     def __init__(self, loop=None, *, max_tokens=16, default_ttl=600, data_max=1048576, clock=time.monotonic):
         self._loop = loop
-        self._max = max_tokens
-        self._ttl = default_ttl
+        self._max = max_tokens if type(max_tokens) is int and max_tokens > 0 else 16
+        self._ttl = 600
+        self._ttl = self._ttl_for(default_ttl)
         self._data_max = data_max
         self._clock = clock
         self._tokens = {}
@@ -66,51 +119,63 @@ class Media:
         self._handle = None
         self._conns = set()
         self._start_lock = None
+        self._issue_lock = asyncio.Lock()
+        self._generation = 0
+        self._owners = {}
+        self._streams = {}
 
     def _ttl_for(self, ttl):
         if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or (isinstance(ttl, float) and not math.isfinite(ttl)) or ttl < 1:
             return self._ttl
         return min(ttl, TTL_MAX)
 
-    async def url_for(self, pid, path, *, ttl=None, data_max=None):
+    async def url_for(self, pid, path, *, ttl=None, data_max=None, _root=None):
+        generation, owner = self._generation, self._owners.get(pid, 0)
         limit = self._data_max if data_max is None else data_max
         real = os.path.realpath(path)
+        if _root is not None:
+            base = os.fspath(_root)
+            if os.path.commonpath([base, real]) != base:
+                raise MediaError("outside_root", "That folder is outside the allowed locations")
         mime = TYPES.get(Path(real).suffix.lower().lstrip("."))
         if mime is None:
             raise MediaError("bad_type", "That file type is not allowed")
         try:
-            st = os.stat(real)
+            _, data = await asyncio.to_thread(_inspect, real, limit)
         except OSError:
-            raise MediaError("not_found", "That file was not found")
-        if not stat.S_ISREG(st.st_mode):
-            raise MediaError("not_found", "That is not a file")
+            raise MediaError("not_found", "That file cannot be read")
         ttl = self._ttl_for(ttl)
-        expires = int(time.time() + ttl)
-        if st.st_size <= limit:
+        async with self._issue_lock:
+            if generation != self._generation or owner != self._owners.get(pid, 0):
+                raise MediaError("cancelled", "That resource request was cancelled")
+            if data is not None and len(data) <= limit:
+                return {"url": "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii")), "kind": "data", "expires": int(time.time() + ttl), "token": None}
+            self._sweep()
+            for token, e in self._tokens.items():
+                if e[0] == pid and e[1] == real:
+                    e[3] = self._clock() + ttl
+                    self._arm()
+                    return self._answer(token, int(time.time() + ttl))
             try:
-                data = await asyncio.to_thread(_slice, real, limit + 1)
-            except OSError:
-                raise MediaError("not_found", "That file cannot be read")
-            if len(data) <= limit:
-                return {"url": "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii")), "kind": "data", "expires": expires, "token": None}
-        self._sweep()
-        now = self._clock()
-        for token, e in self._tokens.items():
-            if e[0] == pid and e[1] == real:
-                e[3] = now + ttl
-                self._arm()
-                return self._answer(token, expires)
-        mine = [t for t, e in self._tokens.items() if e[0] == pid]
-        if len(mine) >= PER_PLUGIN:
-            del self._tokens[mine[0]]
-        elif len(self._tokens) >= self._max:
-            del self._tokens[next(iter(self._tokens))]
-        await self._start()
-        import secrets
-        token = secrets.token_hex(16)
-        self._tokens[token] = [pid, real, mime, now + ttl]
-        self._arm()
-        return self._answer(token, expires)
+                await self._start()
+            except BaseException:
+                if not self._tokens:
+                    self._stop()
+                raise
+            if generation != self._generation or owner != self._owners.get(pid, 0):
+                if not self._tokens:
+                    self._stop()
+                raise MediaError("cancelled", "That resource request was cancelled")
+            mine = [t for t, e in self._tokens.items() if e[0] == pid]
+            if len(mine) >= PER_PLUGIN:
+                self._drop(mine[0])
+            elif len(self._tokens) >= self._max:
+                self._drop(next(iter(self._tokens)))
+            import secrets
+            token = secrets.token_hex(16)
+            self._tokens[token] = [pid, real, mime, self._clock() + ttl]
+            self._arm()
+            return self._answer(token, int(time.time() + ttl))
 
     def _answer(self, token, expires):
         return {"url": "http://127.0.0.1:%d/m/%s" % (self._port, token), "kind": "http", "expires": expires, "token": token}
@@ -139,7 +204,7 @@ class Media:
     def _sweep(self):
         now = self._clock()
         for t in [t for t, e in self._tokens.items() if e[3] <= now]:
-            del self._tokens[t]
+            self._drop(t)
         if not self._tokens:
             self._stop()
 
@@ -153,24 +218,32 @@ class Media:
             for w in list(self._conns):
                 w.transport.abort()
 
+    def _drop(self, token):
+        self._tokens.pop(token, None)
+        for writer, active in list(self._streams.items()):
+            if active == token:
+                writer.transport.abort()
+
     def revoke(self, token, pid=None):
         e = self._tokens.get(token) if isinstance(token, str) else None
         if e is None or (pid is not None and e[0] != pid):
             return False
-        del self._tokens[token]
+        self._drop(token)
         if not self._tokens:
             self._stop()
         return True
 
     def revoke_plugin(self, pid):
+        self._owners[pid] = self._owners.get(pid, 0) + 1
         gone = [t for t, e in self._tokens.items() if e[0] == pid]
         for t in gone:
-            del self._tokens[t]
+            self._drop(t)
         if gone and not self._tokens:
             self._stop()
         return len(gone)
 
     async def close(self):
+        self._generation += 1
         s = self._server
         self._tokens.clear()
         self._stop()
@@ -205,6 +278,7 @@ class Media:
             pass
         finally:
             self._conns.discard(writer)
+            self._streams.pop(writer, None)
             writer.close()
 
     async def _handle_request(self, reader, writer):
@@ -214,9 +288,11 @@ class Media:
             return await self._reply(writer, 431, reader=reader)
         except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError):
             return
+        if len(head) > HEAD_MAX:
+            return await self._reply(writer, 431)
         lines = head.decode("latin-1").split("\r\n")
         bits = lines[0].split(" ")
-        if len(bits) != 3:
+        if len(bits) != 3 or bits[2] not in ("HTTP/1.0", "HTTP/1.1"):
             return await self._reply(writer, 400)
         if bits[0] != "GET":
             return await self._reply(writer, 405)
@@ -225,17 +301,19 @@ class Media:
         if entry is None:
             return await self._reply(writer, 404)
         token = m[1]
+        self._streams[writer] = token
         want = ""
         for line in lines[1:]:
             name, _, value = line.partition(":")
             if name.strip().lower() == "range":
                 want = value.strip()
         try:
-            f = await asyncio.to_thread(open, entry[1], "rb")
+            f = await _open(entry[1])
         except OSError:
             return await self._reply(writer, 404)
-        with f:
-            if os.path.realpath(entry[1]) != entry[1]:
+        pending = None
+        try:
+            if self._live(token) is not entry:
                 return await self._reply(writer, 404)
             size = os.fstat(f.fileno()).st_size
             start, end, code = 0, size - 1, 200
@@ -257,12 +335,18 @@ class Media:
             f.seek(start)
             left = length
             while left > 0 and self._live(token):
-                data = await asyncio.to_thread(_chunk, f, min(CHUNK, left))
-                if not data:
+                pending = asyncio.create_task(asyncio.to_thread(_chunk, f, min(CHUNK, left)))
+                data = await asyncio.shield(pending)
+                if not data or self._live(token) is not entry:
                     break
                 writer.write(data)
                 await asyncio.wait_for(writer.drain(), READ_TIMEOUT)
                 left -= len(data)
+        finally:
+            if pending is not None and not pending.done():
+                pending.add_done_callback(lambda task: _close_read(task, f))
+            else:
+                f.close()
 
 
 _media = None
@@ -287,19 +371,24 @@ async def hostcall(host, pid, arg, page=False):
 
     a = arg if isinstance(arg, dict) else {}
     if a.get("revoke") is not None:
+        if not isinstance(pid, str) or not fy_files.PID.fullmatch(pid):
+            return {"ok": False}
         raw = a["revoke"] if isinstance(a["revoke"], str) else ""
-        m = TOKEN.search(raw)
-        return {"ok": get().revoke(m[1] if m else raw, pid)}
+        media = get()
+        prefix = "http://127.0.0.1:%d" % media._port
+        m = TOKEN.fullmatch(raw[len(prefix):]) if raw.startswith(prefix + "/") else None
+        return {"ok": media.revoke(m[1] if m else raw, pid)}
     dirs = fy_files.plugin_dirs(host, pid)
     own = {k: getattr(dirs, k) for k in (("data", "runtime") if page else ("data", "config", "runtime")) if dirs and getattr(dirs, k, None)}
     root = a.get("root")
     if not isinstance(root, str) or root not in own:
         raise MediaError("bad_root", "That location is not available")
+    base = Path(os.path.realpath(own[root]))
     try:
-        path = fy_files.safe_join(Path(own[root]), a.get("path", ""))
+        path = fy_files.safe_join(base, a.get("path", ""))
     except fy_files.FileError as e:
         raise MediaError(e.code, e.message)
-    return await get().url_for(pid, path, ttl=a.get("ttl"), data_max=None if page else HOST_DATA_MAX)
+    return await get().url_for(pid, path, ttl=a.get("ttl"), data_max=None if page else HOST_DATA_MAX, _root=base)
 
 
 async def resource(host, arg):

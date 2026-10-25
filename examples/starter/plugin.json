@@ -1,1 +1,26 @@
-{"id": "starter", "name": "Starter", "version": "1.0.0", "short": "Starter", "source": "https://github.com/your-name/framey-starter", "api": 1, "framey": {"min": "1.0.2"}, "platform": ["linux-aarch64", "linux-x86_64"], "backend": {"timeout": 15, "idle": 120, "keepalive": false, "concurrency": 1, "memory_mb": 64, "startup_timeout": 10}, "data_version": 1, "i18n": {"default": "en"}}
+{
+  "id": "starter",
+  "name": "Starter",
+  "version": "1.0.0",
+  "short": "Starter",
+  "api": 1,
+  "framey": {
+    "min": "1.0.2"
+  },
+  "platform": [
+    "linux-aarch64",
+    "linux-x86_64"
+  ],
+  "backend": {
+    "timeout": 15,
+    "idle": 120,
+    "keepalive": false,
+    "concurrency": 1,
+    "memory_mb": 64,
+    "startup_timeout": 10
+  },
+  "data_version": 1,
+  "i18n": {
+    "default": "en"
+  }
+}

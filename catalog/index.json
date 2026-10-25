@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "name": "Framey catalog",
+  "plugins": [
+    {
+      "id": "hello",
+      "name": "Hello",
+      "version": "1.0.0",
+      "description": "A bundled example with a saved slider value, a greeting call, and a slow backend call that demonstrates the timeout. Use it to explore plugin development.",
+      "category": "examples",
+      "tags": ["example", "backend", "settings"],
+      "license": "GPL-2.0-only",
+      "homepage": "https://github.com/chaosfox26/framey/tree/4247757951b8f2aa2f539ada93e416054a2137fc/examples/hello-plugin",
+      "channel": "stable",
+      "updated": "2026-10-25",
+      "kind": "plugin",
+      "platform": ["linux-aarch64", "linux-x86_64"],
+      "framey": {"min": "1.0.2"},
+      "source": {
+        "repository": "https://github.com/chaosfox26/framey",
+        "commit": "4247757951b8f2aa2f539ada93e416054a2137fc",
+        "path": "examples/hello-plugin"
+      }
+    },
+    {
+      "id": "starter",
+      "name": "Starter",
+      "version": "1.0.0",
+      "description": "A bundled plugin development example covering API generation 1: backend calls and events, settings, controller-friendly controls, notifications, translations, file picking, pages, and cleanup.",
+      "category": "examples",
+      "tags": ["example", "development", "api"],
+      "license": "GPL-2.0-only",
+      "homepage": "https://github.com/chaosfox26/framey/tree/4247757951b8f2aa2f539ada93e416054a2137fc/examples/starter",
+      "channel": "stable",
+      "updated": "2026-10-25",
+      "kind": "plugin",
+      "platform": ["linux-aarch64", "linux-x86_64"],
+      "api": 1,
+      "framey": {"min": "1.0.2"},
+      "source": {
+        "repository": "https://github.com/chaosfox26/framey",
+        "commit": "4247757951b8f2aa2f539ada93e416054a2137fc",
+        "path": "examples/starter"
+      }
+    },
+    {
+      "id": "fan",
+      "name": "Fan Control",
+      "description": "Shows and changes Steam Frame fan behavior. Requires Framey App signed privileged setup because its cooling components run as root. This project listing is informational; it cannot be installed from the catalog.",
+      "category": "system",
+      "tags": ["cooling", "privileged", "setup"],
+      "license": "GPL-2.0-only",
+      "homepage": "https://github.com/chaosfox26/frame-fan",
+      "channel": "stable",
+      "updated": "2026-10-25",
+      "kind": "setup",
+      "platform": ["linux-aarch64"],
+      "api": 1,
+      "framey": {"min": "1.0.2"},
+      "source": {
+        "repository": "https://github.com/chaosfox26/frame-fan"
+      }
+    }
+  ]
+}

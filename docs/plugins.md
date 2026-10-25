@@ -1,13 +1,14 @@
 # Writing a Framey plugin
 
-This is the plugin author guide for API generation 1, as implemented in Framey 1.0.2. For what Framey is and how to install it, see the [README](../README.md). Two working examples are in the repository: [examples/hello-plugin](../examples/hello-plugin) (small) and [examples/starter](../examples/starter) (most of the API).
+This is the plugin author guide for API generation 1, as implemented in Framey 1.0.2. For what Framey is and how to install it, see the [README](../README.md). For the first edit, local tests and release packaging, follow the [developer quickstart](developer-quickstart.md). Two examples are in the repository: [examples/hello-plugin](../examples/hello-plugin) (small) and [examples/starter](../examples/starter) (most of the API).
 
 Plugins are trusted code. The page part runs inside Steam's interface, and the backend part runs as a separate process under the same user. Framey contains failures, so one broken plugin does not take the panel down. It is not a security sandbox (see [Security model](#security-model)).
 
 ## Quick start
 
 1. Copy `examples/starter` to `~/framey/plugins/<id>` on the headset. The folder name is the plugin id: 1 to 32 characters from `a-z`, `0-9`, `-` and `_`.
-2. Change `id`, `name`, `short`, `version` and `source` in `plugin.json`.
+2. Change `id`, `name`, `short` and `version` in `plugin.json`.
+   Leave `source` absent until you have an actual GitHub update repository with `plugin.json` at its root; the examples intentionally omit placeholder update URLs. No Node.js build step is required.
 3. Open Settings and tap **Reload modules**. (Restarting `framey.service` also works.)
 4. If the plugin fails, its row on the Modules page shows the stage (load, render or backend), the message and the time, with **Disable** and **Reload**.
 
@@ -25,7 +26,7 @@ plugins/<id>/
 ```
 
 - A folder whose name is not a valid id is skipped silently. So are the `.stage-<id>` and `.old-<id>` folders used during installs and updates.
-- `_core` is reserved and cannot be a plugin id.
+- `_core`, `core`, `modules`, `settings`, `store`, `discover`, `developer`, `dev`, and `decky-store` are reserved and cannot be plugin ids.
 - A symlink to a folder works. The Modules page marks it as linked.
 - The loader does not read a plugin `icon.svg`. The side-menu tab uses `short`.
 - Plugins are listed in folder-name order until the user moves them on the Modules page.
@@ -33,7 +34,7 @@ plugins/<id>/
 ## plugin.json
 
 ```json
-{"id": "starter", "name": "Starter", "version": "1.0.0", "short": "Starter", "source": "https://github.com/you/framey-starter", "api": 1, "framey": {"min": "1.0.2"}, "platform": ["linux-aarch64", "linux-x86_64"], "backend": {"timeout": 15, "idle": 120, "keepalive": false, "concurrency": 1, "memory_mb": 64, "startup_timeout": 10}, "data_version": 1, "i18n": {"default": "en"}}
+{"id": "starter", "name": "Starter", "version": "1.0.0", "short": "Starter", "api": 1, "framey": {"min": "1.0.2"}, "platform": ["linux-aarch64", "linux-x86_64"], "backend": {"timeout": 15, "idle": 120, "keepalive": false, "concurrency": 1, "memory_mb": 64, "startup_timeout": 10}, "data_version": 1, "i18n": {"default": "en"}}
 ```
 
 | Field | Meaning |
@@ -62,6 +63,16 @@ The loader checks only that `name`, `version` and `short` are strings when prese
 - A plugin that declares none of these is "Compatibility not declared" and nothing is blocked.
 - A field of the wrong type, or a version that cannot be read, makes the plugin incompatible with the message `plugin.json compatibility fields are not valid`.
 - An installed plugin that becomes incompatible (after a Framey update, for example) still loads and is only flagged.
+- Platform aliases `linux-arm64` and `linux-amd64` are accepted and normalized to `linux-aarch64` and `linux-x86_64`, respectively. These aliases name the same architectures; they do not provide cross-architecture emulation.
+- A short `framey.max` without a prerelease qualifier constrains a series: `"1"` permits the 1.x series and `"1.2"` permits the 1.2.x series. A full maximum such as `"1.2.3"`, or an explicit prerelease maximum such as `"1.2-rc.1"`, is a precise inclusive upper bound. Build metadata (`+build`) does not affect version ordering or turn a short maximum into a precise bound.
+
+### Store assessments and device support
+
+The experimental **Store** installs Framey-native packages; the separate **Decky Store** browses upstream Decky entries. The core routes are `#discover` for native Store and `#decky-store` for Decky Store; these are distinct from plugin-owned page registrations. Decky Store Testing requires developer mode. Its explicit **Inspect compatibility** action reads the selected archive without installing or executing it, with a 50-second backend assessment deadline and a 55-second page reply deadline. See [Decky Store browsing](catalog.md#decky-store) and [selected-version inspection](catalog.md#inspect-a-selected-version) for the current flow and limits.
+
+**Compatible** on a native listing means its declared Framey/API/platform requirements match the target. **Not compatible** identifies a concrete mismatch or an unadapted Decky format. **Not checked** means evidence is missing or insufficient. A matching platform declaration, download checksum, or detected ARM64 binary does not prove runtime or UI compatibility. An unadapted Decky package still needs a source port.
+
+For an ARM64 SteamOS port, review all executables, shared libraries, Python extensions, downloaded helpers, system services, permissions and device paths. Then test the Framey lifecycle and the interface on the headset. Steam Deck-specific hardware behavior does not become Steam Frame support through Linux metadata. Keep VR controls at least 48 px high, readable and focusable; browser simulations do not establish controller or headset behavior. The [quickstart checklist](developer-quickstart.md#check-arm64-steamos-and-vr-support) covers these layers.
 
 ## Page: main.js
 
@@ -101,7 +112,7 @@ const api = Framey.register({
 |---|---|
 | `api.id` | Your plugin id. |
 | `api.runtime` | Frozen `{framey, api, platform, lang, plugin, version}`. |
-| `api.visible` | True while the panel is open and the page is visible. `api.onVisible(fn)` reports changes. |
+| `api.visible` | True while the panel is open and the document is visible; this does not indicate which plugin tab is selected. `api.onVisible(fn)` reports changes. |
 | `api.lang` | Current language. |
 | `api.t(key, vars?)`, `api.i18n` | Translations, see [Translations](#translations). |
 | `api.call(method, arg)` | Backend call. Resolves to the backend result or `{error}`. Never rejects. |
@@ -160,7 +171,7 @@ The lookup order is the user's language, its base language (`de` for `de-AT`), t
 
 `api.pages.register({id, title, mode, render(box, ctx), onclose})` returns `{open(), close(), remove()}` or `{error}`.
 
-- `id` matches `[A-Za-z0-9_.-]{1,40}`. The ids `modules`, `settings`, `discover` and `developer` are reserved.
+- `id` matches `[A-Za-z0-9_.-]{1,40}`. The ids `core`, `modules`, `settings`, `store`, `discover`, `developer`, and `dev` are reserved.
 - `mode: "panel"` (default) adds a tab after your module's tab. `mode: "full"` shows a full-screen page with a Back button.
 - `ctx` is `{id, plugin, mode, api, close()}`. At most 8 pages per module.
 
@@ -222,14 +233,15 @@ Framey removes what it can track; the rest is yours.
 
 - **Page:** the loader calls `dispose()` once when the module is disabled, removed, reloaded, updated, or when the panel is re-injected. After `dispose()` it removes the timers, intervals, listeners, raf callbacks, cleanup functions, notifications, injected items and page subscriptions made through `api`, removes the `Framey.el` and `Framey.button` nodes marked with your id, and ignores late replies. An exception in `dispose` shows a toast and does not stop other modules.
 - Anything created in other ways (`setInterval`, `addEventListener`, `MutationObserver`, WebSockets, globals) is not tracked: clean it up in `dispose()`.
+- Your own promise continuations can still run after a render has been replaced or the plugin disposed. Track a disposed flag and render generation before appending UI or registering new resources. Both repository examples demonstrate this. Use one initialization promise for shared setup; do not resubscribe on every render.
 
 ### Failures
 
 - A syntax error or a top-level exception stops that file and shows `Module <id> failed`. The Modules page lists it as a **load** failure.
-- An exception in `render` shows `Module error: <message>` in the tab and is listed as **render**.
-- Errors in asynchronous code (timers, promises) are not caught by the loader. Catch them yourself.
+- An exception in `render`, or a rejected promise returned by it, shows `Module error: <message>` in the tab and is listed as **render**. Rejected promises returned by registered page and mount renderers are contained too.
+- Catch errors in detached asynchronous work yourself. Starting a promise inside a render without returning or handling it does not give the loader ownership of that rejection.
 - A backend failure is listed as **backend** and is forgotten after the next successful call.
-- Requests from the page to the loader core stop waiting after 55 seconds for `api.fetch` and `api.resource`, 15 seconds for other core calls such as the pickers, and 600 seconds for install, update, check and similar actions. The notice is `Framey core did not reply in N s`. So `api.fetch`'s `timeout` (1 to 60 seconds) is cut at 55 seconds on the page side. The loader does not cancel the request, so the download may still finish.
+- Requests from the page to the loader core stop waiting after 55 seconds for `api.resource` and catalog reads/assessments, 15 seconds for other core calls such as the pickers, and 600 seconds for `api.fetch`, install, update, check and similar actions. The notice is `Framey core did not reply in N s`. The fetch request still has its own `timeout` (1 to 60 seconds). A page reply deadline does not cancel the underlying request.
 
 ## Backend: backend.py
 
@@ -273,7 +285,7 @@ Optional functions in `backend.py`. A hook receives its argument only if it decl
 |---|---|
 | `fy.PLUGIN`, `fy.API` | Plugin id and API generation (1). |
 | `fy.runtime` | `framey`, `api`, `platform`, `python`, `plugin`, `version` (manifest), `plugin_dir`. No environment, tokens or other plugins. |
-| `fy.dirs.config` / `.data` / `.runtime` / `.logs` | Your folders, created on first access. |
+| `fy.dirs.config` / `.data` / `.runtime` / `.logs` | Your folders, created on first access. Production worker startup requires a secure runtime root. A directly constructed SDK can have a missing runtime path; only in that case other SDK folders remain usable while runtime access raises an error. |
 | `fy.settings.get/set/update/delete/all/reset` | JSON settings in `dirs.config/settings.json`. Atomic writes; at most 256 KiB and 200 keys; key names up to 64 characters. |
 | `fy.log.debug/info/warning/error(msg, *args)` | Writes `plugin.log` in `dirs.logs` (256 KiB, 3 files kept, 2048 characters per line, 20 lines per second; excess lines are counted and dropped). Warnings and errors are also echoed to stderr. |
 | `fy.events.emit(name, payload)` | Sends an event to the page (see [Events](#events)). Returns `False` when dropped. |
@@ -328,7 +340,7 @@ A companion is a helper program that the module needs, downloaded on request. De
 - **Folder:** copy or link the folder into `plugins/`, then reload from Settings or restart `framey.service`.
 - **Zip:** an `https://` link to a `.zip` entered on the Modules page, or a zip file installed with the Framey App. `plugin.json` must be at the top of the zip or inside one top folder. Limits: the zip at most 5 MB; 500 entries; each file at most 5 MB; 20 MB unpacked in total; paths at most 8 components, with no absolute path, no `..` and no backslash. Files marked executable stay executable.
 - **URL:** the zip link must be `https://` and resolve to a public address; each redirect must also be `https://`. The download is abandoned after 45 seconds. The Modules page asks for confirmation first, naming the host and saying the plugin runs with your permissions.
-- **Store folder:** a folder with a valid `plugin.json` in `store/<id>/` can be installed from the Modules page. The Store page itself is a placeholder.
+- **Store folder:** a folder with a valid `plugin.json` in `store/<id>/` can be installed from the Modules page. This is separate from the experimental [Store catalog](catalog.md), which provides discovery and reviewed installation.
 
 An install is staged in `.stage-<id>` and swapped in; the previous copy is kept as `.old-<id>` until the swap succeeds. A failed unpack leaves the working plugin untouched. An install is refused when the target folder is a link or an update is waiting to be finished. A zip install writes regular files only; it does not create links.
 
@@ -338,10 +350,11 @@ Updates run only when the user taps. Checking never installs.
 
 - **Source.** The update source is the `.source` file or else `source` in `plugin.json`. Only GitHub is supported.
 - **Check.** *Check for updates* on the Modules page asks GitHub for the head commit of the source branch and reports an update when it differs from the installed commit. A protected component is compared by its newest release tag instead. Automatic checks run only when the Settings preference `autocheck` is on (off by default). The Versions list shows releases.
-- **Channel.** Prereleases are offered only on the `prerelease` channel, which is set only in `~/.config/framey/loader.json` (`channel`); there is no Settings control. The prerelease channel also needs developer mode (`~/.config/framey/developer`); without it the stable channel is used. The stable channel ignores prereleases.
+- **Channel.** Prereleases are offered only on the `prerelease` channel, which is set only in `~/.config/framey/loader.json` (`channel`); there is no Settings control. The prerelease channel also needs developer mode (`~/.config/framey/developer`); without it the stable channel is used. The stable channel ignores prereleases. This also checks the candidate package manifest version, so a prerelease cannot bypass the gate through a branch commit or stable-looking release tag. Repairing the same already installed prerelease identity is allowed.
 - **Install.** The archive of the chosen release or commit is downloaded, verified against the GitHub digest when one is published, checked like a zip, and then swapped in. After every successful update, repair or version install, the previous copy is kept as `.old-<id>` for **Restore previous version**, until **Keep this version** deletes it or a later update replaces it. A repair of the same version keeps the older kept copy. If the new version does not start, the previous copy is restored and the update reports why.
 - **Kept and replaced.** The plugin folder is replaced as a whole, so store data outside it. Settings, data, logs and the enabled state are not touched. The update keeps `.source` and writes `.version` and `.identity.json`.
 - **Downgrades** need a confirmation. A frozen module is not updated until it is unfrozen.
+- **Catalog-managed plugins.** Generic **Versions** and **Repair** refuse these modules to preserve their pinned package identity and folder. Use the Store for reviewed snapshot updates; see [catalog updates](catalog.md#saved-data-and-later-updates).
 - **Linked plugins.** A single Update, a version install and a repair refuse a linked folder (`linked folder: not updated`), and batch update skips it (`linked folder`). Framey does not write through the link.
 - **Protected components** (`privileged`) move only forward. They are installed from a signed GitHub release (a `.tar.gz` and a `.sig` asset checked with `ssh-keygen` against the root-owned `allowed_signers` file next to `installed`). The loader then runs exactly `sudo -n <helper> update` (or `rollback`) with no shell and no password. An update counts as finished only when the root-owned `installed` file reports the new version; otherwise it is a **partial update** with Retry, Check again and Restore previous version. Batch update skips protected components with the reason `protected: updates from its own card`.
 
@@ -375,7 +388,7 @@ Declare it in the `plugin.json` of your repository (at the source path, not the 
 - **Update.** Described above. The new files are loaded only after the swap.
 - **Rollback.** Whenever a kept `.old-<id>` copy exists (after an update, repair, version install, downgrade or partial protected update), **Restore previous version** swaps it back. **Keep this version** deletes it.
 - **Uninstall (Remove).** Runs `uninstall(ctx)`, then deletes the folder (or removes the link, never its target). **Remove and delete data** also deletes the four standard folders (config, data, runtime, logs). Plain removal keeps them.
-- **Standard folders.** Created on first use with mode 0700, never inside `plugins/`: config `~/.config/framey/plugins/<id>/`, data `~/.local/share/framey/<id>/`, runtime `<runtime root>/framey/<id>/`, logs `~/.local/state/framey/<id>/`. The runtime root is `$XDG_RUNTIME_DIR` when it is set, otherwise `/run/user/<uid>` if that is a real directory owned by your user with mode 0700. If neither applies there is no runtime folder: every backend fails to start with a runtime error. There is no `/tmp` fallback.
+- **Standard folders.** Created on first use with mode 0700, never inside `plugins/`: config `~/.config/framey/plugins/<id>/`, data `~/.local/share/framey/<id>/`, runtime `<runtime root>/framey/<id>/`, logs `~/.local/state/framey/<id>/`. The runtime root is `$XDG_RUNTIME_DIR` when it is set, otherwise `/run/user/<uid>` if that is a real directory owned by your user with mode 0700. If neither applies, the production supervisor refuses backend startup before launching a worker. There is no `/tmp` fallback. The SDK's lazy missing-runtime-path behavior in isolated tests does not bypass this production requirement.
 
 ## Security model
 
@@ -446,8 +459,12 @@ Copy it to `~/framey/plugins/counter`, then reload modules. The count is kept in
 
 ## Not supported
 
-- **Store and discovery.** The Store page is a "Coming soon" placeholder: no catalog, no search.
+- **Compiled Decky bundles.** The optional [Decky-style source helper](decky-compatibility.md) requires an explicit source port; it does not implement Decky package or runtime compatibility. For the experimental Store and discovery workflow, see [the catalog guide](catalog.md).
 - **Page storage, page file writes and calls to other plugins.** Keep state in the backend; only the backend saves downloads (`dest`); `api.call` reaches your own backend only.
 - **Starting companion or protected updates from a plugin.** Only the loader's own UI does.
 - **React DevTools.** The loader has no React integration; use the Developer page's debug targets and the Chromium inspector.
 - **Backends in other languages, `icon.svg`, and plugin-declared archive flags.** Backends are Python; the loader does not read a plugin icon; "archived" is GitHub's flag.
+
+## Source ports from Decky
+
+Framey packages are directories or archives containing `plugin.json`, plain `main.js`, and optionally `backend.py`. Decky bundles and frontend or backend bridges do not load directly. Port source entry points, controls, RPC methods, settings paths, cleanup hooks, and hardware-specific behavior to the Framey contracts above. The optional [source-port helper](decky-compatibility.md) adapts a few call and event idioms only; compiled Decky bundles still do not load. The [quickstart porting table](developer-quickstart.md#porting-source-from-decky) maps the main concerns. Preserve the source project's licenses and credits; Framey remains an independent project inspired by Decky Loader.

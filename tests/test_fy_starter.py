@@ -65,7 +65,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual((v["id"], v["api"], v["data_version"], v["i18n"]["default"]), ("starter", 1, 1, "en"))
         self.assertEqual(v["backend"], {"timeout": 15, "idle": 120, "keepalive": False, "concurrency": 1, "memory_mb": 64, "startup_timeout": 10})
         self.assertEqual(v["companions"], [])
-        self.assertTrue(MANIFEST["source"].startswith("https://github.com/"))
+        self.assertNotIn("source", MANIFEST)
 
     def test_compatibility(self):
         self.assertEqual(fy_pkg.decide(MANIFEST, "1.1.0", "linux-aarch64")["state"], "ok")
@@ -73,6 +73,11 @@ class ManifestTests(unittest.TestCase):
         old = fy_pkg.decide(MANIFEST, "1.0.1", "linux-aarch64")
         self.assertEqual((old["state"], old["badge"]), ("incompatible", "newer"))
         self.assertEqual(fy_pkg.decide(MANIFEST, "1.1.0", "linux-armv7l")["badge"], "platform")
+
+    def test_reserved_ui_ids_cannot_be_used_for_an_example_port(self):
+        for plugin_id in ("_core", "core", "modules", "settings", "store", "discover", "developer", "dev"):
+            with self.subTest(plugin_id=plugin_id):
+                self.assertFalse(fy_pkg.normalize_manifest(dict(MANIFEST, id=plugin_id))["ok"])
 
     def test_files_present(self):
         for name in ("plugin.json", "main.js", "backend.py", "README.md", "locales/en.json"):
@@ -127,6 +132,14 @@ class SettingsTests(BackendBase):
         saved = json.loads((Path(self.dirs["config"]) / "settings.json").read_text())
         self.assertEqual(saved, {"level": 70, "mode": "eco", "enabled": False})
         self.assertIn("saved level=70 mode=eco enabled=False", self.log_text())
+
+    async def test_invalid_saved_values_fall_back_without_overwriting_settings(self):
+        self.sdk.settings.update({"enabled": "yes", "level": True, "mode": "turbo"})
+        self.assertEqual(await self.backend.call("get", None), {"enabled": True, "level": 50, "mode": "normal"})
+        self.assertEqual(self.sdk.settings.get("level"), True)
+        for level in (-1, 101, 2.5, "50"):
+            self.sdk.settings.set("level", level)
+            self.assertEqual((await self.backend.call("get", None))["level"], 50)
 
     async def test_every_bad_argument_is_an_error_reply_and_changes_nothing(self):
         b = self.backend
@@ -310,6 +323,42 @@ class RealWorkerTests(unittest.TestCase):
         self.assertTrue(r["ok"], r)
         self.assertTrue(r["result"]["ran"])
         self.assertIn("uninstall, purge=True", (self.root / "logs" / "plugin.log").read_text())
+
+
+class HelloBackendTests(BackendBase):
+    def setUp(self):
+        super().setUp()
+        spec = importlib.util.spec_from_file_location("fy_hello_backend", ROOT / "examples" / "hello-plugin" / "backend.py")
+        self.hello = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.hello)
+
+    async def test_validates_arguments_and_uses_scoped_sdk_settings(self):
+        self.assertEqual(await self.hello.call("get", None), {"level": 50})
+        for arg in (None, [], {}, {"level": True}, {"level": "20"}, {"level": 3.5}, {"level": -1}, {"level": 101}):
+            self.assertIn("error", await self.hello.call("set", arg))
+        self.assertEqual(await self.hello.call("set", {"level": 20}), {"ok": True})
+        self.assertEqual(self.sdk.settings.get("level"), 20)
+        self.assertEqual(await self.hello.call("get", None), {"level": 20})
+        self.assertIn("error", await self.hello.call("greet", {}))
+        self.assertEqual(await self.hello.call("greet", "Frame"), {"text": "Hello, Frame"})
+        self.assertIn("error", await self.hello.call("missing", None))
+
+    async def test_slow_demo_validates_delay_and_remains_cancellable(self):
+        for delay in (None, True, "30", -1, 31, float("nan"), float("inf")):
+            self.assertIn("error", await self.hello.call("slow", delay))
+        task = asyncio.create_task(self.hello.call("slow", 30))
+        await REAL_SLEEP(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+    def test_hello_manifest_has_identity_and_compatibility(self):
+        meta = json.loads((ROOT / "examples" / "hello-plugin" / "plugin.json").read_text())
+        self.assertTrue(fy_pkg.normalize_manifest(meta)["ok"])
+        self.assertEqual(meta["api"], 1)
+        self.assertEqual(meta["id"], "hello")
+        self.assertEqual(meta["data_version"], 1)
+        self.assertEqual(fy_pkg.decide(meta, "1.0.2", "linux-aarch64")["state"], "ok")
 
 
 class HygieneTests(unittest.TestCase):

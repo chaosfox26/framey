@@ -1,4 +1,5 @@
 import json
+import math
 import re
 
 LINE_MAX = 1048576
@@ -15,8 +16,15 @@ def _constant(name):
     raise ValueError(name)
 
 
+def _float(value):
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(value)
+    return result
+
+
 def loads(data):
-    return json.loads(data, parse_constant=_constant)
+    return json.loads(data, parse_constant=_constant, parse_float=_float)
 
 
 def dumps(obj):

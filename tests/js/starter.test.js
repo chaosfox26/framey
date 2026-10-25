@@ -85,7 +85,7 @@ t("saved backend values are applied to the controls", async () => {
 });
 
 t("garbage or failed backend values leave the defaults", async () => {
-  for (const reply of [{ error: "boom" }, { enabled: "yes", level: "70", mode: "turbo" }, null]) {
+  for (const reply of [{ error: "boom" }, { enabled: "yes", level: "70", mode: "turbo" }, { level: -1 }, { level: 101 }, { level: 2.5 }, { level: true }, null]) {
     const h = boot();
     await h.show(reply);
     assert.equal(h.toggle("Feature enabled").getAttribute("aria-checked"), "true");
@@ -287,6 +287,68 @@ t("rendering again does not repeat setup", async () => {
   assert.equal(h.toasts().length, 1);
 });
 
+t("late initialization cannot draw into an older render", async () => {
+  const h = boot();
+  h.p.render(h.box, h.api);
+  const next = h.d.createElement("div");
+  h.d.body.append(next);
+  h.p.render(next, h.api);
+  h.answer("locale", { strings: LOCALE }, "_core");
+  h.answer("get", { enabled: false, level: 25, mode: "eco" }, "starter");
+  await settle();
+  assert.equal(h.box.children.length, 0);
+  assert.ok(next.textContent.includes("Starter"));
+  assert.equal(next.querySelector('[role="slider"]').getAttribute("aria-valuenow"), "25");
+  assert.equal(h.count("get"), 1);
+});
+
+t("disposal during initialization cannot recreate nodes or subscriptions", async () => {
+  const h = boot();
+  h.p.render(h.box, h.api);
+  const pending = h.env.calls.slice();
+  h.FY.dispose("starter", TOK);
+  for (const c of pending) h.env.answer(c, c.method === "locale" ? { strings: LOCALE } : { level: 70 });
+  await settle();
+  assert.equal(h.box.children.length, 0);
+  assert.equal(h.d.querySelectorAll('[data-fy="starter"]').length, 0);
+  assert.equal(h.env.clock.pending(), 0);
+});
+
+t("Hello uses scoped controls and ignores stale or disposed backend replies", async () => {
+  const env = makeDom({ loadFiles: ["fy-api.js", "fy-ui.js"] });
+  const meta = JSON.parse(fs.readFileSync(path.join(ROOT, "examples/hello-plugin/plugin.json"), "utf8"));
+  env.loadPlugin("hello", "examples/hello-plugin/main.js", meta);
+  const p = env.record("hello");
+  const api = env.window.Framey._k(TOK).apiOf(p);
+  const first = env.document.createElement("div");
+  const second = env.document.createElement("div");
+  env.document.body.append(first, second);
+  p.render(first, api);
+  p.render(second, api);
+  const requests = env.sent("get");
+  env.answer(requests[0], { level: 10 });
+  env.answer(requests[1], { level: 70 });
+  await settle();
+  assert.equal(first.querySelector('[role="slider"]').value, 50);
+  const slider = second.querySelector('[role="slider"]');
+  assert.equal(slider.value, 70);
+  slider.dispatchEvent(new env.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  slider.dispatchEvent(new env.window.KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true }));
+  const save = env.sent("set")[0];
+  assert.deepEqual(save.arg, { level: 75 });
+  env.answer(save, { ok: true });
+  await settle();
+  assert.ok(second.textContent.includes("Saved"));
+  const greet = [...second.querySelectorAll('[role="button"]')].find(e => e.textContent === "Greet");
+  greet.click();
+  const call = env.sent("greet")[0];
+  env.window.Framey.dispose("hello", TOK);
+  env.answer(call, { text: "late greeting" });
+  await settle();
+  assert.equal(env.document.querySelectorAll('[data-fy="hello"]').length, 0);
+  assert.equal(env.clock.pending(), 0);
+});
+
 t("nothing is called on the backend before the first render", async () => {
   const h = boot();
   h.FY._panel(true);
@@ -355,7 +417,7 @@ t("only members of the real platform API are used", async () => {
   for (const m of MAIN.matchAll(/\bFramey\.([A-Za-z]+)/g)) assert.ok(m[1] === "register" || m[1] in h.FY, "Framey." + m[1]);
 });
 
-t("the starter shows every generation 1 feature", async () => {
+t("the starter demonstrates the main generation 1 workflows", async () => {
   [
     "Framey.register", "api.call(", "api.events.on(", "api.notify(", "api.onVisible(", "api.visible", "api.t(", "api.i18n.load(", "api.lang",
     "ui.toggle(", "ui.slider(", "ui.list(", "ui.button(", "ui.group(", "api.pickFile(",

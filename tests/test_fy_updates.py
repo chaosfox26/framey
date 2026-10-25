@@ -680,7 +680,7 @@ class InstallVersionTests(InstallBase):
         r = await self.up.install_version("demo", "v1.1.0")
         self.assertTrue(r["downgrade"])
         self.assertIn("Going back to 1.1.0 removes nothing from your data", r["confirm"])
-        self.assertIn("kept until you press Done", r["confirm"])
+        self.assertIn("kept until you choose Keep this version", r["confirm"])
         self.assertEqual(self.tree(), before)
         self.assertEqual((self.host.swaps, self.host.reloads), ([], []))
         self.assertEqual(self.plugin_version(), "1.2.0")

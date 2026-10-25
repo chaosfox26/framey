@@ -217,7 +217,7 @@ class InotifyTests(Base):
         root = self.host.roots["p"]
         self.assertEqual(paths, {root, os.path.join(root, "sub")})
         self.assertTrue(all(m == fy_dev.WATCH_MASK for _, m in self.libc.watches.values()))
-        self.assertEqual(fy_dev.WATCH_MASK, 0x8 | 0x80 | 0x100 | 0x200)
+        self.assertEqual(fy_dev.WATCH_MASK, 0x8 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800)
         self.assertIn(self.libc.r, self.loop.readers)
 
     def test_idle_costs_only_the_ttl_timer(self):
@@ -383,11 +383,114 @@ class InotifyTests(Base):
         hot = self.hot()
         hot.enable("p")
         wd = self.libc.wd_for(self.host.roots["p"])
-        self.fire(hot, 999, fy_dev.IN_CLOSE_WRITE, b"main.js")
-        self.fire(hot, wd, fy_dev.IN_IGNORED)
-        self.fire(hot, wd, fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.libc.emit(999, fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.libc.emit(wd, fy_dev.IN_IGNORED)
+        self.libc.emit(wd, fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.loop.readers[hot._fd]()
         self.settle()
         self.assertEqual(self.host.reloaded, [])
+
+    def test_removed_watch_falls_back_to_polling_and_detects_later_edits(self):
+        hot = self.hot(interval=1)
+        hot.enable("p")
+        wd = self.libc.wd_for(self.host.roots["p"])
+        self.fire(hot, wd, fy_dev.IN_IGNORED)
+        self.assertEqual(hot.status()[0]["mode"], "mtime")
+        self.assertEqual(self.loop.readers, {})
+        with open(os.path.join(self.host.roots["p"], "main.js"), "a") as f:
+            f.write("changed")
+        self.settle(1.5)
+        self.assertEqual(self.host.reloaded, ["p"])
+
+    def test_moved_root_falls_back_and_reloads_replacement(self):
+        hot = self.hot()
+        hot.enable("p")
+        wd = self.libc.wd_for(self.host.roots["p"])
+        self.fire(hot, wd, fy_dev.IN_MOVE_SELF)
+        self.assertEqual(hot.status()[0]["mode"], "mtime")
+        self.settle()
+        self.assertEqual(self.host.reloaded, ["p"])
+
+    def test_new_directory_tree_gets_descendant_watches(self):
+        hot = self.hot(max_dirs=8)
+        hot.enable("p")
+        root = self.host.roots["p"]
+        fresh = os.path.join(root, "fresh", "nested")
+        os.makedirs(fresh)
+        self.fire(hot, self.libc.wd_for(root), fy_dev.IN_MOVED_TO | fy_dev.IN_ISDIR, b"fresh")
+        self.assertIn(fresh, {p for p, _ in self.libc.watches.values()})
+
+    def test_new_directories_over_watch_cap_mark_status_truncated(self):
+        hot = self.hot(max_dirs=2)
+        hot.enable("p")
+        self.assertFalse(hot.status()[0]["truncated"])
+        self.fire(hot, self.libc.wd_for(self.host.roots["p"]), fy_dev.IN_CREATE | fy_dev.IN_ISDIR, b"fresh")
+        self.assertTrue(hot.status()[0]["truncated"])
+
+    def test_disable_and_reenable_does_not_run_stale_queued_reload(self):
+        hot = self.hot()
+        hot.enable("p")
+        self.fire(hot, self.libc.wd_for(self.host.roots["p"]), fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.loop.advance(0.5)
+        hot.disable("p")
+        hot.enable("p")
+        self.fire(hot, self.libc.wd_for(self.host.roots["p"]), fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.loop.advance(0.5)
+        self.assertEqual(len(self.loop.tasks), 1)
+        self.loop.drain()
+        self.assertEqual(self.host.reloaded, [])
+        self.settle()
+        self.assertEqual(self.host.reloaded, ["p"])
+
+    def test_reenable_waits_for_in_progress_reload(self):
+        hot = self.hot()
+        hot.enable("p")
+
+        async def scenario():
+            started, finish = asyncio.Event(), asyncio.Event()
+            running = []
+
+            async def reload(pid):
+                running.append(pid)
+                started.set()
+                await finish.wait()
+
+            hot.reload_one = reload
+            self.fire(hot, self.libc.wd_for(self.host.roots["p"]), fy_dev.IN_CLOSE_WRITE, b"main.js")
+            self.loop.advance(0.5)
+            task = asyncio.create_task(self.loop.tasks.pop(0).coro)
+            await started.wait()
+            hot.disable("p")
+            hot.enable("p")
+            self.fire(hot, self.libc.wd_for(self.host.roots["p"]), fy_dev.IN_CLOSE_WRITE, b"main.js")
+            self.loop.advance(1)
+            self.assertEqual(self.loop.tasks, [])
+            self.assertEqual(running, ["p"])
+            finish.set()
+            await task
+            self.loop.advance(0.5)
+            self.assertEqual(len(self.loop.tasks), 1)
+            await self.loop.tasks.pop(0).coro
+            self.assertEqual(running, ["p", "p"])
+
+        asyncio.run(scenario())
+
+    def test_changed_activity_persists_extended_expiry_after_debounce(self):
+        hot = self.hot()
+        hot.enable("p")
+        self.loop.advance(3000)
+        self.fire(hot, self.libc.wd_for(self.host.roots["p"]), fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.settle()
+        self.assertEqual(self.host.hot_state["hot_until"], BASE + 6600)
+
+    def test_removed_developer_mode_stops_changes_before_reload(self):
+        hot = self.hot()
+        hot.enable("p")
+        self.host.hot_state["enabled"] = False
+        self.fire(hot, self.libc.wd_for(self.host.roots["p"]), fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.settle()
+        self.assertEqual(self.host.reloaded, [])
+        self.assertEqual(hot.active(), [])
 
     def test_reload_in_progress_is_never_run_twice_at_once(self):
         hot = self.hot()
@@ -425,6 +528,52 @@ class InotifyTests(Base):
         self.fire(hot, wd, fy_dev.IN_CLOSE_WRITE, b"a")
         self.settle()
         self.assertEqual(calls, ["p", "p"])
+
+    def test_structured_reload_failure_is_visible_until_a_successful_reload(self):
+        async def failed(pid):
+            return {"error": "unknown plugin"}
+
+        hot = self.hot()
+        self.host.hot = hot
+        hot.reload_one = failed
+        hot.enable("p")
+        wd = self.libc.wd_for(self.host.roots["p"])
+        self.fire(hot, wd, fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.settle()
+        self.assertIn("could not be reloaded", hot.status()[0]["reload_error"])
+        self.assertIn("Hot reload failed for p", fy_dev.status(self.host)["warning"])
+        self.assertTrue(any("unknown plugin" in str(line) for line in self.host.logs))
+        hot.reload_one = self.host.reload_one
+        self.fire(hot, wd, fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.settle()
+        self.assertNotIn("reload_error", hot.status()[0])
+        self.assertIsNone(fy_dev.status(self.host)["warning"])
+
+    def test_reload_timeout_cancels_the_call_and_releases_the_plugin_slot(self):
+        cancelled = []
+
+        async def hung(pid):
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.append(pid)
+
+        hot = self.hot()
+        self.host.hot = hot
+        hot.reload_one = hung
+        hot.enable("p")
+        wd = self.libc.wd_for(self.host.roots["p"])
+        self.fire(hot, wd, fy_dev.IN_CLOSE_WRITE, b"main.js")
+        with mock.patch.object(fy_dev, "RELOAD_TIMEOUT", 0.02):
+            self.settle()
+        self.assertEqual(cancelled, ["p"])
+        self.assertEqual(hot._busy, set())
+        self.assertIsNone(hot._w["p"]["task"])
+        self.assertIn("took too long", fy_dev.status(self.host)["warning"])
+        hot.reload_one = self.host.reload_one
+        self.fire(hot, wd, fy_dev.IN_CLOSE_WRITE, b"main.js")
+        self.settle()
+        self.assertEqual(self.host.reloaded, ["p"])
 
     def test_read_error_stops_all_watching(self):
         hot = self.hot()
@@ -492,6 +641,7 @@ class RefusalTests(Base):
         hot = self.hot()
         self.assertEqual(hot.enable("p")["mode"], "inotify")
         self.assertTrue(any("could not save" in str(a) for a in self.host.logs))
+        self.assertIn("could not be saved", hot.warning)
 
 
 class FallbackTests(Base):
@@ -666,7 +816,7 @@ class ResumeTests(Base):
         self.assertEqual(self.host.hot_state["hot"], ["p"])
 
     def test_resume_ignores_expired_or_missing_state(self):
-        for bad in ({}, {"hot": ["p"]}, {"hot": ["p"], "hot_until": BASE - 1}, {"hot": "p", "hot_until": BASE + 5}, {"hot": ["p"], "hot_until": True}):
+        for bad in ({}, {"hot": ["p"]}, {"hot": ["p"], "hot_until": BASE - 1}, {"hot": "p", "hot_until": BASE + 5}, {"hot": ["p"], "hot_until": True}, {"hot": ["p"], "hot_until": float("nan")}, {"hot": ["p"], "hot_until": float("inf")}):
             self.host.state["prefs"]["dev"] = dict(bad, enabled=True)
             hot = self.hot()
             self.assertEqual(hot.resume(), [])
@@ -758,10 +908,21 @@ class ExposureTests(unittest.TestCase):
             self.assertEqual(fy_dev.exposure_now(d), {"state": "unknown", "addresses": []})
             with open(os.path.join(d, "tcp"), "w") as f:
                 f.write(PROC_HEAD + row(0, "0100007F:1F90"))
+            self.assertEqual(fy_dev.exposure_now(d)["state"], "unknown")
+            with open(os.path.join(d, "tcp6"), "w") as f:
+                f.write(PROC_HEAD)
             self.assertEqual(fy_dev.exposure_now(d)["state"], "loopback")
             with open(os.path.join(d, "tcp6"), "w") as f:
                 f.write(PROC_HEAD + row(0, "00000000000000000000000000000000:1F90"))
             self.assertEqual(fy_dev.exposure_now(d)["state"], "exposed")
+
+    def test_truncated_proc_table_cannot_claim_loopback_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("tcp", "tcp6"):
+                with open(os.path.join(d, name), "w") as f:
+                    f.write(PROC_HEAD + row(0, "0100007F:1F90") + " " * 300)
+            with mock.patch.object(fy_dev, "PROC_MAX", len(PROC_HEAD) + 200):
+                self.assertEqual(fy_dev.exposure_now(d)["state"], "unknown")
 
     @unittest.skipUnless(LINUX, "needs Linux /proc/net (pending Linux run)")
     def test_exposure_now_on_this_machine(self):
@@ -837,12 +998,8 @@ class DevtoolsTests(unittest.IsolatedAsyncioTestCase):
         for body in (b"<html>no</html>", b"{\"a\": 1}", b"", b"\xff\xfe"):
             port = await self.serve(body)
             r = await fy_dev.devtools_info(self.host(), port=port)
-            if body == b"{\"a\": 1}":
-                self.assertTrue(r["available"])
-                self.assertEqual(r["targets"], [])
-            else:
-                self.assertFalse(r["available"], body)
-                self.assertIn("not with a list", r["error"])
+            self.assertFalse(r["available"], body)
+            self.assertIn("not with a list", r["error"])
 
     async def test_non_finite_constants_in_the_reply_are_refused(self):
         for body in (b'[{"id": "a", "title": NaN, "url": "u"}]', b'[Infinity]', b'[{"id": "a", "n": -Infinity}]'):
@@ -856,6 +1013,25 @@ class DevtoolsTests(unittest.IsolatedAsyncioTestCase):
         r = await fy_dev.devtools_info(self.host(), port=port)
         self.assertFalse(r["available"])
         self.assertIn("not with a list", r["error"])
+
+    async def test_status_code_must_be_exactly_200(self):
+        port = await self.serve(b"[]", status=b"2000 Invalid")
+        r = await fy_dev.devtools_info(self.host(), port=port)
+        self.assertFalse(r["available"])
+
+    async def test_json_decoder_recursion_error_is_a_readable_error(self):
+        port = await self.serve(b"[]")
+        with mock.patch.object(fy_dev.json, "loads", side_effect=RecursionError):
+            r = await fy_dev.devtools_info(self.host(), port=port)
+        self.assertFalse(r["available"])
+        self.assertIn("not with a list", r["error"])
+
+    async def test_non_string_target_text_is_not_stringified(self):
+        port = await self.serve(b'[{"id":"a","title":{"x":1},"url":["x"]}]')
+        r = await fy_dev.devtools_info(self.host(), port=port)
+        self.assertTrue(r["available"])
+        self.assertEqual(r["targets"][0]["title"], "")
+        self.assertEqual(r["targets"][0]["url"], "")
 
     async def test_slow_port_times_out(self):
         port = await self.serve(b"[]", delay=1)
@@ -908,6 +1084,12 @@ class MethodTests(Base):
         s = self.run_method("dev_set", {"id": "p", "hot": False})
         self.assertEqual(s["hot"], [])
 
+    def test_save_failure_is_visible_in_status(self):
+        self.host.save = lambda s: (_ for _ in ()).throw(OSError("disk full"))
+        r = self.run_method("dev_set", {"id": "p", "hot": True})
+        self.assertEqual(r["hot"][0]["id"], "p")
+        self.assertIn("could not be saved", r["warning"])
+
     def test_switch_all_off(self):
         self.run_method("dev_set", {"id": "p", "hot": True})
         self.run_method("dev_set", {"id": "q", "hot": True})
@@ -940,6 +1122,38 @@ class MethodTests(Base):
 
 @unittest.skipUnless(LINUX, "needs real inotify on Linux (pending Linux run)")
 class RealInotifyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_replacing_watched_root_reloads_and_keeps_detecting_edits(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = tree(d, "p", ("main.js",))
+            seen, done = [], asyncio.Event()
+            loop = asyncio.get_running_loop()
+
+            async def reload_one(pid):
+                with open(os.path.join(root, "main.js")) as f:
+                    seen.append(f.read())
+                done.set()
+
+            host = types.SimpleNamespace(
+                settings=lambda: {"prefs": {"dev": {"enabled": True}}},
+                save=lambda s: None, real=lambda pid: root,
+                mono=loop.time, now=loop.time, loop=lambda: loop, log=lambda *a: None,
+            )
+            hot = fy_dev.HotReload(host, reload_one, debounce=0.02, interval=0.05, ttl=30)
+            self.addCleanup(hot.disable_all)
+            self.assertEqual(hot.enable("p")["mode"], "inotify")
+            os.rename(root, root + "-previous")
+            os.mkdir(root)
+            with open(os.path.join(root, "main.js"), "w") as f:
+                f.write("replacement")
+            await asyncio.wait_for(done.wait(), 2)
+            self.assertEqual(seen, ["replacement"])
+            self.assertEqual(hot.status()[0]["mode"], "mtime")
+            done.clear()
+            with open(os.path.join(root, "main.js"), "w") as f:
+                f.write("later edit")
+            await asyncio.wait_for(done.wait(), 2)
+            self.assertEqual(seen, ["replacement", "later edit"])
+
     async def test_writes_collapse_into_one_reload(self):
         with tempfile.TemporaryDirectory() as d:
             root = tree(d, "p", ("main.js",))

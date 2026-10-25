@@ -1,35 +1,39 @@
-let note;
-Framey.register({
+let disposed = false;
+let renderVersion = 0;
+
+const api = Framey.register({
   render(box, api) {
-    note = Framey.el("font-size:20px;color:#8a8aa0;margin-top:12px", "");
+    const version = ++renderVersion;
+    const current = () => !disposed && version === renderVersion;
+    const note = Framey.el("font-size:20px;color:#8a8aa0;margin-top:12px;min-height:28px", "");
+    let noteVersion = 0;
     const say = text => {
+      if (!current()) return;
+      const revision = ++noteVersion;
       note.textContent = text;
-      api.timeout(() => (note.textContent = ""), 3000);
+      api.timeout(() => {
+        if (current() && revision === noteVersion) note.textContent = "";
+      }, 3000);
     };
-    const level = Framey.el("font-size:22px;margin-top:12px", "Level: ...");
-    const slider = document.createElement("input");
-    slider.type = "range";
-    slider.className = "fy-r";
-    slider.min = 0;
-    slider.max = 100;
-    slider.style.cssText = "width:100%;margin:16px 0";
-    api.on(slider, "input", () => (level.textContent = "Level: " + slider.value));
-    api.on(slider, "change", () => api.call("set", { level: Number(slider.value) }).then(r => say(r.error ? "Could not save: " + r.error : "Saved")));
+    const slider = api.ui.slider({
+      label: "Level", min: 0, max: 100, step: 5, value: 50, format: v => v + "%",
+      onchange: value => api.call("set", { level: value }).then(r => say(r && r.error ? "Could not save: " + r.error : "Saved")),
+    });
     box.append(
       Framey.el("font-size:28px;font-weight:700", "Hello"),
-      level,
       slider,
-      Framey.button("Greet", "height:60px;background:#5585ff;margin-top:8px", () => api.call("greet", "Frame").then(r => say(r.error || r.text))),
-      Framey.button("Slow call (30 s)", "height:60px;margin-top:10px", () => api.call("slow", 30).then(r => say(r.error || "Done"))),
+      api.ui.button({ label: "Greet", primary: true, onclick: () => api.call("greet", "Frame").then(r => say(r && (r.error || r.text) || "No greeting returned")) }),
+      api.ui.button({ label: "Slow call (30 s)", onclick: () => api.call("slow", 30).then(r => say(r && r.error || "Done")) }),
       note,
     );
     api.call("get").then(r => {
-      const v = r && typeof r.level === "number" ? r.level : 50;
-      slider.value = v;
-      level.textContent = "Level: " + v;
+      if (!current()) return;
+      if (r && r.error) say("Could not load: " + r.error);
+      else if (r && Number.isInteger(r.level) && r.level >= 0 && r.level <= 100) slider.value = r.level;
     });
   },
-  dispose() {
-    note = null;
-  },
+});
+api.cleanup(() => {
+  disposed = true;
+  renderVersion++;
 });

@@ -840,7 +840,7 @@ class MigrateMoveTest(Base):
             self.assertTrue(fy_store.migrate_move(src, dst)["moved"])
         self.assertEqual(dst.read_bytes(), b"x" * 5000)
 
-    def test_stale_part_file_from_a_hard_crash_is_replaced(self):
+    def test_legacy_part_file_is_preserved_as_unowned_data(self):
         src = self.tmp / "a.bin"
         src.write_bytes(b"good")
         dst = self.tmp / "dest" / "a.bin"
@@ -856,7 +856,8 @@ class MigrateMoveTest(Base):
         with mock.patch.object(fy_store.os, "replace", fake):
             self.assertTrue(fy_store.migrate_move(src, dst)["moved"])
         self.assertEqual(dst.read_bytes(), b"good")
-        self.assertEqual(self.names(dst.parent), ["a.bin"])
+        self.assertEqual(self.names(dst.parent), ["a.bin", "a.bin.fy-part"])
+        self.assertEqual((dst.parent / "a.bin.fy-part").read_bytes(), b"half")
 
     def test_copy_verification_failure_is_reported(self):
         src = self.tmp / "a.bin"
@@ -929,7 +930,14 @@ class CopyOnceTest(Base):
         src = self.tmp / "s"
         src.write_text("src")
         dst = self.tmp / "out" / "d"
-        with mock.patch.object(fy_store.os, "open", side_effect=OSError(errno.EIO, "x")):
+        real_open = os.open
+
+        def fail_marker(path, flags, *args, **kwargs):
+            if Path(path) == dst.parent / "m":
+                raise OSError(errno.EIO, "x")
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(fy_store.os, "open", side_effect=fail_marker):
             with self.assertRaises(OSError):
                 fy_store.copy_once(src, dst, "m")
         self.assertEqual(dst.read_text(), "src")

@@ -595,11 +595,12 @@ class Dest(Base):
         (self.dirs.runtime / "d").mkdir(parents=True)
         self.assertEqual(await self.code("/ok", dest="runtime:d"), "bad_dest")
 
-    async def test_stale_part_is_replaced(self):
+    async def test_a_part_named_file_is_preserved(self):
         self.dirs.runtime.mkdir(parents=True)
         (self.dirs.runtime / "s.bin.part").write_bytes(b"old")
         await self.get("/ok", dest="runtime:s.bin")
-        self.assertEqual(os.listdir(self.dirs.runtime), ["s.bin"])
+        self.assertEqual(sorted(os.listdir(self.dirs.runtime)), ["s.bin", "s.bin.part"])
+        self.assertEqual((self.dirs.runtime / "s.bin.part").read_bytes(), b"old")
 
     async def test_part_symlink_not_followed(self):
         self.dirs.runtime.mkdir(parents=True)

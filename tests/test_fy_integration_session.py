@@ -198,7 +198,11 @@ class PagePushTests(Base):
         plugin = [i for i, e in enumerate(exprs) if "window.RAN_a=1" in e]
         self.assertEqual(len(css), 1)
         self.assertLess(plugin[0], css[0])
-        self.assertEqual(exprs[-1], "Framey.restore()")
+        restored = exprs.index("Framey.restore()")
+        self.assertLess(plugin[0], restored)
+        self.assertLess(restored, css[0])
+        expected = fy.host.targets.reconcile_expr("main") + ";" + fy.host.targets.replay("main")[0][0]
+        self.assertEqual(exprs[-1], expected)
         self.assertTrue(any("window.X=1" in e for e in bar.exprs()))
         self.assertFalse(any("window.X=1" in e for e in exprs))
 

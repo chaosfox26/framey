@@ -1,1 +1,21 @@
-{"id": "hello", "name": "Hello", "version": "1.0.0", "short": "Hello", "source": "https://github.com/your-name/hello-plugin", "framey": {"min": "1.0.2"}, "platform": ["linux-aarch64", "linux-x86_64"], "timeout": 15}
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "short": "Hello",
+  "framey": {
+    "min": "1.0.2"
+  },
+  "platform": [
+    "linux-aarch64",
+    "linux-x86_64"
+  ],
+  "api": 1,
+  "backend": {
+    "timeout": 15,
+    "idle": 120,
+    "concurrency": 1,
+    "startup_timeout": 10
+  },
+  "data_version": 1
+}

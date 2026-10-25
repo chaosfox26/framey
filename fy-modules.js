@@ -103,17 +103,34 @@
     if (!seen || !FY.panelOpen) FY.toast(v.text, 4000);
   });
 
+  const owners = new WeakMap();
   const make = box => {
     box.tabIndex = -1;
     box.style.outline = "none";
     let held = false;
+    let view = 0;
     const k = { names: () => "" };
+    owners.set(box, k);
+    k.alive = () => owners.get(box) === k && box.isConnected;
+    k.guard = fn => {
+      const at = view;
+      return (...args) => { if (k.alive() && view === at) return fn(...args); };
+    };
+    k.cancel = () => {
+      view++;
+      held = false;
+      box.style.opacity = "1";
+      watch = null;
+    };
     k.hold = on => {
+      if (!k.alive()) return;
       held = on;
       box.style.opacity = on ? ".5" : "1";
     };
     let want = null;
     k.show = (...n) => {
+      if (!k.alive()) return;
+      k.cancel();
       const a = document.activeElement;
       if (a !== box && box.contains(a)) want = { label: a.getAttribute("aria-label") || "", at: [...box.querySelectorAll("[tabindex]")].indexOf(a) };
       box.replaceChildren(...n.filter(Boolean));
@@ -132,7 +149,7 @@
     box.onkeydown = ev => {
       const d = ev.key === "ArrowDown" || ev.key === "ArrowRight" ? 1 : ev.key === "ArrowUp" || ev.key === "ArrowLeft" ? -1 : 0;
       if (d) {
-        if (ev.target.getAttribute("role") === "slider") return;
+        if (ev.target.closest("input,textarea,select,[contenteditable=''],[contenteditable='true'],[role='slider'],[role='listbox'],[role='combobox']")) return;
         const all = [...box.querySelectorAll("[tabindex]")].filter(e => e.tabIndex >= 0 && e.getAttribute("aria-disabled") !== "true");
         const i = all.indexOf(ev.target);
         if (i < 0 || !all[i + d]) return;
@@ -147,12 +164,16 @@
     };
     k.btn = (label, fn, o) => {
       const nav = label === T("c.back") || label === T("c.cancel");
-      const e = ui().button(Object.assign({ label, css: "flex:1", nav, onclick: () => { if (!held) fn(); } }, o));
+      const e = ui().button(Object.assign({ label, css: "flex:1", nav, onclick: () => {
+        if (!k.alive() || !e.isConnected || (held && !nav)) return;
+        if (nav) k.cancel();
+        return fn();
+      } }, o));
       if (nav) e.dataset.fyEsc = "1";
       return e;
     };
     k.sw = (label, value, fn) => {
-      const e = ui().toggle({ label, value, onchange: v => { if (held) e.value = !v; else fn(v, e); } });
+      const e = ui().toggle({ label, value, onchange: v => { if (!k.alive()) return; if (held) e.value = !v; else fn(v, e); } });
       return e;
     };
     k.ask = (title, text, acts, cancel) => {
@@ -165,6 +186,12 @@
       const bar = tx("display:none;height:14px;margin-top:10px;border-radius:7px;background:#2a2a3a;overflow:hidden");
       const fill = tx("height:100%;width:0;background:#5585ff");
       const head = col(UP, "", 21, true), list = tx(""), pct = col(GREY, "");
+      head.setAttribute("role", "status");
+      head.setAttribute("aria-live", "polite");
+      head.setAttribute("aria-atomic", "true");
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
       const lines = new Map();
       let job = null;
       bar.append(fill);
@@ -179,7 +206,8 @@
           }
           const who = k.names(ev.id);
           const label = String(ev.label || ev.stage);
-          head.textContent = T("p.step", { who: who ? who + ": " : "", n: ev.index | 0, total: ev.total | 0, label });
+          const text = T("p.step", { who: who ? who + ": " : "", n: ev.index | 0, total: ev.total | 0, label });
+          if (head.textContent !== text) head.textContent = text;
           let l = lines.get(ev.stage);
           if (!l) {
             l = col("#fff", "", 18);
@@ -193,6 +221,9 @@
           const real = !!m && typeof m.done === "number" && typeof m.total === "number" && m.total > 0;
           const p = real ? Math.max(0, Math.min(100, Math.round((m.done / m.total) * 100))) : 0;
           bar.style.display = real ? "block" : "none";
+          bar.setAttribute("aria-label", label);
+          if (real) bar.setAttribute("aria-valuenow", String(p));
+          else bar.removeAttribute("aria-valuenow");
           fill.style.width = p + "%";
           pct.textContent = real ? p + "%" : "";
         },
@@ -201,17 +232,21 @@
     k.work = (title, run, finish) => {
       const p = k.prog(), out = tx("");
       k.hold(false);
-      k.show(tx(TITLE, title), p.el, out);
-      watch = p.update;
+      const nav = typeof k.back === "function" ? put(tx(""), col(GREY, T("c.work_background"), 18), row(k.btn(T("c.back"), k.back))) : null;
+      k.show(tx(TITLE, title), p.el, nav, out);
+      const progress = k.guard(p.update);
+      watch = progress;
       return run().then(
-        r => {
-          if (watch === p.update) watch = null;
+        k.guard(r => {
+          if (watch === progress) watch = null;
+          if (nav) nav.remove();
           finish(r, out);
-        },
-        e => {
-          if (watch === p.update) watch = null;
+        }),
+        k.guard(e => {
+          if (watch === progress) watch = null;
+          if (nav) nav.remove();
           if (k.bad) k.bad(e);
-        },
+        }),
       );
     };
     k.result = (out, r, okText, back) => {
@@ -222,14 +257,16 @@
       return out;
     };
     k.notes = (id, tag, title, back) => {
-      k.show(tx(TITLE, title), col(GREY, T("c.loading")));
-      return call("notes", { id, tag }).then(r => k.show(tx(TITLE, title), row(k.btn(T("c.back"), back)), col(r.error ? BAD : "#fff", r.error || r.notes || T("v.nonotes"))));
+      k.show(tx(TITLE, title), row(k.btn(T("c.back"), back)), col(GREY, T("c.loading")));
+      return call("notes", { id, tag }).then(k.guard(r => k.show(tx(TITLE, title), row(k.btn(T("c.back"), back)), col(r.error ? BAD : "#fff", r.error || r.notes || T("v.nonotes")))));
     };
     k.versions = (id, title, back, gate) => {
       let rows = [], more = false, page = 1, info = "", err = "";
       const g = gate || (f => f());
+      const eligible = v => v.eligible === true && v.current !== true;
+      const reason = v => v.reason || T(v.current === true ? "v.installed" : "c.unavailable");
       const vlabel = v => v.version + (v.current ? "  " + T("v.installed") : "") + (v.label ? "  " + v.label : "");
-      const vsub = v => [day(v.published), v.downgrade ? T("v.older") : "", v.eligible === false ? v.reason : ""].filter(Boolean).join("  |  ");
+      const vsub = v => [day(v.published), v.downgrade ? T("v.older") : "", !eligible(v) ? reason(v) : ""].filter(Boolean).join("  |  ");
       const list = () =>
         k.show(
           tx(TITLE, title),
@@ -246,26 +283,29 @@
           v.published && col(GREY, T("v.published", { d: day(v.published) })),
           cm.msg && col(cm.badge === "ok" ? GOOD : GREY, cm.msg),
           v.downgrade && col(WARN, T("v.limits")),
-          v.eligible === false && v.reason && col(GREY, v.reason),
+          !eligible(v) && col(GREY, reason(v)),
           row(
-            k.btn(T(v.downgrade ? "v.goback" : "v.install"), () => install(v, false), { disabled: v.eligible === false, primary: !v.downgrade }),
+            k.btn(T(v.downgrade ? "v.goback" : "v.install"), () => install(v, false), { disabled: !eligible(v), primary: !v.downgrade }),
             k.btn(T("v.notes"), () => k.notes(id, v.tag, vlabel(v), () => detail(v))),
           ),
           row(k.btn(T("c.back"), list)),
         );
       };
       const install = (v, ok) => {
+        if (!eligible(v)) return;
         if (v.downgrade && !ok) return k.ask(T("v.confirm_title", { v: v.version }), T("v.confirm_text", { v: v.version }), [[T("v.goback"), () => install(v, true), DANGER]], () => detail(v));
         g(() =>
           k.work(T("v.installing", { v: v.version }), () => call("ver_install", { id, tag: v.tag, confirm: !!ok }), (r, out) => {
             if (r.confirm) return k.ask(T("v.confirm_title", { v: v.version }), r.confirm, [[T("v.goback"), () => install(v, true), DANGER]], () => detail(v));
-            k.result(out, r, T("v.installed_ok", { v: v.version }), back);
+            if (r.current === true) return k.result(out, {}, T("m.already"), back);
+            const result = r.error || r.ok || r.staged ? r : { error: T("c.noanswer") };
+            k.result(out, result, T("v.installed_ok", { v: typeof r.version === "string" && r.version ? r.version : v.version }), back);
           }),
         );
       };
       const load = pg => {
         k.hold(true);
-        return call("ver_list", { id, page: pg }).then(r => {
+        return call("ver_list", { id, page: pg }).then(k.guard(r => {
           k.hold(false);
           if (r.error) err = r.error;
           else {
@@ -276,9 +316,9 @@
             info = r.note || info;
           }
           list();
-        });
+        }));
       };
-      k.show(tx(TITLE, title), col(GREY, T("c.loading")));
+      k.show(tx(TITLE, title), row(k.btn(T("c.back"), back)), col(GREY, T("c.loading")));
       return load(1);
     };
     return k;
@@ -306,7 +346,7 @@
     const frame = "border:3px solid " + BAD + ";border-radius:14px;padding:12px;margin-bottom:12px";
     if (state === "unreadable") return put(tx(frame), col(BAD, T("sd.unreadable"), 20, true));
     if (state !== "corrupt") return null;
-    const repair = () => k.ask(T("sd.repair_title"), T("sd.repair_text"), [[T("sd.repair_ok"), () => call("settings_repair").then(r => { if (r.ok) say(T("sd.repaired")); else warn(r.error || T("c.noanswer")); back(); }), { primary: true }]], back);
+    const repair = () => k.ask(T("sd.repair_title"), T("sd.repair_text"), [[T("sd.repair_ok"), () => call("settings_repair").then(k.guard(r => { if (r.ok) say(T("sd.repaired")); else warn(r.error || T("c.noanswer")); back(); })), { primary: true }]], back);
     return put(tx(frame), col(BAD, T("sd.corrupt"), 20, true), row(k.btn(T("sd.repair"), repair, { primary: true })));
   };
 
@@ -334,10 +374,10 @@
       };
       const mrec = id => obj(obj(data.maint)[id]);
       const pull = ids =>
-        ids.length ? call("maint_get", { ids: ids.slice(0, 64) }).then(r => { if (r.records) Object.assign(data.maint, r.records); }) : Promise.resolve();
+        ids.length ? call("maint_get", { ids: ids.slice(0, 64) }).then(k.guard(r => { if (r.records) Object.assign(data.maint, r.records); })) : Promise.resolve();
       const draw = () =>
         Promise.all([call("list"), call("store"), call("state_get"), call("maint_prefs"), call("status")])
-          .then(([list, store, st, mp, sts]) => {
+          .then(k.guard(([list, store, st, mp, sts]) => {
             const kept = a => (Array.isArray(a) ? a.filter(x => x && typeof x === "object" && !Array.isArray(x)) : []);
             const lst = Array.isArray(list) ? list.filter(m => m && typeof m.id === "string") : list;
             const sto = kept(store).filter(s => typeof s.id === "string");
@@ -346,27 +386,29 @@
             bad = (Array.isArray(list) ? list.length - lst.length : 0) + (Array.isArray(store) ? store.length - sto.length : 0);
             data = { list: lst, store: sto, st: s, mp: obj(mp), maint: {}, ss: obj(sts).settings_state };
             return pull(Array.isArray(lst) ? lst.map(m => m.id) : []);
-          })
-          .then(() => home())
-          .catch(fall);
+          }))
+          .then(k.guard(() => home()))
+          .catch(k.guard(fall));
       const back = () => draw();
+      k.back = back;
       const quick = (method, arg, okText) => {
         k.hold(true);
-        return call(method, arg).then(r => {
+        return call(method, arg).then(k.guard(r => {
           k.hold(false);
           if (r.error) warn(r.error);
+          else if (Array.isArray(r.purge_failed) && r.purge_failed.length) warn(T("m.purge_failed", { count: r.purge_failed.length }));
           else if (okText) say(okText);
           if (!r.error && Array.isArray(r.order)) {
             data.st = r;
             return home();
           }
           return draw();
-        });
+        }));
       };
       const thaw = (m, cont) => {
         const f = obj(data.st.frozen)[m.id];
         if (!f) return cont();
-        k.ask(T("m.thaw_title"), T("m.thaw_text", { name: m.name, v: vv(f.version) }), [[T("m.thaw_ok"), () => call("mod_freeze", { id: m.id, frozen: false }).then(r => { if (r.error) { warn(r.error); draw(); } else cont(); })]], back);
+        k.ask(T("m.thaw_title"), T("m.thaw_text", { name: m.name, v: vv(f.version) }), [[T("m.thaw_ok"), () => call("mod_freeze", { id: m.id, frozen: false }).then(k.guard(r => { if (r.error) { warn(r.error); draw(); } else cont(); }))]], back);
       };
       const update = m =>
         k.work(T("m.updating", { name: m.name }), () => call("update", m.id), (r, out) => {
@@ -400,7 +442,7 @@
       const removeAsk = (m, purge) =>
         k.ask(
           T(purge ? "m.rmd_title" : "m.rm_title", { name: m.name }),
-          [T(purge ? "m.rmd_text" : "m.rm_text"), m.linked && T("m.linked_note")].filter(Boolean).join("\n"),
+          [T(purge ? "m.rmd_text" : "m.rm_text"), m.linked && T("m.linked_note"), m.privileged && T("m.privileged_remove")].filter(Boolean).join("\n"),
           [[T(purge ? "m.rmd_ok" : "m.rm_ok"), () => { more = ""; quick("uninstall", { id: m.id, purge }, T("m.removed", { name: m.name })); }, DANGER]],
           back,
         );
@@ -412,7 +454,7 @@
         k.hold(true);
         el.textContent = T("c.checking");
         el.style.color = GREY;
-        call("check").then(r => {
+        call("check").then(k.guard(r => {
           k.hold(false);
           if (!r.checked) line = [T("m.check_failed", { msg: r.error || T("c.noanswer") }), BAD];
           else {
@@ -424,7 +466,7 @@
             line = [parts.length ? parts.join(", ") : T("m.all_current"), f ? BAD : n ? UP : GOOD];
           }
           home();
-        });
+        }));
       };
       const results = (r, out) => {
         if (!Array.isArray(r.results)) return k.result(out, { error: r.error || T("c.noanswer") }, "", back);
@@ -434,14 +476,14 @@
         paintRes(k, out, v, () => { keep(null); back(); });
       };
       const plan = () => {
-        k.show(tx(TITLE, T("m.updall")), col(GREY, T("c.checking")));
+        k.show(tx(TITLE, T("m.updall")), row(btn(T("c.back"), back)), col(GREY, T("c.checking")));
         k.hold(true);
-        return call("batch_plan", {}).then(r => {
+        return call("batch_plan", {}).then(k.guard(r => {
           k.hold(false);
           const items = (Array.isArray(r.items) ? r.items : []).filter(x => x && typeof x === "object").slice(0, 32);
           if (r.error || !items.length) return k.show(tx(TITLE, T("m.updall")), col(r.error ? BAD : GREY, r.error || T("m.none")), row(btn(T("c.back"), back)));
-          const ok = items.filter(x => x.eligible);
-          const rest = items.filter(x => !x.eligible);
+          const ok = items.filter(x => x.eligible === true);
+          const rest = items.filter(x => x.eligible !== true);
           k.show(
             tx(TITLE, T("m.updall")),
             col(ok.length ? UP : GREY, T("m.plan_count", { count: ok.length }), 20, true),
@@ -449,7 +491,7 @@
             ...ok.map(x => col("#fff", T("m.plan_row", { name: x.name || x.id, from: vv(x.from), to: vv(x.to) }), 19)),
             ...rest.map(x => col(GREY, T("m.plan_skip", { name: x.name || x.id, reason: x.reason || "" }), 18)),
           );
-        });
+        }));
       };
       const approval = m => {
         const b = tx("border:3px solid " + WARN + ";border-radius:14px;padding:12px;margin-top:12px");
@@ -548,19 +590,19 @@
       };
       const refresh = m => {
         k.hold(true);
-        k.show(tx(TITLE, T("mt.title", { name: m.name })), col(GREY, T("c.checking")));
-        return call("maint_refresh", { id: m.id }).then(r => {
+        k.show(tx(TITLE, T("mt.title", { name: m.name })), row(btn(T("c.back"), () => home())), col(GREY, T("c.checking")));
+        return call("maint_refresh", { id: m.id }).then(k.guard(r => {
           k.hold(false);
           if (r.error) warn(r.error);
           else data.maint[m.id] = r;
           details(m);
-        });
+        }));
       };
       const refreshAll = el => {
         k.hold(true);
         el.textContent = T("c.checking");
         el.style.color = GREY;
-        call("maint_refresh", { id: "all" }).then(r => {
+        call("maint_refresh", { id: "all" }).then(k.guard(r => {
           k.hold(false);
           const n = Object.keys(obj(r.records)).length;
           if (r.error) line = [T("c.failed", { msg: r.error }), BAD];
@@ -569,7 +611,7 @@
             line = [T("mt.refreshed", { count: n }), GOOD];
           }
           home();
-        });
+        }));
       };
       const card = (m, i, n) => {
         const fz = obj(data.st.frozen)[m.id];
@@ -676,7 +718,7 @@
         show: showRes,
         maint: ids => {
           const have = Array.isArray(ids) && Array.isArray(data.list) ? data.list.map(m => m.id).filter(id => ids.includes(id)) : [];
-          if (box.isConnected && onHome && have.length) pull(have).then(() => { if (onHome) home(); });
+          if (k.alive() && onHome && have.length) pull(have).then(k.guard(() => { if (onHome) home(); }));
         },
       };
       const pend = rd();

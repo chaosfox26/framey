@@ -13,7 +13,7 @@ const defaults = () => ({
 });
 const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r)); };
 
-const boot = (over = {}, trusted = "off") => {
+const boot = (over = {}, trusted = "off", files = FILES) => {
   const calls = [];
   const R = Object.assign(defaults(), over);
   const env = makeDom({
@@ -27,7 +27,7 @@ const boot = (over = {}, trusted = "off") => {
         Promise.resolve(typeof f === "function" ? f(c.arg, c) : f).then(v => w.Framey._reply(c.gen, c.id, v === undefined ? null : JSON.parse(JSON.stringify(v))));
       };
     },
-    loadFiles: FILES,
+    loadFiles: files,
   });
   const FY = env.window.Framey;
   const box = FY.el("");
@@ -501,7 +501,7 @@ t("a downgrade explains the migration limits and needs an explicit confirm", asy
   await c.click("Go back to this version");
   assert.equal(c.sent("ver_install").length, 0);
   assert.ok(c.text().includes("data migrations are not undone"));
-  assert.ok(c.text().includes("The current copy is kept until you press Done."));
+  assert.ok(c.text().includes("The current copy is kept until you remove the saved version."));
   await c.click("Cancel");
   assert.equal(c.sent("ver_install").length, 0);
   assert.ok(c.has("Go back to this version"));
@@ -887,6 +887,233 @@ t("hold: a second tap while a call is running is ignored", async () => {
   release(Object.assign(defaults().state_get, { sort: "name" }));
   await settle();
   assert.ok(c.has("Sort: Name"));
+});
+
+t("Back leaves a pending version lookup and its late reply cannot reopen the list", async () => {
+  const c = boot();
+  let release;
+  c.R.ver_list = () => new Promise(r => { release = r; });
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Versions");
+  assert.ok(c.has("Back"));
+  assert.equal(c.box.style.opacity, "0.5");
+  await c.click("Back");
+  assert.ok(c.has("More"));
+  assert.equal(c.box.style.opacity, "1");
+  release(versions());
+  await settle();
+  assert.ok(c.has("More"));
+  assert.ok(!c.has("2.0.0"));
+});
+
+t("Back leaves pending release notes and ignores their late reply", async () => {
+  const c = boot({ ver_list: versions });
+  let release;
+  c.R.notes = () => new Promise(r => { release = r; });
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Versions");
+  await c.click("2.0.0");
+  await c.click("Release notes");
+  await c.click("Back");
+  assert.ok(c.has("Install this version"));
+  release({ notes: "late notes that belong to the closed view" });
+  await settle();
+  assert.ok(c.has("Install this version"));
+  assert.ok(!c.text().includes("late notes that belong to the closed view"));
+});
+
+t("an update can continue after Back without taking over the new view", async () => {
+  const c = boot();
+  let release;
+  c.R.update = () => new Promise(r => { release = r; });
+  await c.open("modules");
+  await c.click("Update");
+  await c.click("Install");
+  assert.ok(c.text().includes("You can go back while this operation continues."));
+  await c.click("Back");
+  await c.click("More");
+  assert.ok(c.has("Less"));
+  release({ ok: "a", version: "2.0.0" });
+  await settle();
+  assert.ok(c.has("Less"));
+  assert.ok(!c.text().includes("Updated Alpha"));
+});
+
+t("an old Modules draw cannot replace Settings on the same container", async () => {
+  const c = boot();
+  let release;
+  c.R.list = () => new Promise(r => { release = r; });
+  await c.open("modules");
+  c.R.loader = {};
+  await c.open("settings");
+  const shown = c.text();
+  release([mod("a", "Late module")]);
+  await settle();
+  assert.equal(c.text(), shown);
+  assert.ok(!c.text().includes("Late module"));
+});
+
+t("module navigation leaves arrow keys to text editing controls", async () => {
+  const c = boot();
+  await c.open("modules");
+  const input = c.box.querySelector("input");
+  input.tabIndex = 0;
+  input.focus();
+  const key = new c.w.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+  input.dispatchEvent(key);
+  assert.equal(key.defaultPrevented, false);
+  assert.equal(c.d.activeElement, input);
+});
+
+t("partial data removal warns instead of reporting complete removal", async () => {
+  const c = boot({ uninstall: { ok: true, purge_failed: ["data", "logs"] } });
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Remove and delete data");
+  await c.click("Delete everything");
+  assert.ok(c.d.body.textContent.includes("2 data locations could not be deleted"));
+  assert.ok(!c.w.sessionStorage.fyMsg);
+});
+
+t("removing a protected interface explains that privileged components remain", async () => {
+  const c = boot({ list: [mod("a", "Alpha", { privileged: { helper: "/etc/example/update" } })] });
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Remove");
+  assert.ok(c.text().includes("does not remove its privileged helper or restore system settings"));
+  assert.equal(c.sent("uninstall").length, 0);
+});
+
+t("measured progress has accessible values and unmeasured progress drops its value", async () => {
+  const c = boot();
+  let release;
+  c.R.update = () => new Promise(r => { release = r; });
+  await c.open("modules");
+  await c.click("Update");
+  await c.click("Install");
+  c.progress({ job: 1, id: "a", stage: "download", index: 2, total: 6, label: "Downloading", state: "running", measured: { done: 1, total: 4 } });
+  const bar = c.box.querySelector('[role="progressbar"]');
+  assert.equal(bar.getAttribute("aria-valuenow"), "25");
+  assert.equal(bar.getAttribute("aria-valuemin"), "0");
+  assert.equal(bar.getAttribute("aria-valuemax"), "100");
+  assert.equal(bar.getAttribute("aria-label"), "Downloading");
+  assert.equal(c.box.querySelector('[role="status"]').getAttribute("aria-live"), "polite");
+  c.progress({ job: 1, id: "a", stage: "verify", index: 3, total: 6, label: "Verifying", state: "running", measured: null });
+  assert.equal(bar.hasAttribute("aria-valuenow"), false);
+  release({ ok: "a" });
+  await settle();
+});
+
+t("a settings repair reply cannot close a newer dialog after Cancel", async () => {
+  const c = boot({ status: { settings_state: "corrupt" } });
+  let release;
+  c.R.settings_repair = () => new Promise(r => { release = r; });
+  await c.open("modules");
+  await c.click("Repair settings");
+  await c.click("Repair");
+  await c.click("Cancel");
+  await c.click("More");
+  await c.click("Remove");
+  const shown = c.text();
+  const draws = c.sent("list").length;
+  release({ ok: true });
+  await settle();
+  assert.equal(c.text(), shown);
+  assert.equal(c.sent("list").length, draws);
+  assert.ok(!c.d.body.textContent.includes("Settings repaired"));
+});
+
+t("a selected version that becomes current reports no new installation", async () => {
+  const c = boot({ ver_list: versions, ver_install: { current: true } });
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Versions");
+  await c.click("2.0.0");
+  await c.click("Install this version");
+  assert.ok(c.text().includes("Already up to date"));
+  assert.ok(!c.text().includes("Installed 2.0.0"));
+});
+
+t("version completion reports the returned installed version", async () => {
+  const c = boot({ ver_list: versions, ver_install: { ok: "a", version: "2.0.1" } });
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Versions");
+  await c.click("2.0.0");
+  await c.click("Install this version");
+  assert.ok(c.text().includes("Installed 2.0.1"));
+  assert.ok(!c.text().includes("Installed 2.0.0"));
+});
+
+t("an empty version-install reply never claims installation succeeded", async () => {
+  const c = boot({ ver_list: versions, ver_install: {} });
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Versions");
+  await c.click("2.0.0");
+  await c.click("Install this version");
+  assert.ok(c.text().includes("Failed: No answer from Framey"));
+  assert.ok(!c.text().includes("Installed 2.0.0"));
+});
+
+t("a compatibility assessment alone cannot enable a version installation", async () => {
+  for (const flag of [undefined, "true", "false", 1]) {
+    const entry = Object.assign({}, versions().versions[0], { compat: { badge: "ok", msg: "Meets declared requirements" }, eligible: flag });
+    const c = boot({ ver_list: { versions: [entry], more: false } });
+    await c.open("modules");
+    await c.click("More");
+    await c.click("Versions");
+    await c.click("2.0.0");
+    assert.equal(c.find("Install this version").getAttribute("aria-disabled"), "true");
+    await c.click("Install this version");
+    assert.equal(c.sent("ver_install").length, 0);
+    assert.ok(c.text().includes("Unavailable"));
+  }
+});
+
+t("batch plans require explicit eligibility rather than truthy assessment data", async () => {
+  const c = boot({ batch_plan: { items: [{ id: "a", name: "Alpha", from: "1.0.0", to: "2.0.0", eligible: "false", reason: "Not eligible" }] } });
+  await c.open("modules");
+  await c.click("Update all");
+  assert.equal(c.find("Update 0").getAttribute("aria-disabled"), "true");
+  await c.click("Update 0");
+  assert.equal(c.sent("batch_apply").length, 0);
+});
+
+t("a detached version button cannot start another installation after completion", async () => {
+  const c = boot({ ver_list: versions, ver_install: { ok: "a", version: "2.0.0" } });
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Versions");
+  await c.click("2.0.0");
+  const original = c.find("Install this version");
+  original.click();
+  await settle();
+  original.click();
+  await settle();
+  assert.equal(c.sent("ver_install").length, 1);
+});
+
+t("a module update completion cannot replace the separate Decky Store tab", async () => {
+  const files = FILES.slice(0, -1).concat("fy-catalog.js", FILES.slice(-1));
+  const c = boot({
+    catalog_sources: { sources: [], decky_sources: [{ id: "decky_stable", label: "Decky Store" }] },
+    catalog_list: { rows: [], total: 0, origin: "downloaded", stale: false, source: { id: "decky_stable" } },
+  }, "off", files);
+  let release;
+  c.R.update = () => new Promise(r => { release = r; });
+  await c.open("modules");
+  await c.click("Update");
+  await c.click("Install");
+  await c.open("decky_store");
+  const shown = c.text();
+  assert.equal(c.box.querySelector('[role="heading"]').textContent, "Decky Store");
+  release({ ok: "a", version: "2.0.0" });
+  await settle();
+  assert.equal(c.text(), shown);
+  assert.ok(!c.text().includes("Updated Alpha"));
 });
 
 t("strings: every key used by the pages exists in the English table, none is unused", async () => {

@@ -9,6 +9,7 @@ const defaults = () => ({
   loader: { commit: "1234567", kept: false },
   state_get: stateOf(),
   autocheck_status: { enabled: false, last: 0, next_ok: 0, fails: 0 },
+  loader_check: () => checked(),
 });
 const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r)); };
 
@@ -52,7 +53,7 @@ const boot = (over = {}, trusted = "off") => {
   return { env, FY, w: env.window, d: env.document, box, calls, R, sent, last, find, has, click, open, all, text: () => box.textContent, progress };
 };
 
-const cand = (over = {}) => Object.assign({ tag: "v1.2.0", commit: "abcdef0123456789", prerelease: false, published: "2026-10-01T12:00:00Z", label: "", channel: "stable" }, over);
+const cand = (over = {}) => Object.assign({ tag: "v1.2.0", commit: "abcdef0123456789abcdef0123456789abcdef01", prerelease: false, published: "2026-10-01T12:00:00Z", label: "", channel: "stable" }, over);
 const checked = (over = {}) => {
   const candidate = cand(over.candidate);
   return {
@@ -128,16 +129,18 @@ t("Update asks first with the identity and release notes, then runs with confirm
   assert.ok(c.text().includes("Available: v1.2.0, commit abcdef0, published 2026-10-01"));
   assert.ok(c.text().includes("Fixes and polish."));
   await c.click("Update now");
-  assert.deepEqual(c.last("loader_update").arg, { confirm: false });
+  assert.deepEqual(c.last("loader_update").arg, { confirm: false, candidate: { tag: "v1.2.0", commit: "abcdef0123456789abcdef0123456789abcdef01" } });
   assert.ok(c.text().includes("Updated, Framey is restarting"));
 });
 
-t("Update without a check says what will be installed", async () => {
+t("Update without a check resolves and confirms an exact candidate first", async () => {
   const c = boot();
   c.R.loader_update = () => ({ current: true });
   await c.open();
   await c.click("Update");
-  assert.ok(c.text().includes("The newest version for your channel will be installed."));
+  assert.equal(c.sent("loader_check").length, 1);
+  assert.ok(c.text().includes("Available: v1.2.0, commit abcdef0"));
+  assert.equal(c.sent("loader_update").length, 0);
   await c.click("Cancel");
   assert.ok(c.has("Check for updates"));
   await c.click("Update");
@@ -408,6 +411,138 @@ t("Developer tools without the Developer file says to restart instead of doing n
   await c.open();
   await c.click("Developer tools");
   assert.ok(c.d.body.textContent.includes("Restart Framey to open Developer tools"));
+});
+
+t("a failed settings read offers Retry instead of editable guessed preferences", async () => {
+  const c = boot({ state_get: { error: "Settings could not be read" } });
+  await c.open();
+  assert.ok(c.text().includes("Settings could not be read"));
+  assert.ok(c.has("Retry"));
+  assert.ok(!c.has("Check automatically"));
+  c.R.state_get = stateOf();
+  await c.click("Retry");
+  assert.ok(c.has("Check automatically"));
+});
+
+t("an older settings read cannot repaint a newer Settings render", async () => {
+  let release;
+  const c = boot({ loader: () => new Promise(r => { release = r; }) });
+  await c.open();
+  c.R.loader = { commit: "7654321", kept: false };
+  await c.open();
+  release({ commit: "old0000", kept: true });
+  await settle();
+  assert.ok(c.text().includes("commit 7654321"));
+  assert.ok(!c.text().includes("old0000"));
+  assert.ok(!c.has("Roll back"));
+});
+
+t("a pending preference disables its switch and cannot enqueue duplicate writes", async () => {
+  const c = boot();
+  let release;
+  c.R.prefs_set = () => new Promise(r => { release = r; });
+  await c.open();
+  await c.click("Tell me about module updates");
+  const control = c.find("Tell me about module updates");
+  assert.equal(control.getAttribute("aria-busy"), "true");
+  assert.equal(control.getAttribute("aria-disabled"), "true");
+  await c.click("Tell me about module updates");
+  assert.equal(c.sent("prefs_set").length, 1);
+  release({ error: "Read-only settings" });
+  await settle();
+  assert.equal(control.getAttribute("aria-checked"), "false");
+  assert.equal(control.getAttribute("aria-disabled"), "false");
+  assert.equal(control.hasAttribute("aria-busy"), false);
+  assert.ok(c.d.body.textContent.includes("Read-only settings"));
+});
+
+t("a malformed save reply does not report an unsaved preference as enabled", async () => {
+  const c = boot();
+  c.R.prefs_set = () => ({});
+  await c.open();
+  await c.click("Tell me about module updates");
+  assert.equal(c.find("Tell me about module updates").getAttribute("aria-checked"), "false");
+  assert.ok(c.d.body.textContent.includes("No answer from Framey"));
+});
+
+t("concurrent different preference replies preserve each confirmed value", async () => {
+  const c = boot();
+  let release;
+  c.R.prefs_set = arg => arg.notify_loader === true
+    ? new Promise(r => { release = r; })
+    : arg.notify_plugins === true ? stateOf({ notify_plugins: true }) : { error: "Cannot save" };
+  await c.open();
+  await c.click("Tell me about Framey updates");
+  await c.click("Tell me about module updates");
+  release(stateOf({ notify_loader: true, notify_plugins: false }));
+  await settle();
+  await c.click("Tell me about module updates");
+  assert.equal(c.find("Tell me about module updates").getAttribute("aria-checked"), "true");
+});
+
+t("a delayed update check cannot replace a later Modules page", async () => {
+  const c = boot({ list: [], store: [] });
+  let release;
+  c.R.loader_check = () => new Promise(r => { release = r; });
+  await c.open();
+  await c.click("Check for updates");
+  c.FY.pages.modules.render(c.box);
+  await settle();
+  release(checked());
+  await settle();
+  assert.ok(c.text().includes("No modules installed"));
+  assert.ok(!c.text().includes("Available: v1.2.0"));
+});
+
+t("a maintenance window save failure restores the confirmed slider value", async () => {
+  const initial = { "maint.enabled_background": false, "maint.window_days": 365 };
+  const c = boot({ maint_prefs: arg => arg ? { error: "Maintenance settings could not be saved" } : initial });
+  await c.open();
+  const slider = c.box.querySelector('[role="slider"][aria-label="Activity window"]');
+  slider.dispatchEvent(new c.w.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  slider.dispatchEvent(new c.w.KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true }));
+  await settle();
+  assert.deepEqual(c.last("maint_prefs").arg, { "maint.window_days": 370 });
+  assert.equal(slider.value, 365);
+  assert.equal(slider.getAttribute("aria-valuenow"), "365");
+  assert.ok(c.d.body.textContent.includes("Maintenance settings could not be saved"));
+});
+
+t("the worker limit is adjustable only when supported and rolls back a refused change", async () => {
+  const c = boot({ state_get: stateOf({ workers_max: 3 }) });
+  c.R.prefs_set = () => ({ error: "Cannot save worker limit" });
+  await c.open();
+  const slider = c.box.querySelector('[role="slider"][aria-label="Modules running at once"]');
+  assert.ok(slider);
+  assert.equal(slider.getAttribute("aria-valuemin"), "1");
+  assert.equal(slider.getAttribute("aria-valuemax"), "3");
+  slider.dispatchEvent(new c.w.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+  slider.dispatchEvent(new c.w.KeyboardEvent("keyup", { key: "ArrowLeft", bubbles: true }));
+  await settle();
+  assert.deepEqual(c.last("prefs_set").arg, { workers_max: 2 });
+  assert.equal(slider.value, 3);
+  const old = boot();
+  await old.open();
+  assert.equal(old.box.querySelector('[role="slider"][aria-label="Modules running at once"]'), null);
+});
+
+t("a missing or malformed candidate never starts an unreviewed loader install", async () => {
+  const c = boot({ loader_check: () => checked({ candidate: { commit: "bad" } }) });
+  await c.open();
+  await c.click("Update");
+  assert.equal(c.sent("loader_check").length, 1);
+  assert.equal(c.sent("loader_update").length, 0);
+  assert.ok(!c.has("Update now"));
+});
+
+t("both downgrade confirmations retain the exact checked release identity", async () => {
+  const c = boot({ loader_check: () => checked({ loader: { downgrade: true } }) });
+  c.R.loader_update = arg => arg.confirm ? { ok: true } : { confirm: "Confirm the older release" };
+  await c.open();
+  await c.click("Update");
+  await c.click("Update now");
+  await c.click("Update now");
+  assert.deepEqual(c.sent("loader_update").map(x => x.arg), [false, true].map(confirm => ({ confirm, candidate: { tag: "v1.2.0", commit: "abcdef0123456789abcdef0123456789abcdef01" } })));
 });
 
 (async () => {

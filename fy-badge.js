@@ -2,6 +2,7 @@
   const bar = window.FYBar;
   if (!bar || bar.badge) return;
   let count = 0;
+  let off = false;
   const old = document.getElementById("fy-badge-style");
   if (old) old.remove();
   const st = document.createElement("style");
@@ -10,7 +11,8 @@
   st.textContent = ".fy-bb>.fy-bdg{position:absolute;right:8px;top:8px;width:10px;height:10px;border-radius:50%;background:#ffb347;box-shadow:0 0 0 2px rgba(8,8,16,.92);pointer-events:none}";
   document.head.append(st);
   const paint = () => {
-    const b = document.querySelector(".fy-bb");
+    if (off) return;
+    const b = bar.button;
     if (!b) return;
     let dot = b.querySelector(":scope>.fy-bdg");
     if (count > 0 && !dot) {
@@ -25,11 +27,20 @@
   };
   const set = bar.set;
   bar.set = on => {
-    set(on);
+    if (off) return;
+    set.call(bar, on);
     paint();
   };
+  const dispose = bar.dispose;
+  bar.dispose = () => {
+    if (off) return;
+    off = true;
+    st.remove();
+    if (typeof dispose === "function") dispose.call(bar);
+  };
   bar.badge = n => {
-    n = Number(n);
+    if (off) return;
+    try { n = Number(n); } catch (e) { n = 0; }
     count = isFinite(n) ? Math.max(0, Math.min(99, Math.floor(n))) : 0;
     paint();
   };

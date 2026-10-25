@@ -432,7 +432,7 @@ class LoaderUpdateTests(U.Base):
         loader.net.archive("chaosfox26", "framey", sha, H.mkzip(files, top="framey-" + sha))
 
     def full(self):
-        return {f.name: f.read_text() for f in H.repo_files()}
+        return H.full_tree()
 
     async def test_an_empty_or_import_broken_framey_py_is_refused_and_nothing_is_swapped(self):
         loader = await self.start()
@@ -803,7 +803,7 @@ class SmallFixTests(Base):
         async def tabs():
             return [{"url": "https://evil.example/?x=vrOverlayKey=valve.steam.gamepadui.main"}, {"url": "https://steamloopback.host/?vrOverlayKey=valve.steam.gamepadui.main"}]
 
-        async def session(name, tab, code, probe):
+        async def session(name, tab, code, probe, marker=None):
             chosen.append(tab["url"])
             raise asyncio.CancelledError
 

@@ -1,11 +1,13 @@
 import collections
 import errno
+import hashlib
 import json
 import os
 import re
 import shutil
 import stat
 import threading
+import tempfile
 import time
 from pathlib import Path
 
@@ -91,10 +93,13 @@ def ensure(path):
         missing.append(q)
         q = q.parent
     for m in reversed(missing):
+        _verify(m.parent)
         try:
             m.mkdir(mode=0o700)
         except FileExistsError:
             pass
+        _verify(m)
+    _verify(p)
     if not p.is_dir():
         raise NotADirectoryError("not a directory")
     return p
@@ -114,13 +119,25 @@ def read_json(path, default=None, max_bytes=SETTINGS_MAX):
 def keep_bad(path, raw):
     bad = Path(str(path) + ".bad")
     try:
-        if not bad.exists():
-            bad.write_bytes(raw)
-    except OSError:
-        pass
+        fd = os.open(bad, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+    except FileExistsError:
+        if not bad.is_file() or bad.is_symlink():
+            raise OSError(errno.EEXIST, "invalid settings recovery copy")
+        fd = os.open(bad, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise OSError(errno.EINVAL, "invalid settings recovery copy")
+            if f.read(len(raw) + 1) != raw:
+                raise OSError(errno.EEXIST, "settings recovery copy already exists")
+            os.fsync(f.fileno())
+    _sync_dir(bad.parent, strict=True)
 
 
-def _sync_dir(d):
+def _sync_dir(d, strict=False):
     if os.name != "posix":
         return
     try:
@@ -130,7 +147,8 @@ def _sync_dir(d):
         finally:
             os.close(fd)
     except OSError:
-        pass
+        if strict:
+            raise
 
 
 def write_json_atomic(path, obj, max_bytes=SETTINGS_MAX):
@@ -142,7 +160,6 @@ def write_json_atomic(path, obj, max_bytes=SETTINGS_MAX):
         raise ValueError("data too large")
     path = Path(path)
     ensure(path.parent)
-    import tempfile
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix="." + path.name + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
@@ -180,11 +197,13 @@ class Settings:
                 raw = f.read(self.max_bytes + 1)
         except FileNotFoundError:
             return {}
+        if len(raw) > self.max_bytes:
+            raise ValueError("settings file too large")
         try:
             d = json.loads(raw.decode("utf-8"), parse_constant=_constant)
         except (ValueError, RecursionError):
             d = None
-        if len(raw) > self.max_bytes or not isinstance(d, dict):
+        if not isinstance(d, dict):
             keep_bad(self.path, raw)
             return {}
         return d
@@ -230,6 +249,8 @@ class Settings:
 
 class Log:
     def __init__(self, pid, logs_dir, stream=None, max_bytes=LOG_MAX, keep=3, per_second=20):
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+            raise ValueError("bad log size")
         self.pid = pid
         self.dir = Path(logs_dir)
         self.stream = stream
@@ -289,17 +310,28 @@ class Log:
     def _write(self, line):
         data = (line + "\n").encode("utf-8", "replace")
         if len(data) > self.max_bytes:
-            data = data[: self.max_bytes - 1] + b"\n"
+            data = data[: self.max_bytes - 1].decode("utf-8", "ignore").encode("utf-8") + b"\n"
+        with _LOCK:
+            self._write_locked(data)
+
+    def _write_locked(self, data):
         try:
             ensure(self.dir)
             path = self.dir / "plugin.log"
+            if _link(path):
+                return
             try:
                 size = path.stat().st_size
             except OSError:
                 size = 0
             if size and size + len(data) > self.max_bytes:
                 self._rotate(path)
-            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            fd = os.open(path, flags, 0o600)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                os.close(fd)
+                return
             with os.fdopen(fd, "ab") as f:
                 f.write(data)
         except OSError:
@@ -317,7 +349,10 @@ def snapshot_settings(config_dir):
     src = Path(config_dir) / "settings.json"
     dst = Path(config_dir) / "settings.json.premigrate"
     with _LOCK:
-        if dst.is_file():
+        _verify(Path(config_dir))
+        if os.path.lexists(dst):
+            if not dst.is_file() or _link(dst):
+                raise OSError(errno.EEXIST, "invalid settings snapshot")
             return dst
         if not src.is_file():
             return None
@@ -326,12 +361,15 @@ def snapshot_settings(config_dir):
 
 
 def drop_snapshot(config_dir):
-    Path(config_dir, "settings.json.premigrate").unlink(missing_ok=True)
+    with _LOCK:
+        _verify(Path(config_dir))
+        Path(config_dir, "settings.json.premigrate").unlink(missing_ok=True)
 
 
 def restore_snapshot(config_dir):
     src = Path(config_dir) / "settings.json.premigrate"
     with _LOCK:
+        _verify(Path(config_dir))
         if not src.is_file():
             return False
         _copy(src, Path(config_dir) / "settings.json")
@@ -373,10 +411,15 @@ def purge(d, which=("config", "data", "runtime", "logs")):
                 reason = "not_directory"
             else:
                 try:
-                    shutil.rmtree(p)
-                    removed.append(name)
+                    _verify(p)
                 except OSError:
-                    reason = "error"
+                    reason = "unsafe_directory"
+                else:
+                    try:
+                        shutil.rmtree(p)
+                        removed.append(name)
+                    except OSError:
+                        reason = "error"
         if reason:
             failed.append({"name": name, "reason": reason})
     return {"removed": removed, "failed": failed}
@@ -385,8 +428,15 @@ def purge(d, which=("config", "data", "runtime", "logs")):
 def discard_held(root, pid):
     if not isinstance(pid, str) or not PLUGIN_ID.fullmatch(pid):
         raise ValueError("bad plugin id")
+    root = Path(root)
+    try:
+        _verify(root)
+    except OSError:
+        return
+    if _link(root):
+        return
     for name in (".old-", ".stage-"):
-        shutil.rmtree(Path(root) / (name + pid), ignore_errors=True)
+        shutil.rmtree(root / (name + pid), ignore_errors=True)
 
 
 def clean_tmp(runtime_dir):
@@ -395,8 +445,13 @@ def clean_tmp(runtime_dir):
     d = Path(runtime_dir)
     if _link(d) or not d.is_dir():
         return 0
+    try:
+        _verify(d)
+        entries = list(os.scandir(d))
+    except OSError:
+        return 0
     n = 0
-    for e in list(os.scandir(d)):
+    for e in entries:
         if not e.name.startswith("tmp-"):
             continue
         try:
@@ -418,37 +473,70 @@ def _rm(p):
 
 
 def _tree(p):
-    if not p.is_dir() or p.is_symlink():
-        return p.lstat().st_size
+    mode = p.lstat().st_mode
+    if stat.S_ISLNK(mode):
+        return ("link", os.readlink(p))
+    if stat.S_ISREG(mode):
+        digest = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return ("file", digest.digest())
+    if not stat.S_ISDIR(mode):
+        raise OSError(errno.ENOTSUP, "unsupported migration source")
     out = []
     for root, dirnames, filenames in os.walk(p):
         for n in dirnames + filenames:
             q = Path(root) / n
             is_dir = q.is_dir() and not q.is_symlink()
-            out.append((str(q.relative_to(p)), -1 if is_dir else q.lstat().st_size))
-    return sorted(out)
+            out.append((str(q.relative_to(p)), ("directory",) if is_dir else _tree(q)))
+    return ("directory", sorted(out))
+
+
+def _copy_file(src, dst):
+    with open(src, "rb") as a, open(dst, "wb") as b:
+        shutil.copyfileobj(a, b)
+        b.flush()
+        os.fsync(b.fileno())
+    shutil.copystat(src, dst)
+    return dst
 
 
 def _copy(src, dst):
-    tmp = dst.with_name(dst.name + ".fy-part")
-    _rm(tmp)
+    src, dst = Path(src), Path(dst)
+    if _link(src):
+        raise OSError(errno.ELOOP, "linked migration source")
+    if src.is_dir() and src.resolve() in (dst.resolve(), *dst.resolve().parents):
+        raise OSError(errno.EINVAL, "migration destination is inside source")
+    before = _tree(src)
+    if src.is_dir():
+        tmp = Path(tempfile.mkdtemp(dir=dst.parent, prefix="." + dst.name + ".", suffix=".fy-part"))
+    else:
+        fd, name = tempfile.mkstemp(dir=dst.parent, prefix="." + dst.name + ".", suffix=".fy-part")
+        os.close(fd)
+        tmp = Path(name)
     try:
         if src.is_dir():
-            shutil.copytree(src, tmp, symlinks=True)
+            shutil.copytree(src, tmp, symlinks=True, dirs_exist_ok=True, copy_function=_copy_file)
+            for root, _, _ in os.walk(tmp, topdown=False):
+                _sync_dir(root, strict=True)
         else:
-            with open(src, "rb") as a, open(tmp, "wb") as b:
-                shutil.copyfileobj(a, b)
-                b.flush()
-                os.fsync(b.fileno())
-        if _tree(src) != _tree(tmp):
+            _copy_file(src, tmp)
+        if before != _tree(src) or before != _tree(tmp):
             raise OSError(errno.EIO, "copy verification failed")
         os.replace(tmp, dst)
+        _sync_dir(dst.parent, strict=True)
     except BaseException:
         _rm(tmp)
         raise
 
 
 def migrate_move(src, dst, overwrite=False):
+    with _LOCK:
+        return _migrate_move(src, dst, overwrite)
+
+
+def _migrate_move(src, dst, overwrite):
     src, dst = Path(src), Path(dst)
     if not os.path.lexists(src):
         return {"moved": False, "reason": "missing_source"}
@@ -460,6 +548,8 @@ def migrate_move(src, dst, overwrite=False):
         if not overwrite or dst.is_dir():
             return {"moved": False, "reason": "exists"}
     try:
+        if src.is_dir() and src.resolve() in (dst.resolve(), *dst.resolve().parents):
+            raise OSError(errno.EINVAL, "migration destination is inside source")
         ensure(dst.parent)
         try:
             os.replace(src, dst)
@@ -468,6 +558,7 @@ def migrate_move(src, dst, overwrite=False):
                 raise
             _copy(src, dst)
             _rm(src)
+            _sync_dir(src.parent)
     except OSError as e:
         return {"moved": False, "reason": "error:" + (errno.errorcode.get(e.errno) or type(e).__name__)}
     return {"moved": True, "reason": "ok"}
@@ -476,10 +567,11 @@ def migrate_move(src, dst, overwrite=False):
 def migrate_keys(settings, mapping):
     if not isinstance(mapping, dict) or len(mapping) > KEYS_MAX:
         raise ValueError("bad mapping")
-    renamed = []
     for old, new in mapping.items():
         _key(old)
         _key(new)
+    renamed = []
+    for old, new in mapping.items():
         if old != new and old in settings and new not in settings:
             settings[new] = settings.pop(old)
             renamed.append([old, new])
@@ -491,14 +583,25 @@ def copy_once(src, dst, marker_name):
         raise ValueError("bad marker name")
     src, dst = Path(src), Path(dst)
     marker = dst.parent / marker_name
-    if os.path.lexists(marker) or not os.path.lexists(src) or src.is_symlink():
-        return False
-    ensure(dst.parent)
-    copied = not os.path.lexists(dst)
-    if copied:
-        _copy(src, dst)
-    os.close(os.open(marker, os.O_WRONLY | os.O_CREAT, 0o600))
-    return copied
+    with _LOCK:
+        if os.path.lexists(marker) or not os.path.lexists(src) or _link(src):
+            return False
+        if src.is_dir() and src.resolve() in (dst.resolve(), *dst.resolve().parents):
+            raise OSError(errno.EINVAL, "migration destination is inside source")
+        ensure(dst.parent)
+        copied = not os.path.lexists(dst)
+        if copied:
+            _copy(src, dst)
+        try:
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return copied
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        _sync_dir(dst.parent)
+        return copied
 
 
 def read_locale(plugin_dir, lang):

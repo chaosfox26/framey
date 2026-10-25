@@ -291,6 +291,10 @@
   FY.ext.push((api, p, res, io) => {
     const s = { p, regs: 0, raf: new Set(), tok: new Map(), lt: 0, ln: 0 };
     const key = api.id;
+    O.defineProperty(api, "id", { value: key, enumerable: true, writable: false, configurable: false });
+    const alive = () => !p.dead && byKey.get(key) === s;
+    const disposed = () => O.assign(new Error("module disposed"), { code: "disposed" });
+    const revokeToken = token => io.post("resource", { revoke: token, pid: p.id });
     const rpc = (method, arg) => api._rpc(method, arg);
     s.hub = hub(64, (name, e) => s.log("error", "event " + name + ": " + (e && e.message)));
     s.log = (level, msg) => {
@@ -320,7 +324,7 @@
       s.hub.clear();
       s.raf.forEach(h => caf(h));
       s.raf.clear();
-      s.tok.forEach(t => io.post("resource", { revoke: t, pid: p.id }));
+      s.tok.forEach(revokeToken);
       s.tok.clear();
       ns.vis.concat(ns.q).filter(r => r.p === p).forEach(r => close(r, "dispose", true));
       if (p.id !== "core") strings.delete(p.id);
@@ -333,7 +337,9 @@
       }
       return put(() => fn());
     };
-    api.call = (method, arg, to) => (p.dead ? P.resolve({ error: "module disposed" }) : io.be(method, arg, to));
+    api.call = (method, arg, to) => (alive()
+      ? io.be(method, arg, to).then(r => alive() ? r : { error: "module disposed", code: "disposed" })
+      : P.resolve({ error: "module disposed", code: "disposed" }));
     api.raf = fn => {
       if (p.dead || typeof fn !== "function") return 0;
       if (s.raf.size >= 256) {
@@ -343,7 +349,8 @@
       }
       const h = raf(t => {
         s.raf.delete(h);
-        fn(t);
+        if (!alive()) return;
+        try { fn(t); } catch (e) { s.log("error", "animation frame: " + (e && e.message)); }
       });
       s.raf.add(h);
       return h;
@@ -353,7 +360,7 @@
       once: (name, fn) => (p.dead ? noop : s.hub.on(name, fn, true)),
       off: (name, fn) => { if (!p.dead) s.hub.off(name, fn); },
     };
-    api.notify = o => (p.dead ? { id: 0, dismiss: noop } : notify(p, api.id, o, s.log));
+    api.notify = o => (p.dead ? { id: 0, dismiss: noop } : notify(p, key, o, s.log));
     api.onVisible = fn => {
       if (p.dead || typeof fn !== "function") return noop;
       let off = noop;
@@ -366,30 +373,49 @@
         off();
       };
     };
-    api.t = (key, vars) => I18N.t(api.id, key, vars);
+    api.t = (name, vars) => I18N.t(key, name, vars);
     api.i18n = {
-      add: (lang, dict) => addStr(api.id, lang, dict),
+      add: (lang, dict) => alive() ? addStr(key, lang, dict) : 0,
       load: lang => {
-        if (!norm(lang)) return P.resolve(false);
-        return io.core("locale", { id: api.id, lang }).then(r => !!(r && r.strings && addStr(api.id, lang, r.strings)), () => false);
+        if (!alive() || !norm(lang)) return P.resolve(false);
+        return io.core("locale", { id: key, lang }).then(r => !!(alive() && r && r.strings && addStr(key, lang, r.strings)), () => false);
       },
     };
-    api.fetch = (url, o) => rpc("fetch", O.assign({}, o, { url, pid: api.id }));
-    api.resource = (root, path, ttl) => rpc("resource", { root, path, ttl, pid: api.id }).then(r => {
-      if (!r || typeof r.url !== "string") throw new Error("no resource url");
-      if (r.token) {
-        if (s.tok.size >= 16) s.tok.delete(s.tok.keys().next().value);
-        s.tok.set(r.url, r.token);
+    api.fetch = (url, o) => rpc("fetch", O.assign({}, o, { url, pid: key })).then(r => {
+      if (!alive()) throw disposed();
+      return r;
+    });
+    api.resource = (root, path, ttl) => rpc("resource", { root, path, ttl, pid: key }).then(r => {
+      const token = r && typeof r.token === "string" ? r.token : "";
+      if (!alive()) {
+        if (token) revokeToken(token);
+        throw disposed();
+      }
+      if (!r || typeof r.url !== "string") {
+        if (token) revokeToken(token);
+        throw new Error("no resource url");
+      }
+      if (token) {
+        const old = s.tok.get(r.url);
+        if (old && old !== token) revokeToken(old);
+        if (!old && s.tok.size >= 16) {
+          const [url, stale] = s.tok.entries().next().value;
+          s.tok.delete(url);
+          revokeToken(stale);
+        }
+        s.tok.set(r.url, token);
       }
       return r.url;
     });
     api.revoke = url => {
       const t = s.tok.get(url);
       if (!t) return P.resolve(false);
-      s.tok.delete(url);
-      return rpc("resource", { revoke: t, pid: api.id }).then(() => true, () => false);
+      return rpc("resource", { revoke: t, pid: key }).then(r => {
+        if (s.tok.get(url) === t) s.tok.delete(url);
+        return !!(r && r.ok);
+      }, () => false);
     };
-    api.log = (level, msg) => { s.log(level, msg); };
+    api.log = (level, msg) => { if (alive()) s.log(level, msg); };
     O.defineProperties(api, {
       visible: { enumerable: true, get: () => !p.dead && nowVisible() },
       lang: { enumerable: true, get: () => I18N.lang() },
@@ -403,7 +429,7 @@
             api: Number.isInteger(r.api) ? r.api : 1,
             platform: typeof r.platform === "string" ? r.platform : "",
             lang: I18N.lang(),
-            plugin: api.id,
+            plugin: key,
             version: typeof m.version === "string" ? m.version : "",
           });
         },

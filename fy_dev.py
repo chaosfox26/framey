@@ -10,12 +10,14 @@ IN_CLOSE_WRITE = 0x8
 IN_MOVED_TO = 0x80
 IN_CREATE = 0x100
 IN_DELETE = 0x200
+IN_DELETE_SELF = 0x400
+IN_MOVE_SELF = 0x800
 IN_Q_OVERFLOW = 0x4000
 IN_IGNORED = 0x8000
 IN_ISDIR = 0x40000000
 IN_NONBLOCK = 0o4000
 IN_CLOEXEC = 0o2000000
-WATCH_MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE
+WATCH_MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_DELETE_SELF | IN_MOVE_SELF
 HEADER = struct.Struct("iIII")
 READ_MAX = 8192
 SKIP_PREFIX = (".stage-", ".old-", ".git")
@@ -30,6 +32,7 @@ PROC_MAX = 1048576
 ADDRESSES_MAX = 16
 CDP_PORT = 8080
 TIMEOUT = 3.0
+RELOAD_TIMEOUT = 30.0
 MAIN_MARK = "vrOverlayKey=valve.steam.gamepadui.main"
 BAR_END = "vrOverlayKey=valve.steam.gamepadui.bar"
 HINT = "From a PC run: ssh -L {port}:127.0.0.1:{port} steamos@<headset>, then open http://127.0.0.1:{port} in a Chromium based browser. Opening a browser inside the headset is not verified."
@@ -119,13 +122,15 @@ class HotReload:
         self._fd = None
         self._w = {}
         self._wds = {}
+        self._busy = set()
+        self.warning = None
 
     def active(self):
         return sorted(self._w)
 
     def status(self):
         now = self.host.mono()
-        return [{"id": p, "mode": w["mode"], "truncated": w["cut"], "remaining_s": max(0, int(w["until"] - now))} for p, w in sorted(self._w.items())]
+        return [{"id": p, "mode": w["mode"], "truncated": w["cut"], "remaining_s": max(0, int(w["until"] - now)), **({"reload_error": w["reload_error"]} if w["reload_error"] else {})} for p, w in sorted(self._w.items())]
 
     def enable(self, pid, ttl=None):
         if not isinstance(pid, str) or not PID.match(pid):
@@ -138,7 +143,7 @@ class HotReload:
         self._drop(pid)
         if len(self._w) >= MAX_ACTIVE:
             raise DevError("too_many", "Hot reload is limited to %d modules at once" % MAX_ACTIVE)
-        w = {"root": str(root), "mode": "", "cut": False, "wds": [], "ttl": None, "bounce": None, "tick": None, "task": None, "snap": None, "until": 0.0}
+        w = {"root": str(root), "mode": "", "cut": False, "wds": [], "ttl": None, "bounce": None, "tick": None, "task": None, "snap": None, "until": 0.0, "reload_error": None}
         self._w[pid] = w
         if not (self._want_inotify and self._watch(pid, w)):
             self._poll(pid, w)
@@ -159,7 +164,7 @@ class HotReload:
         dev = dev_prefs(self.host)
         until = dev.get("hot_until")
         hot = dev.get("hot")
-        if dev.get("enabled") is not True or not isinstance(hot, list) or isinstance(until, bool) or not isinstance(until, (int, float)):
+        if dev.get("enabled") is not True or not isinstance(hot, list) or isinstance(until, bool) or not isinstance(until, (int, float)) or not -float("inf") < until < float("inf"):
             return []
         left = until - self.host.now()
         if left <= 0:
@@ -180,7 +185,9 @@ class HotReload:
             dev["hot"] = sorted(self._w)
             dev["hot_until"] = int(self.host.now() + max(w["until"] for w in self._w.values()) - self.host.mono()) if self._w else 0
             self.host.save(s)
+            self.warning = None
         except Exception as e:
+            self.warning = "Hot-reload choices could not be saved. They may revert after Framey restarts."
             self.host.log("hot reload", "could not save state:", e)
 
     def _arm_ttl(self, pid, w, ttl=None):
@@ -203,12 +210,16 @@ class HotReload:
         for key in ("ttl", "bounce", "tick"):
             if w[key] is not None:
                 w[key].cancel()
+        self._unwatch(w)
+
+    def _unwatch(self, w):
         for wd in w["wds"]:
             self._wds.pop(wd, None)
             try:
                 self._libc.inotify_rm_watch(self._fd, wd)
             except Exception:
                 pass
+        w["wds"] = []
         if self._fd is not None and not self._wds:
             self._close_fd()
 
@@ -244,6 +255,8 @@ class HotReload:
         return True
 
     def _add_dir(self, pid, w, path):
+        if any(owner == pid and watched == path for owner, watched in self._wds.values()):
+            return True
         try:
             wd = self._libc.inotify_add_watch(self._fd, os.fsencode(path), WATCH_MASK)
         except Exception:
@@ -260,15 +273,7 @@ class HotReload:
             return False
         dirs, _, cut = walk(w["root"], self.max_dirs)
         if not all(self._add_dir(pid, w, d) for d in dirs):
-            for wd in w["wds"]:
-                self._wds.pop(wd, None)
-                try:
-                    self._libc.inotify_rm_watch(self._fd, wd)
-                except Exception:
-                    pass
-            w["wds"] = []
-            if not self._wds:
-                self._close_fd()
+            self._unwatch(w)
             return False
         w["mode"], w["cut"] = "inotify", cut
         return True
@@ -293,18 +298,29 @@ class HotReload:
             owner = self._wds.get(wd)
             if owner is None:
                 continue
-            if mask & IN_IGNORED:
-                del self._wds[wd]
-                continue
             pid, base = owner
-            name = raw.split(b"\0", 1)[0].decode("utf-8", "replace")
-            if not name or ignored(name):
-                continue
             w = self._w.get(pid)
             if w is None:
                 continue
-            if mask & IN_ISDIR and mask & (IN_CREATE | IN_MOVED_TO) and len(w["wds"]) < self.max_dirs:
-                self._add_dir(pid, w, os.path.join(base, name))
+            if mask & (IN_IGNORED | IN_DELETE_SELF | IN_MOVE_SELF):
+                self._unwatch(w)
+                self._poll(pid, w)
+                if mask & (IN_DELETE_SELF | IN_MOVE_SELF):
+                    hit.add(pid)
+                continue
+            name = raw.split(b"\0", 1)[0].decode("utf-8", "replace")
+            if not name or ignored(name):
+                continue
+            if mask & IN_ISDIR and mask & (IN_CREATE | IN_MOVED_TO):
+                room = self.max_dirs - len(w["wds"])
+                if room > 0:
+                    dirs, _, cut = walk(os.path.join(base, name), room)
+                    w["cut"] = w["cut"] or cut
+                    for path in dirs:
+                        if not self._add_dir(pid, w, path):
+                            w["cut"] = True
+                else:
+                    w["cut"] = True
             hit.add(pid)
         for pid in hit:
             self._changed(pid)
@@ -318,6 +334,9 @@ class HotReload:
         w = self._w.get(pid)
         if w is None:
             return
+        if dev_prefs(self.host).get("enabled") is not True:
+            self.disable_all()
+            return
         _, snap, w["cut"] = walk(w["root"], self.max_dirs, self.max_files)
         if snap != w["snap"]:
             w["snap"] = snap
@@ -327,6 +346,9 @@ class HotReload:
     def _changed(self, pid):
         w = self._w.get(pid)
         if w is None:
+            return
+        if dev_prefs(self.host).get("enabled") is not True:
+            self.disable_all()
             return
         self._arm_ttl(pid, w)
         if w["bounce"] is not None:
@@ -338,20 +360,33 @@ class HotReload:
         if w is None:
             return
         loop = self.host.loop()
-        if w["task"] is not None:
+        if dev_prefs(self.host).get("enabled") is not True:
+            self.disable_all()
+            return
+        if pid in self._busy:
             w["bounce"] = loop.call_later(self.debounce, self._fire, pid)
             return
         w["bounce"] = None
-        w["task"] = loop.create_task(self._reload(pid))
+        self._persist()
+        self._busy.add(pid)
+        w["task"] = loop.create_task(self._reload(pid, w))
 
-    async def _reload(self, pid):
+    async def _reload(self, pid, w):
         try:
-            await self.reload_one(pid)
+            if self._w.get(pid) is w:
+                result = await asyncio.wait_for(self.reload_one(pid), RELOAD_TIMEOUT)
+                if isinstance(result, dict) and result.get("error"):
+                    raise DevError("reload_failed", str(result["error"]))
+                w["reload_error"] = None
+        except asyncio.TimeoutError:
+            w["reload_error"] = "Reload took too long. Check the module status before trying again."
+            self.host.log("hot reload", pid, "timed out after", RELOAD_TIMEOUT, "seconds")
         except Exception as e:
+            w["reload_error"] = "The module could not be reloaded. Check its status and try again."
             self.host.log("hot reload", pid, "failed:", e)
         finally:
-            w = self._w.get(pid)
-            if w is not None:
+            self._busy.discard(pid)
+            if self._w.get(pid) is w:
                 w["task"] = None
 
 
@@ -411,15 +446,22 @@ def remote_exposure(text_tcp, text_tcp6, port=CDP_PORT):
 
 def exposure_now(base="/proc/net", port=CDP_PORT):
     texts = []
+    complete = True
     for name in ("tcp", "tcp6"):
         try:
             with open(base + "/" + name, "r", encoding="ascii", errors="replace") as f:
-                texts.append(f.read(PROC_MAX))
+                text = f.read(PROC_MAX + 1)
+                complete = complete and len(text) <= PROC_MAX
+                texts.append(text[:PROC_MAX])
         except OSError:
             texts.append(None)
+            complete = False
     if texts == [None, None]:
         return {"state": "unknown", "addresses": []}
-    return remote_exposure(texts[0] or "", texts[1] or "", port)
+    out = remote_exposure(texts[0] or "", texts[1] or "", port)
+    if not complete and out["state"] != "exposed":
+        out["state"] = "unknown"
+    return out
 
 
 async def fetch_json(port):
@@ -436,9 +478,16 @@ async def fetch_json(port):
     finally:
         w.close()
     head, sep, body = raw.partition(b"\r\n\r\n")
-    if not sep or len(raw) > JSON_MAX or b" 200" not in head.split(b"\r\n", 1)[0]:
+    first = head.split(b"\r\n", 1)[0].split()
+    if not sep or len(raw) > JSON_MAX or len(first) < 2 or first[0] not in (b"HTTP/1.0", b"HTTP/1.1") or first[1] != b"200":
         raise ValueError("reply")
-    return json.loads(body.decode("utf-8"), parse_constant=_nan)
+    try:
+        items = json.loads(body.decode("utf-8"), parse_constant=_nan)
+    except RecursionError:
+        raise ValueError("reply") from None
+    if not isinstance(items, list):
+        raise ValueError("reply")
+    return items
 
 
 def target_name(url, table):
@@ -458,10 +507,11 @@ def list_targets(items, port, table):
         tid = t.get("id") if isinstance(t, dict) else None
         if not isinstance(tid, str) or not TARGET_ID.match(tid):
             continue
-        url = str(t.get("url") or "")
+        url = t.get("url") if isinstance(t.get("url"), str) else ""
+        title = t.get("title") if isinstance(t.get("title"), str) else ""
         out.append({
             "name": target_name(url, table),
-            "title": str(t.get("title") or "")[:120],
+            "title": title[:120],
             "url": url[:300],
             "inspector": "http://127.0.0.1:%d/devtools/inspector.html?ws=127.0.0.1:%d/devtools/page/%s" % (port, port, tid),
         })
@@ -492,6 +542,7 @@ def status(host):
         "enabled": dev_prefs(host).get("enabled") is True,
         "hot": hot.status() if hot is not None else [],
         "exposure": exposure_now(),
+        "warning": (hot.warning or next(("Hot reload failed for " + p + ". " + w["reload_error"] for p, w in sorted(hot._w.items()) if w["reload_error"]), None)) if hot is not None else None,
     }
 
 

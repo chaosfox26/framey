@@ -34,7 +34,10 @@
 
   const txt = x => (x == null ? "" : String(x).slice(0, 300));
   const num = (x, d) => (x == null || x === "" || !isFinite(x) ? d : +x);
-  const dp = n => (String(n).split(".")[1] || "").length;
+  const dp = n => {
+    const parts = String(n).toLowerCase().split("e");
+    return Math.max(0, (parts[0].split(".")[1] || "").length - num(parts[1], 0));
+  };
   const mk = (id, cls, css, text) => {
     const e = FY.el(css, text);
     e.className = cls;
@@ -42,25 +45,26 @@
     return e;
   };
   const off = e => e.getAttribute("aria-disabled") === "true";
+  const active = e => e.isConnected && (!e._fyAlive || e._fyAlive());
   const lock = (e, v) => {
     e.setAttribute("aria-disabled", v ? "true" : "false");
     e.tabIndex = v ? -1 : 0;
     if (e.parentNode && e.parentNode._fySync) e.parentNode._fySync();
   };
-  const gate = (e, v) => {
-    Object.defineProperty(e, "disabled", { get: () => off(e), set: x => lock(e, !!x) });
+  const gate = (e, v, change) => {
+    Object.defineProperty(e, "disabled", { get: () => off(e), set: x => { lock(e, !!x); if (change) change(!!x); } });
     lock(e, !!v);
   };
   const real = (nav, ev) => nav || __trusted(ev);
   const press = (e, fn, nav) => {
-    e.addEventListener("click", ev => { if (!off(e) && real(nav, ev)) fn(ev); });
+    e.addEventListener("click", ev => { if (active(e) && !off(e) && real(nav, ev)) fn(ev); });
     e.addEventListener("keydown", ev => {
       if (ev.target !== e || (ev.key !== "Enter" && ev.key !== " ")) return;
       ev.preventDefault();
-      if (!ev.repeat && !off(e) && real(nav, ev)) fn(ev);
+      if (!ev.repeat && active(e) && !off(e) && real(nav, ev)) fn(ev);
     });
   };
-  const aim = c => (c._fyFocus ? c._fyFocus() : c.hasAttribute("tabindex") && !off(c) ? c : null);
+  const aim = c => (active(c) ? c._fyFocus ? c._fyFocus() : c.hasAttribute("tabindex") && !off(c) ? c : null : null);
   const focus = e => {
     const t = e && aim(e);
     if (t && t.focus) t.focus();
@@ -71,8 +75,28 @@
     const e = mk(id, "fy-c fy-b" + (o.primary ? " fy-p" : ""), o.css || "", txt(o.label));
     e.setAttribute("role", "button");
     e.setAttribute("aria-label", txt(o.label));
-    gate(e, o.disabled);
-    press(e, ev => { if (o.onclick) o.onclick(ev); }, id === "core" && !!o.nav);
+    let disabled = !!o.disabled, busy = false;
+    const draw = () => {
+      e.setAttribute("aria-busy", String(busy));
+      lock(e, disabled || busy);
+    };
+    Object.defineProperty(e, "disabled", { get: () => disabled || busy, set: x => { disabled = !!x; draw(); } });
+    draw();
+    press(e, ev => {
+      if (typeof o.onclick !== "function") return;
+      const done = () => { busy = false; draw(); };
+      const failed = err => {
+        done();
+        if ((!err || err.name !== "AbortError") && active(e)) FY.fail(id, err);
+      };
+      busy = true;
+      draw();
+      try {
+        const result = o.onclick(ev);
+        if (result && typeof result.then === "function") Promise.resolve(result).then(done, failed);
+        else done();
+      } catch (err) { failed(err); }
+    }, id === "core" && !!o.nav);
     return e;
   };
 
@@ -103,7 +127,10 @@
     const step = num(o.step, 1) > 0 ? num(o.step, 1) : 1;
     const dec = Math.max(dp(step), dp(min));
     const fmt = typeof o.format === "function" ? o.format : x => String(x);
-    const snap = x => +Math.min(max, Math.max(min, min + Math.round((x - min) / step) * step)).toFixed(dec);
+    const snap = x => {
+      const bounded = Math.min(max, Math.max(min, min + Math.round((x - min) / step) * step));
+      return Math.min(max, Math.max(min, dec <= 100 ? +bounded.toFixed(dec) : +bounded.toPrecision(15)));
+    };
     const e = mk(id, "fy-c", "");
     const rw = mk(id, "fy-rw", ""), fill = mk(id, "fy-fi", ""), thumb = mk(id, "fy-th", ""), val = mk(id, "fy-v", "");
     const rail = mk(id, "fy-ra", "");
@@ -132,41 +159,65 @@
       if (o.oninput) o.oninput(v);
       return true;
     };
-    Object.defineProperty(e, "value", { get: () => v, set: x => { v = snap(num(x, min)); draw(); } });
+    Object.defineProperty(e, "value", { get: () => v, set: x => { discard(); v = snap(num(x, min)); draw(); } });
     draw();
-    gate(e, o.disabled);
-    let dirty = false;
+    let dirty = false, from = null, pointer = null;
+    const release = p => {
+      if (p != null && rw.releasePointerCapture) {
+        try { rw.releasePointerCapture(p); } catch (err) {}
+      }
+    };
+    function discard() {
+      const p = pointer;
+      dirty = false;
+      from = pointer = null;
+      release(p);
+    }
+    gate(e, o.disabled, disabled => { if (disabled) discard(); });
     const commit = () => {
       if (!dirty) return;
       dirty = false;
-      if (o.onchange) o.onchange(v);
+      if (active(e) && !off(e) && o.onchange) o.onchange(v);
     };
+    const keys = new Set(["ArrowRight", "ArrowLeft", "Home", "End", "PageUp", "PageDown"]);
     e.addEventListener("keydown", ev => {
-      const d = ev.key === "ArrowRight" ? 1 : ev.key === "ArrowLeft" ? -1 : 0;
-      if (!d || ev.target !== e) return;
+      if (!keys.has(ev.key) || ev.target !== e) return;
       ev.preventDefault();
-      if (!off(e) && __trusted(ev) && set(v + d * step)) dirty = true;
+      if (!active(e) || off(e) || !__trusted(ev)) return;
+      const value = ev.key === "Home" ? min : ev.key === "End" ? max
+        : v + (ev.key === "ArrowRight" ? 1 : ev.key === "ArrowLeft" ? -1 : ev.key === "PageUp" ? 10 : -10) * step;
+      if (set(value)) dirty = true;
     });
-    e.addEventListener("keyup", ev => { if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") commit(); });
+    e.addEventListener("keyup", ev => { if (ev.target === e && keys.has(ev.key)) commit(); });
     e.addEventListener("blur", commit);
-    let from = null;
     const at = ev => {
       const r = rw.getBoundingClientRect();
       if (r.width > 0) set(min + ((ev.clientX - r.left) / r.width) * (max - min));
     };
-    const end = () => {
-      if (from !== null && from !== v && o.onchange) o.onchange(v);
-      from = null;
+    const matching = ev => from !== null && (pointer == null || ev.pointerId === pointer);
+    const end = ev => {
+      if (!matching(ev)) return;
+      const changed = from !== v, p = pointer;
+      from = pointer = null;
+      release(p);
+      if (changed && active(e) && !off(e) && o.onchange) o.onchange(v);
     };
     rw.addEventListener("pointerdown", ev => {
-      if (off(e) || !__trusted(ev)) return;
+      if (!active(e) || off(e) || from !== null || ev.button != null && ev.button !== 0 || !__trusted(ev)) return;
+      ev.preventDefault();
+      commit();
+      e.focus();
       from = v;
-      if (rw.setPointerCapture) rw.setPointerCapture(ev.pointerId);
+      pointer = ev.pointerId == null ? null : ev.pointerId;
+      if (rw.setPointerCapture && pointer != null) {
+        try { rw.setPointerCapture(pointer); } catch (err) {}
+      }
       at(ev);
     });
-    rw.addEventListener("pointermove", ev => { if (from !== null) at(ev); });
+    rw.addEventListener("pointermove", ev => { if (matching(ev) && active(e) && !off(e) && __trusted(ev)) at(ev); });
     rw.addEventListener("pointerup", end);
     rw.addEventListener("pointercancel", end);
+    rw.addEventListener("lostpointercapture", end);
     return e;
   };
 
@@ -184,13 +235,22 @@
       rows.forEach((r, j) => (r.tabIndex = j === i ? 0 : -1));
     };
     const pick = it => {
+      if (!active(e) || !items.includes(it) || it.disabled) return;
       if (o.multi) sel.has(it.id) ? sel.delete(it.id) : sel.add(it.id);
       else { sel.clear(); sel.add(it.id); }
       mark();
       if (o.onselect) o.onselect(value());
     };
     e.setItems = next => {
-      items = (Array.isArray(next) ? next : []).filter(it => it && typeof it === "object").slice(0, 500).map(it => ({ id: it.id == null ? it.label : it.id, label: txt(it.label), sub: txt(it.sub), disabled: !!it.disabled }));
+      const focused = e.contains(document.activeElement), previous = cur >= 0 && items[cur] ? items[cur].id : null;
+      const seen = new Set();
+      items = (Array.isArray(next) ? next : []).filter(it => it && typeof it === "object").slice(0, 500)
+        .map(it => ({ id: it.id == null ? it.label : it.id, label: txt(it.label), sub: txt(it.sub), disabled: !!it.disabled }))
+        .filter(it => {
+          if (typeof it.id !== "string" && (typeof it.id !== "number" || !isFinite(it.id)) || seen.has(it.id)) return false;
+          seen.add(it.id);
+          return true;
+        });
       [...sel].forEach(k => { if (!items.some(it => it.id === k)) sel.delete(k); });
       rows = items.map(it => {
         const r = mk(id, "fy-c fy-o", "");
@@ -199,25 +259,38 @@
         r.setAttribute("role", "option");
         r.setAttribute("aria-label", it.label);
         r.setAttribute("aria-disabled", String(it.disabled));
+        Object.defineProperty(r, "_fyAlive", { value: () => active(e) && items.includes(it) });
         press(r, () => pick(it));
         return r;
       });
       e.replaceChildren(...rows);
       if (!items.length && o.empty) e.append(mk(id, "fy-em", "", txt(o.empty)));
       mark();
-      const keep = items.findIndex(it => sel.has(it.id) && !it.disabled);
-      rove(keep >= 0 ? keep : items.findIndex(it => !it.disabled));
+      const selected = items.findIndex(it => sel.has(it.id) && !it.disabled);
+      const keep = focused ? items.findIndex(it => it.id === previous && !it.disabled) : selected;
+      rove(keep >= 0 ? keep : selected >= 0 ? selected : items.findIndex(it => !it.disabled));
+      if (focused && active(e) && rows[cur]) rows[cur].focus();
     };
     Object.defineProperty(e, "selected", { get: value });
     e._fyFocus = () => rows[cur] || null;
     e.addEventListener("focusin", ev => {
       const i = rows.indexOf(ev.target);
-      if (i >= 0 && !items[i].disabled) rove(i);
+      if (active(e) && i >= 0 && !items[i].disabled) rove(i);
     });
     e.addEventListener("keydown", ev => {
       const d = ev.key === "ArrowDown" ? 1 : ev.key === "ArrowUp" ? -1 : 0;
       const i = rows.indexOf(ev.target);
-      if (!d || i < 0) return;
+      if (!active(e) || i < 0) return;
+      if (ev.key === "Home" || ev.key === "End") {
+        const target = ev.key === "Home" ? items.findIndex(it => !it.disabled) : items.length - 1 - [...items].reverse().findIndex(it => !it.disabled);
+        if (rows[target]) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          rows[target].focus();
+        }
+        return;
+      }
+      if (!d) return;
       for (let j = i + d; j >= 0 && j < rows.length; j += d)
         if (!items[j].disabled) {
           ev.preventDefault();
@@ -257,10 +330,11 @@
       }
     });
     g.addEventListener("keydown", ev => {
+      if (ev.target.closest && ev.target.closest("input,textarea,select,[contenteditable]:not([contenteditable='false']),[role='textbox'],[role='combobox']")) return;
       const side = ev.key === "ArrowLeft" || ev.key === "ArrowRight";
       const d = ev.key === "ArrowDown" || ev.key === "ArrowRight" ? 1 : ev.key === "ArrowUp" || ev.key === "ArrowLeft" ? -1 : 0;
       const c = [...g.children].find(x => x.contains(ev.target));
-      if (!d || !c || (side && (c._fyFocus || c.getAttribute("role") === "slider"))) return;
+      if (!active(g) || !d || !c || (side && (c._fyFocus || c.getAttribute("role") === "slider"))) return;
       for (let n = d > 0 ? c.nextElementSibling : c.previousElementSibling; n; n = d > 0 ? n.nextElementSibling : n.previousElementSibling) {
         const t = aim(n);
         if (t) {
@@ -275,9 +349,16 @@
     return g;
   };
 
-  const kit = id => ({ button: button(id), toggle: toggle(id), slider: slider(id), list: list(id), group: group(id), focus });
+  const kit = (id, alive = () => true) => {
+    const own = factory => (...args) => {
+      const e = factory(id)(...args);
+      Object.defineProperty(e, "_fyAlive", { value: alive });
+      return e;
+    };
+    return { button: own(button), toggle: own(toggle), slider: own(slider), list: own(list), group: own(group), focus };
+  };
   if (K) K.ui = Object.freeze(kit("core"));
-  FY.ext.push(api => {
-    api.ui = kit(api.id);
+  FY.ext.push((api, p) => {
+    api.ui = kit(api.id, () => !p || !p.dead);
   });
 })();

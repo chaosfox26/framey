@@ -34,7 +34,7 @@ TTL, WEEK = DAY, 7 * DAY
 CAP, SECONDS, PARALLEL, REPLY_MAX = 40, 25.0, 2, 500_000
 COOLDOWN, WAIT, WAIT_MAX = 900, 900, 21600
 WINDOW, WINDOW_MIN, WINDOW_MAX = 365, 30, 1825
-CODES = ("rate_limited", "unavailable", "network", "unchecked", "no_source", "unsupported")
+CODES = ("rate_limited", "unavailable", "network", "unchecked", "no_source", "unsupported", "invalid_source")
 PREF_KEYS = ("maint.enabled_background", "maint.window_days")
 TITLES = {
     "archived": "Archived repository",
@@ -45,6 +45,7 @@ TITLES = {
 }
 UNKNOWN = {
     "no_source": "Installed from a ZIP with no upstream source, so there is nothing to check. This says nothing about whether the project is maintained.",
+    "invalid_source": "The recorded source path is invalid, so its activity could not be checked. This says nothing about whether the project is maintained.",
     "unsupported": "The recorded source is not a GitHub repository, and only GitHub sources can be checked. This says nothing about whether the project is maintained.",
     "unavailable": "Could not check: GitHub did not provide this repository (not found, private or unavailable). That is not proof it was removed or abandoned.",
     "rate_limited": "Could not check: GitHub rate limit reached. Try again later.",
@@ -99,6 +100,8 @@ def parse_stamp(v):
         return None
     z = m[7]
     if z != "Z":
+        if int(z[1:3]) > 23 or int(z[4:6]) > 59:
+            return None
         t -= (1 if z[0] == "+" else -1) * (int(z[1:3]) * 3600 + int(z[4:6]) * 60)
     return t if 0 < t < 32503680000 else None
 
@@ -144,8 +147,8 @@ def parse_source(v):
         u = urllib.parse.urlsplit(v.strip())
     except ValueError:
         return None
-    p = [urllib.parse.unquote(x) for x in u.path.split("/") if x]
-    if u.scheme != "https" or u.netloc.lower() != "github.com" or len(p) < 2 or (len(p) > 2 and p[2] != "tree"):
+    p = [urllib.parse.unquote(x) for x in u.path.strip("/").split("/")]
+    if u.scheme != "https" or u.netloc.lower() != "github.com" or len(p) < 2 or any(not x for x in p) or (len(p) > 2 and (p[2] != "tree" or len(p) < 4)):
         return None
     if p[1].endswith(".git"):
         p[1] = p[1][:-4]
@@ -180,7 +183,11 @@ def describe(host, plugin):
     for x in found:
         g = parse_source(x)
         if g:
-            sub = g["path"] or clean_path(m.get("source_path")) or ""
+            sub = g["path"]
+            if not sub and m.get("source_path") not in (None, ""):
+                sub = clean_path(m["source_path"])
+                if sub is None:
+                    return {"id": pid, "source": text(x, 200), "unknown": "invalid_source"}
             key = "%s/%s@%s#%s" % (g["owner"].lower(), g["repo"].lower(), g["branch"], sub)
             return {"id": pid, "source": text(x, 200), "key": key, **g, "path": sub}
     return {"id": pid, "source": text(found[0], 200) if found else "", "unknown": "unsupported" if found else "no_source"}
@@ -238,7 +245,7 @@ def clean_entry(k, v):
     return {"ok_at": ok_at, "facts": facts, "fail": fail, "retry_after": num(v.get("retry_after"))}
 
 
-def load(host):
+def load(host, now=None):
     s = blank()
     try:
         with open(host.CONF.parent / "maint.json", "rb") as f:
@@ -250,7 +257,7 @@ def load(host):
         return s
     p = raw.get("prefs") if isinstance(raw.get("prefs"), dict) else {}
     s["prefs"] = {"enabled_background": p.get("enabled_background") is True, "window_days": window(p.get("window_days"))}
-    now = int(host.now())
+    now = int(host.now() if now is None else now)
     s["bg_next"] = min(num(raw.get("bg_next")), now + WEEK + DAY)
     lim = raw.get("limit")
     if isinstance(lim, dict) and num(lim.get("until")) and text(lim.get("reason"), 300):
@@ -260,8 +267,12 @@ def load(host):
         e = clean_entry(k, v)
         if e:
             e["ok_at"] = min(e["ok_at"], now)
-            e["retry_after"] = min(e["retry_after"], now + WEEK)
+            if e["fail"]:
+                e["fail"]["at"] = min(e["fail"]["at"], now)
+            bound = WAIT_MAX if e["fail"] and e["fail"]["code"] == "rate_limited" else COOLDOWN
+            e["retry_after"] = min(e["retry_after"], now + bound)
             s["entries"][k] = e
+    trim(s)
     return s
 
 
@@ -315,7 +326,7 @@ def apply(s, key, outcome, now):
     f = val if kind == "fail" else bad()
     limited = f.code == "rate_limited"
     s["entries"][key] = {"ok_at": old["ok_at"], "facts": old["facts"], "fail": {"reason": text(f.text, 300), "at": now, "code": f.code}, "retry_after": f.retry if limited else now + COOLDOWN}
-    if limited:
+    if limited and (not s["limit"] or s["limit"]["until"] < f.retry):
         s["limit"] = {"until": f.retry, "at": now, "reason": text(f.text, 300)}
 
 
@@ -346,7 +357,8 @@ def parse_decl(data, file, commit):
         if isinstance(doc, dict) and "encoding" in doc:
             if doc.get("encoding") != "base64" or not isinstance(doc.get("content"), str):
                 raise ValueError
-            doc = _loads(base64.b64decode(doc["content"]).decode("utf-8"))
+            encoded = re.sub(r"[ \t\r\n]", "", doc["content"])
+            doc = _loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
     except (ValueError, RecursionError):
         return None, "plugin.json could not be parsed; any maintenance declaration was ignored"
     if not isinstance(doc, dict):
@@ -370,6 +382,23 @@ class Run:
         self.slots, self.keys = asyncio.Semaphore(PARALLEL), asyncio.Semaphore(PARALLEL)
         self.deadline = host.mono() + SECONDS
         self.count, self.limit, self.memo, self.done = 0, None, {}, {}
+        self.fetches = set()
+
+    def fetch(self, url):
+        try:
+            return self.host.fetch(url, HEADERS, HOSTS, REPLY_MAX)
+        except Exception as e:
+            return e
+
+    async def close(self):
+        import urllib.error
+        for task in self.memo.values():
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*self.memo.values(), return_exceptions=True)
+        for result in await asyncio.gather(*self.fetches, return_exceptions=True):
+            if isinstance(result, urllib.error.HTTPError):
+                result.close()
 
     def once(self, key, make):
         if key not in self.memo:
@@ -383,7 +412,15 @@ class Run:
                 raise Skip()
             self.count += 1
             try:
-                data = await asyncio.to_thread(self.host.fetch, url, HEADERS, HOSTS, REPLY_MAX)
+                task = asyncio.ensure_future(asyncio.to_thread(self.fetch, url))
+                self.fetches.add(task)
+                try:
+                    data = await asyncio.shield(task)
+                    if isinstance(data, Exception):
+                        raise data
+                finally:
+                    if task.done():
+                        self.fetches.discard(task)
             except urllib.error.HTTPError as e:
                 try:
                     if e.code in missing:
@@ -391,11 +428,11 @@ class Run:
                     f = failure(e, self.now)
                 finally:
                     e.close()
-                if f.code == "rate_limited":
+                if f.code == "rate_limited" and (not self.limit or self.limit.retry < f.retry):
                     self.limit = f
                 raise f from None
-            except Exception as e:
-                raise Fail("network", "Could not check: " + text(str(e) or type(e).__name__, 200)) from None
+            except Exception:
+                raise Fail("network", UNKNOWN["network"]) from None
         if raw:
             return data
         try:
@@ -434,7 +471,9 @@ class Run:
         j = await self.get(base + "/releases/latest", missing=(404,))
         if j is None:
             return {"at": "", "tag": ""}
-        at = (stamp(j.get("published_at")) or stamp(j.get("created_at"))) if isinstance(j, dict) else ""
+        if not isinstance(j, dict) or any(k in j and j[k] is not False for k in ("draft", "prerelease")):
+            raise bad()
+        at = stamp(j.get("published_at"))
         if not at:
             raise bad()
         tag = j.get("tag_name")
@@ -483,8 +522,8 @@ class Run:
                 out = ("fail", f)
             except Skip:
                 out = None
-            except Exception as e:
-                out = ("fail", Fail("network", "Could not check: " + text(str(e) or type(e).__name__, 200)))
+            except Exception:
+                out = ("fail", Fail("network", UNKNOWN["network"]))
         if out:
             self.done[info["key"]] = out
 
@@ -586,28 +625,32 @@ def wanted(s, key, now, force):
 
 
 async def run_checks(host, infos, now, force):
-    s = load(host)
+    s = load(host, now)
     todo = {}
     for i in infos:
         if "key" in i and i["key"] not in todo and wanted(s, i["key"], now, force):
             todo[i["key"]] = i
     if todo and not BUSY["on"]:
+        run = Run(host, now)
         BUSY["on"] = True
         try:
-            run = Run(host, now)
             order = sorted(todo, key=lambda k: s["entries"][k]["ok_at"] if k in s["entries"] else 0)
             await asyncio.gather(*(run.one(todo[k]) for k in order))
-            s = load(host)
+            s = load(host, now)
             for k in order:
                 if k in run.done:
                     apply(s, k, run.done[k], now)
+            if run.limit and (not s["limit"] or s["limit"]["until"] < run.limit.retry):
+                s["limit"] = {"until": run.limit.retry, "at": now, "reason": text(run.limit.text, 300)}
             for i in infos:
                 if i.get("key") in s["entries"]:
                     s["entries"][i["key"]] = s["entries"].pop(i["key"])
             save(host, s)
         finally:
-            BUSY["on"] = False
-    s = load(host)
+            cleanup = asyncio.ensure_future(run.close())
+            cleanup.add_done_callback(lambda task: BUSY.update(on=False))
+            await asyncio.shield(cleanup)
+    s = load(host, now)
     return [build(i, s, now) for i in infos]
 
 
@@ -626,7 +669,8 @@ async def check_one(host, plugin, now=None, force=True):
 
 
 def cached(host, plugin_id_or_source, now=None):
-    return build(describe(host, plugin_id_or_source), load(host), clock(host, now))
+    now = clock(host, now)
+    return build(describe(host, plugin_id_or_source), load(host, now), now)
 
 
 async def assess_url(host, github_url, now=None):
@@ -635,11 +679,11 @@ async def assess_url(host, github_url, now=None):
 
 async def background(host, plugins, now=None):
     now = clock(host, now)
-    s = load(host)
+    s = load(host, now)
     if not s["prefs"]["enabled_background"] or now < s["bg_next"]:
         return None
     out = await check_all(host, plugins, now)
-    s = load(host)
+    s = load(host, now)
     s["bg_next"] = int(now + WEEK + host.rand() * DAY)
     save(host, s)
     return out

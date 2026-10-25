@@ -55,7 +55,12 @@ class EventHub:
         self._seq = itertools.count()
         self._size = 0
 
-    def put(self, pid, name, payload):
+    def put(self, pid, name, payload, dropped=0):
+        if not isinstance(dropped, int) or isinstance(dropped, bool) or dropped < 0:
+            self._dropped[pid] = self._dropped.get(pid, 0) + 1
+            return False
+        if dropped:
+            self._dropped[pid] = self._dropped.get(pid, 0) + dropped
         if not fy_proto.event_ok(name, payload):
             self._dropped[pid] = self._dropped.get(pid, 0) + 1
             return False
@@ -116,6 +121,7 @@ class _W:
         self.host_tasks = set()
         self.inflight = 0
         self.starting = self.stopping = self.snap = False
+        self.uninstalling = False
         self.epoch = 0
         self.boot = None
         self.crashes = collections.deque()
@@ -244,6 +250,8 @@ class Supervisor:
         w = self._ws.get(pid)
         if w is not None:
             w.epoch += 1
+            self._fail_waiters(w, self._stopped())
+            self._wake()
             await self._join(self._stopper(w, reason))
 
     async def restart(self, pid):
@@ -259,27 +267,44 @@ class Supervisor:
 
     async def uninstall(self, pid, purge=False, do_purge=True):
         w = self._ws.get(pid)
+        if w is not None:
+            if w.uninstalling:
+                raise BackendError("busy", "module is being uninstalled")
+            w.uninstalling = True
+        try:
+            return await self._uninstall(pid, w, purge, do_purge)
+        finally:
+            if w is not None:
+                w.uninstalling = False
+
+    async def _uninstall(self, pid, w, purge, do_purge):
         hook, error = "skipped", None
         if w is not None:
+            self._fail_waiters(w, BackendError("stopped", "module is being uninstalled"))
             try:
-                await self._acquire(w)
-            except BackendError as e:
-                error = e.message
-            else:
                 try:
-                    rep = await self._request(w, {"op": "uninstall", "purge": bool(purge)}, UNINSTALL_WAIT)
-                    if rep.get("ok"):
-                        hook = "ran" if (rep.get("result") or {}).get("ran") else "none"
-                    else:
-                        hook, error = "failed", (rep.get("error") or {}).get("message")
-                except asyncio.TimeoutError:
-                    hook, error = "failed", "uninstall hook timed out"
-                    await self._terminate(w)
+                    await self._acquire(w, uninstall=True)
                 except BackendError as e:
-                    hook, error = "failed", e.message
-                finally:
-                    self._release(w)
-            await self._join(self._stopper(w, "uninstall"))
+                    error = e.message
+                else:
+                    try:
+                        rep = await self._request(w, {"op": "uninstall", "purge": bool(purge)}, UNINSTALL_WAIT)
+                        if rep.get("ok"):
+                            hook = "ran" if (rep.get("result") or {}).get("ran") else "none"
+                        else:
+                            hook, error = "failed", (rep.get("error") or {}).get("message")
+                    except asyncio.TimeoutError:
+                        hook, error = "failed", "uninstall hook timed out"
+                        await self._terminate(w)
+                    except BackendError as e:
+                        hook, error = "failed", e.message
+                    finally:
+                        self._release(w)
+            finally:
+                w.epoch += 1
+                self._fail_waiters(w, self._stopped())
+                self._wake()
+                await self._join(self._stopper(w, "uninstall"))
         purged = False
         if purge and do_purge:
             try:
@@ -380,7 +405,11 @@ class Supervisor:
             if wait > 0:
                 raise BackendError("backoff", "module crashed; try again in %d s" % math.ceil(wait))
 
-    async def _acquire(self, w):
+    async def _acquire(self, w, uninstall=False):
+        if self._closed or self._ws.get(w.pid) is not w:
+            raise self._stopped()
+        if w.stopping or (w.uninstalling and not uninstall):
+            raise BackendError("stopped", "module is being stopped")
         if w.state in ("failed", "crashed"):
             self._gate(w)
         if len(w.waiters) >= QUEUE_MAX:
@@ -406,12 +435,14 @@ class Supervisor:
         self._pump(w)
 
     def _pump(self, w):
+        if self._closed or self._ws.get(w.pid) is not w:
+            return
         while w.waiters:
             fut = w.waiters[0]
             if fut.done():
                 w.waiters.popleft()
             elif w.state == "ready":
-                if w.inflight >= w.lim["concurrency"]:
+                if w.inflight >= (1 if w.uninstalling else w.lim["concurrency"]):
                     return
                 w.waiters.popleft()
                 w.inflight += 1
@@ -455,21 +486,25 @@ class Supervisor:
         try:
             await self._boot(w)
         except asyncio.CancelledError:
+            self._fail_waiters(w, self._stopped())
+            await self._terminate(w)
             raise
         except BackendError as e:
             self._fail_waiters(w, e)
         except Exception as e:
-            if w.proc is None:
-                w.state = "stopped"
             self._fail_waiters(w, BackendError("start", "backend could not start: %s" % e))
+            await self._terminate(w)
         finally:
             w.starting, w.boot = False, None
             if w.proc is None:
+                if w.state == "starting":
+                    w.state = "stopped"
                 self._old.discard(w)
+                self._wake()
         self._pump(w)
 
     def _running(self):
-        return [x for x in list(self._ws.values()) + list(self._old) if x.state in ("starting", "ready", "hung", "stopping")]
+        return [x for x in list(self._ws.values()) + list(self._old) if x.proc is not None or x.state in ("starting", "ready", "hung", "stopping")]
 
     def _live(self):
         return len(self._running())
@@ -545,7 +580,7 @@ class Supervisor:
         return {
             "plugin": w.pid,
             "file": str(w.dir / "backend.py"),
-            "dirs": {k: str(v) for k, v in dirs._asdict().items()},
+            "dirs": {k: str(v) if v is not None else None for k, v in dirs._asdict().items()},
             "meta": dict(w.meta),
             "runtime": {"framey": self.host.VERSION, "api": self.host.API_GENERATION, "platform": self.host.PLATFORM, "python": "%d.%d.%d" % sys.version_info[:3]},
             "limits": {"startup_timeout": w.lim["startup_timeout"], "timeout": w.lim["timeout"], "concurrency": w.lim["concurrency"], "memory_mb": w.lim["memory_mb"]},
@@ -592,9 +627,11 @@ class Supervisor:
                 w.last_error = {"code": e.code, "message": e.message, "stage": e.stage}
                 w.state = "failed"
                 await self._terminate(w)
-                if e.stage == "migrate" and w.snap:
-                    await self._restore(w)
+            if w.snap:
+                await self._restore(w)
             raise
+        if self._gone(w, epoch) or w.proc is not proc or w.stopping:
+            raise self._stopped()
         w.state = "ready"
         self._arm(w)
 
@@ -684,6 +721,10 @@ class Supervisor:
         msg = {"op": "call", "method": method, "arg": arg}
         try:
             rep = await self._request(w, msg, limit)
+        except asyncio.CancelledError:
+            if "id" in msg:
+                self._hung(w, proc, msg["id"])
+            raise
         except asyncio.TimeoutError:
             self._hung(w, proc, msg["id"])
             raise BackendError("timeout", "backend call timed out after %g s; module not responding" % limit)
@@ -754,7 +795,8 @@ class Supervisor:
                 w.why = str(m["error"].get("message"))[:300]
             return True
         if m.get("ev") == "emit":
-            self.events.put(w.pid, m.get("name"), m.get("payload"))
+            if self._ws.get(w.pid) is w and not self._closed:
+                self.events.put(w.pid, m.get("name"), m.get("payload"), m.get("dropped", 0))
             return True
         if "host" in m:
             self._host(w, m)
@@ -765,7 +807,9 @@ class Supervisor:
         op, rid = m.get("host"), m.get("id")
         if not isinstance(rid, int) or isinstance(rid, bool):
             return
-        if op not in HOST_OPS:
+        if self._ws.get(w.pid) is not w:
+            self._host_reply(w, rid, error=fy_proto.error("unavailable", "module removed"))
+        elif op not in HOST_OPS:
             self._host_reply(w, rid, error=fy_proto.error("bad_op", "unknown host call"))
         elif len(w.host_tasks) >= HOST_MAX:
             self._host_reply(w, rid, error=fy_proto.error("busy", "too many host calls running"))

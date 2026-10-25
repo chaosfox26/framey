@@ -23,7 +23,7 @@ const mk = () => {
     attrs: a,
     textContent: "",
     setAttribute(k, v) { a[k] = String(v); },
-    get dataset() { return { fyOwner: a["data-fy-owner"], fyKey: a["data-fy-key"] }; },
+    get dataset() { return { fyOwner: a["data-fy-owner"], fyKey: a["data-fy-key"], fyScope: a["data-fy-scope"] }; },
     remove() { const i = nodes.indexOf(this); if (i >= 0) nodes.splice(i, 1); },
   };
 };
@@ -273,7 +273,7 @@ class Replay(unittest.TestCase):
     def test_replay_matches_original_expression(self):
         run(self.t.add_js("p", "main", "k", "code()", "down()"))
         expr, pid = self.t.replay("main")[0]
-        self.assertEqual(expr, ft.add_expr("js", "p", "k", "code()", "down()"))
+        self.assertEqual(expr, ft.add_expr("js", "p", "k", "code()", "down()", "main"))
 
     def test_replay_after_reattach_sequence(self):
         run(self.t.add_css("p", "main", "a", "x{}"))

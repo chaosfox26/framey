@@ -174,6 +174,38 @@ class UpdateTests(Base):
         self.assertIsNotNone(fy.sup().status()["a"]["os_pid"])
         self.assertEqual(self.lines(), ["startup"])
 
+    async def test_failed_startup_after_migration_restores_settings_with_the_old_code(self):
+        loader = await self.start(data_version=1)
+        fy = loader.fy
+        await fy.backend("a", "x", None)
+        config = fy.dirs("a").config / "settings.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        original = '{"schema": 1, "keep": "saved"}'
+        config.write_text(original)
+        self.serve(loader, "1.1.0", NEW, data_version=2)
+        failing = """
+def migrate(ctx):
+    ctx.settings.set("schema", 2)
+
+
+def startup(ctx):
+    raise RuntimeError("startup fixture failed after migration")
+
+
+async def call(method, arg):
+    return {"version": "1.1.0"}
+"""
+        loader.net.archive("o", "a", NEW, H.mkzip({
+            "plugin.json": meta("1.1.0", data_version=2),
+            "main.js": "NEW-1.1.0", "backend.py": failing,
+        }, top="a-" + NEW))
+        result = await loader.core("update", "a")
+        self.assertIn("the previous version was restored", result["error"])
+        self.assertEqual((loader.dir / "main.js").read_text(), "OLD")
+        self.assertEqual((loader.dir / ".version").read_text(), OLD)
+        self.assertEqual(config.read_text(), original)
+        self.assertEqual(await fy.backend("a", "x", None), {"version": "1.0.0"})
+
     async def test_a_corrupt_package_fails_in_the_swap_and_the_old_copy_is_back(self):
         loader = await self.start()
         before = {p.name: p.read_bytes() for p in loader.dir.iterdir() if p.is_file()}
@@ -514,7 +546,7 @@ class LoaderUpdateTests(Base):
         net = loader.net
         net.json("chaosfox26/framey/releases/latest", dict(release(tag, body="Loader notes"), assets=[]))
         net.commit("chaosfox26", "framey", tag, sha)
-        full = files if files is not None else {f.name: f.read_text() for f in H.repo_files()}
+        full = files if files is not None else H.full_tree()
         net.archive("chaosfox26", "framey", sha, H.mkzip(full, top="framey-" + sha))
         return full
 
@@ -548,7 +580,7 @@ class LoaderUpdateTests(Base):
         loader = await self.start()
         root = loader.root
         before = sorted(p.name for p in root.iterdir())
-        full = {f.name: f.read_text() for f in H.repo_files()}
+        full = H.full_tree()
         for missing in ("fy_updates.py", "fy_supervisor.py", "fy-api.js", "fy_worker.py", "icon.svg", "fy-dev.js"):
             files = {k: v for k, v in full.items() if k != missing}
             self.serve_loader(loader, files)
@@ -561,13 +593,13 @@ class LoaderUpdateTests(Base):
 
     async def test_a_package_with_a_module_that_does_not_compile_is_refused(self):
         loader = await self.start()
-        full = {f.name: f.read_text() for f in H.repo_files()}
+        full = H.full_tree()
         full["fy_state.py"] = "def broken(:\n"
         self.serve_loader(loader, full)
         r = await loader.core("loader_update")
         self.assertIn("Framey update not applied", r["error"])
         self.assertIn("fy_state.py", r["error"])
-        full = {f.name: f.read_text() for f in H.repo_files()}
+        full = H.full_tree()
         full["framey.py"] = "def broken(:\n"
         self.serve_loader(loader, full)
         self.assertIn("Framey update not applied", (await loader.core("loader_update"))["error"])
@@ -575,7 +607,7 @@ class LoaderUpdateTests(Base):
 
     async def test_a_package_that_names_a_file_outside_itself_is_refused(self):
         loader = await self.start()
-        full = {f.name: f.read_text() for f in H.repo_files()}
+        full = H.full_tree()
         full["framey.py"] = full["framey.py"].replace('MANIFEST = ("framey.py",', 'MANIFEST = ("../escape.py", "framey.py",', 1)
         self.serve_loader(loader, full)
         r = await loader.core("loader_update")
