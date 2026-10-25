@@ -26,7 +26,6 @@ jobs:
           - runner: ubuntu-24.04-arm
             machine: aarch64
     env:
-      FRAMEY_JSDOM: ${{ runner.temp }}/framey-jsdeps
       FRAMEY_PYTHON: python
     steps:
       - name: Check out source
@@ -45,6 +44,8 @@ jobs:
         timeout-minutes: 4
         shell: bash
         run: |
+          export FRAMEY_JSDOM="$RUNNER_TEMP/framey-jsdeps"
+          printf 'FRAMEY_JSDOM=%s\n' "$FRAMEY_JSDOM" >> "$GITHUB_ENV"
           mkdir -p "$FRAMEY_JSDOM"
           cp .github/ci/package.json .github/ci/package-lock.json "$FRAMEY_JSDOM/"
           npm ci --prefix "$FRAMEY_JSDOM" --ignore-scripts --no-audit --no-fund
