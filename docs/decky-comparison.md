@@ -17,6 +17,32 @@ Later Framey documentation and CI-only commits do not change that runtime snapsh
 “Comparable” below means a capability exists on both sides; it does not mean the
 packages, APIs or user experience are interchangeable.
 
+## Post-change parity recheck
+
+Rechecked the published experimental snapshot
+[`a0cf382`](https://github.com/chaosfox26/framey/commit/a0cf3828c560cf2f9d19b9658413d91f0bafa710)
+after the final fixes and privacy review. All 33 deployed runtime files still
+match the tested `678c0fd` snapshot. Decky's current main and latest stable
+release still resolve to the identities above; no newer upstream revision was
+assumed. Both hosted architecture jobs also passed for
+[the published snapshot](https://github.com/chaosfox26/framey/actions/runs/40245701454).
+The completed runtime checks remain applicable; this assessment used those
+receipts and changed documentation only. It did not alter the headset or
+application code.
+
+There are two different parity questions. **Loader-feature parity has substantial
+overlap. Usable plugin-ecosystem parity remains a major gap.** Different native
+APIs are not, by themselves, a failure to deliver equivalent user features. They
+become a compatibility gap when an existing Decky plugin relies on contracts that
+Framey does not implement or its author has not ported.
+
+The current native catalog contains **two installable examples, Hello and
+Starter, plus an informational Fan Control setup entry**. A fresh metadata-only
+request to the official stable Decky feed returned **116 visible entries**. These
+are discovery counts, not evidence that those 116 plugins run on Framey. No
+original Decky package execution was established by this work.
+
+
 ## Capability comparison
 
 | Area | Decky | Framey on Steam Frame | Assessment |
@@ -26,6 +52,8 @@ packages, APIs or user experience are interchangeable.
 | Shared interface tools | React mounting, Steam routing, `@decky/api` and `@decky/ui` | Native DOM controls, pages, notifications, pickers, resource helpers and cleanup | Partial capability coverage; no drop-in Decky React/SDK support |
 | Store browsing | Native Decky catalog and package actions | Native Framey Store plus a clearly separate Decky Store with read-only inspection | Browsing overlap; upstream listings are not runnable Framey plugins |
 | Installation and updates | Installs and manages Decky packages and published versions | Installs Framey-native packages; staged replacement, update planning and recovery controls | Comparable native operations; original Decky installation remains unsupported |
+| Selected versions and repair | Store reinstall/downgrade and selected published-version installation | Generic native version/repair support exists, but catalog-managed packages refuse those generic routes; the native Store has no equivalent repair/downgrade action | Partial workflow parity |
+| Usable plugin ecosystem | Existing upstream plugin catalog and plugin runtime | Two native examples and Fan setup in the default catalog; upstream Decky entries remain read-only | Major gap; a listing is not an adapted working plugin |
 | Module management | Enable, disable, reload, remove, hide, reorder, freeze and update | Comparable controls plus retained-copy recovery | Similar capabilities with different policies; no overall reliability ranking |
 | Developer workflow | React/TypeScript template and build/deploy CLI | Plain JavaScript/Python examples, types, validation, deterministic packaging, reload and diagnostics | Useful native workflow; no equivalent complete build/deploy CLI |
 | Architecture and hardware | Official ARM64 loader asset is published | Running and tested on ARM64 SteamOS VR with the Steam Frame panel integration | Neither an ARM64 asset nor an ARM64 header establishes individual plugin or VR compatibility |
@@ -88,8 +116,10 @@ one worker exited while idle; service memory peaked near 54 MiB and average CPU
 was approximately 0.102% of one core. The service and workers have a shared
 150 MiB systemd ceiling; Steam's browser is outside it.
 
-These samples precede or accompany the final runtime corrections and are not a
-controlled peak-memory, gameplay or all-plugin test. Browser PSS changes include
+A final ten-second closed-panel sample after deploying the runtime corrections
+measured about **36.34 MiB service memory and 0.106% of one CPU core**, with no
+service restarts. The earlier samples and this final sample are not a controlled
+peak-memory, gameplay or all-plugin test. Browser PSS changes include
 Steam activity and cannot be attributed exactly to Framey. The whole Steam
 browser process is not Framey's added memory. No equivalent Decky measurement
 was performed. Decky's inspected
@@ -106,7 +136,9 @@ React runtime would be incorrect.
 2. Decide which original frontend/backend contracts and shared components merit
    compatibility support, with explicit CPU, graphics-driver, operating-system
    and privileged-helper requirements.
-3. Validate controller aiming, readability, focus, full update/recovery workflows,
+3. Complete catalog-managed selected-version, repair and downgrade workflows;
+   ordinary native plugin controls do not automatically cover catalog packages.
+4. Validate controller aiming, readability, focus, full update/recovery workflows,
    gameplay impact and representative whole-stack memory over longer sessions.
 
 Main remains separate. This comparison establishes current capabilities and gaps;
