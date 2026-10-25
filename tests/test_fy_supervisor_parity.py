@@ -135,6 +135,48 @@ async def call(method, arg):
         resume.set()
         self.assertEqual(await self.sup.call("a", "echo", "new"), {"echo": "new"})
 
+    async def test_caller_cancelled_as_startup_finishes_still_arms_one_idle_timer(self):
+        self.reg("a", "ok", idle=0.2)
+        entered, resume = asyncio.Event(), asyncio.Event()
+        start_hooks = self.sup._start_hooks
+        host_loop, idle_timers = self.host.loop, []
+        supervisor = self.sup
+
+        class RecordingLoop:
+            def __getattr__(self, name):
+                return getattr(host_loop(), name)
+
+            def call_later(self, delay, callback, *args):
+                timer = host_loop().call_later(delay, callback, *args)
+                if callback == supervisor._idle:
+                    idle_timers.append(timer)
+                return timer
+
+        async def gated_hooks(w, dirs):
+            await start_hooks(w, dirs)
+            entered.set()
+            await resume.wait()
+
+        self.host.loop = RecordingLoop
+        self.sup._start_hooks = gated_hooks
+        caller = asyncio.create_task(self.sup.call("a", "echo", "unused"))
+        self.addAsyncCleanup(self.finish_tasks, caller)
+        await asyncio.wait_for(entered.wait(), 2)
+        # Queue boot first, then mark its admission future cancelled before boot runs.
+        resume.set()
+        caller.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await caller
+        await self.until(lambda: not self.worker("a").starting)
+        w = self.worker("a")
+        self.assertEqual((w.state, w.inflight, len(w.waiters)), ("ready", 0, 0))
+        self.assertIsNotNone(w.proc)
+        self.assertIsNotNone(w.timer)
+        self.assertEqual(idle_timers, [w.timer])
+        await self.until(lambda: w.state == "stopped" and w.proc is None, 3)
+        self.assertIsNone(w.timer)
+        self.assertIn("unload idle", self.hooks("a"))
+
     async def test_failed_startup_still_reserves_worker_slot_during_termination(self):
         self.host.prefs["workers_max"] = 1
         self.reg("a", "startup_fail")

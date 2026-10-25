@@ -285,6 +285,28 @@ t("automatic checks: off by default with an honest sentence; on shows last check
   assert.ok(c.text().includes("On. Not checked yet."));
 });
 
+t("automatic-check status errors stay unavailable while the saved switch remains on", async () => {
+  const c = boot({ state_get: stateOf({ autocheck: true }), autocheck_status: { error: "Framey did not reply in 15 s" } });
+  await c.open();
+  assert.equal(c.find("Check automatically").getAttribute("aria-checked"), "true");
+  assert.ok(c.text().includes("Unavailable"));
+  assert.ok(c.text().includes("Framey did not reply in 15 s"));
+  assert.ok(!c.text().includes("Off. Checks only run when you tap Check for updates."));
+  assert.equal(c.sent("prefs_set").length, 0);
+});
+
+t("malformed automatic-check status is not presented as Off or a made-up last check", async () => {
+  for (const status of [null, {}, { enabled: 0 }, { enabled: "false" }, { enabled: true }, { enabled: true, last: "later" }, { enabled: true, last: -1 }, { enabled: true, last: 1e300 }]) {
+    const c = boot({ state_get: stateOf({ autocheck: true }), autocheck_status: status });
+    await c.open();
+    assert.equal(c.find("Check automatically").getAttribute("aria-checked"), "true");
+    assert.ok(c.text().includes("Unavailable"), JSON.stringify(status));
+    assert.ok(!c.text().includes("Off. Checks only run when you tap Check for updates."));
+    assert.ok(!c.text().includes("On. Not checked yet.") && !c.text().includes("Invalid Date"));
+    assert.equal(c.sent("prefs_set").length, 0);
+  }
+});
+
 t("safe mode and developer mode are read-only text that name their files; Developer tools only when on", async () => {
   const c = boot();
   await c.open();

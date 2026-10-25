@@ -441,6 +441,8 @@ class Supervisor:
             fut = w.waiters[0]
             if fut.done():
                 w.waiters.popleft()
+                if not w.waiters and w.state == "ready" and w.inflight == 0:
+                    self._arm(w)
             elif w.state == "ready":
                 if w.inflight >= (1 if w.uninstalling else w.lim["concurrency"]):
                     return

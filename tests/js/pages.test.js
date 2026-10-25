@@ -874,6 +874,44 @@ test("a namespaced plugin page called decky-store does not collide with the core
   assert.strictEqual(e.content.textContent, "Framey catalog action");
 });
 
+test("global teardown from a fullscreen plugin page cannot restart the real Decky Store", async () => {
+  const manifest = read("framey.py").match(/^PANEL_JS\s*=\s*\(([^)\n]+)\)/m);
+  assert.ok(manifest, "the runtime panel script manifest is available");
+  const files = JSON.parse("[" + manifest[1] + "]");
+  const h = makeDom({ loadFiles: files.filter(file => file !== "inject.js") });
+  const FY = h.window.Framey, K = FY._k(TOK), oldCall = K.call, oldOpen = FY.open;
+  try {
+    const api = h.plugin("teardown");
+    FY.open("#decky-store");
+    await new Promise(resolve => setImmediate(resolve));
+    const request = h.sent("catalog_sources")[0];
+    assert.ok(request, "the real catalog has an outstanding source lookup");
+    const page = api.pages.register({ id: "details", mode: "full", render() {} });
+    page.open();
+    const panel = [...h.document.body.children].find(el => el.getAttribute("aria-label") === "Framey");
+    assert.strictEqual(panel.style.display, "none");
+    const requests = h.sent("catalog_sources").length, calls = h.calls.length;
+    K.dispose();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(h.sent("catalog_sources").length, requests);
+    assert.strictEqual(h.calls.length, calls);
+    assert.strictEqual(panel.style.display, "none");
+    assert.strictEqual(h.document.querySelector('[role="dialog"]'), null);
+    assert.strictEqual(K.pending(), 0);
+    FY._reply(request.gen, request.id, { sources: [], decky_sources: [], source: { id: "stable" } });
+    const result = await oldCall("catalog_sources", {});
+    assert.ok(result && result.error);
+    oldOpen("#discover");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(h.calls.length, calls);
+    assert.strictEqual(panel.style.display, "none");
+    assert.strictEqual(K.pending(), 0);
+  } finally {
+    K.dispose();
+    h.window.close();
+  }
+});
+
 (async () => {
   let pass = 0;
   for (const [name, fn] of tests) {

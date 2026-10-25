@@ -140,6 +140,9 @@
       const finish = (method, title, okKey) => k.work(title, () => call(method), (r, out) => k.result(out, r, T(okKey), back));
       const home = () => {
         const p = obj(st.prefs);
+        const autoUnavailable = auto.error || typeof auto.enabled !== "boolean" || (auto.enabled && (!Number.isFinite(auto.last) || auto.last < 0 || !Number.isFinite(new Date(auto.last * 1000).getTime())));
+        const autoText = autoUnavailable ? T("c.unavailable") + (auto.error ? " — " + T("c.failed", { msg: String(auto.error).slice(0, 200) }) : "")
+          : auto.enabled ? (auto.last ? T("s.auto_last", { d: new Date(auto.last * 1000).toLocaleString() }) : T("s.auto_never")) : T("s.auto_off");
         const dev = p.dev && p.dev.enabled === true;
         const rv = (window.FY_RUNTIME || {}).version;
         const iv = (info && info.version) || rv;
@@ -174,7 +177,7 @@
           dmg(k, ss, back),
           c,
           pref(T("s.auto"), "autocheck", p.autocheck === true, draw),
-          col(GREY, auto.enabled ? (auto.last ? T("s.auto_last", { d: new Date(auto.last * 1000).toLocaleString() }) : T("s.auto_never")) : T("s.auto_off"), 16),
+          col(GREY, autoText, 16),
           pref(T("s.notify_loader"), "notify_loader", p.notify_loader === true),
           pref(T("s.notify_plugins"), "notify_plugins", p.notify_plugins === true),
           ...maintBox(),

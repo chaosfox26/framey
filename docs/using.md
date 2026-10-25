@@ -237,12 +237,11 @@ These are limits of the experimental implementation. Code review and isolated te
 - **Backends are not confined.** Children that call `setsid` escape the process-group kill.
 - **Native functions are captured after page scripts run.** `inject.js` captures `fyCall` and `Function.prototype.toString` after Steam's scripts start, so a same-page script that runs first can hook them.
 - **The `bindingCalled` context filter is open.** Without isolation, `Runtime.bindingCalled` is accepted from any execution context. Without a token only `toggle` is allowed, rate-limited to 5 per second. Filtering by the main context needs `Runtime.enable`, which the non-isolated mode does not use.
-- **Corrupt settings of one plugin are replaced on its next write.** Only the first corrupt copy is kept as `.bad`.
-- **A late reply from Steam's debug port can drop the page session.** Framey reconnects after 5 seconds.
+- **Damaged plugin settings need a recoverable backup.** Framey keeps a `.bad` copy before replacing damaged settings. If a different `.bad` copy already exists, the write is refused so neither damaged version is silently lost; preserve or resolve that backup before retrying.
 - **Companion installs** swap two folders with two renames, which the startup repair does not scan. A crash between them can leave an orphan `.old-` folder.
 - **Settings writes block the loader** while the disk syncs, so slow storage can delay shutdown.
 - **Some removals of `framey.bak` and `.old-` folders do not check for Framey markers.** Only the staging and linked-plugin paths are guarded.
-- **The memory cap is not measured on Linux.** Its effect and the `limits_warning` path are checked in code only.
+- **Memory exhaustion recovery is not tested on the headset.** Fixture checks cover limit reporting, and short live measurements cover idle and browsing use. Deliberately exhausting the running service or Steam renderer was not tested.
 - **The Developer, Store and Decky Store pages are English only.**
 - **The update channel has no Settings control.** Change `channel` in `loader.json` over SSH. Settings shows it read-only.
 - **Linked folders are never updated.** A single-module Update, a version install and a repair refuse a linked folder (`linked folder: not updated`), and batch update skips it (`linked folder`). Framey does not write through the link.

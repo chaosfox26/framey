@@ -1116,6 +1116,48 @@ t("a module update completion cannot replace the separate Decky Store tab", asyn
   assert.ok(!c.text().includes("Updated Alpha"));
 });
 
+t("ordinary update rejects empty or unrecognised completion replies", async () => {
+  for (const reply of [null, {}, [], { ok: false }, { ok: {} }, { ok: 1 }, { current: "false" }, { staged: "yes" }, { staged: true }]) {
+    const c = boot({ update: reply });
+    await c.open("modules");
+    await c.click("Update");
+    await c.click("Install");
+    assert.equal(c.sent("update").length, 1);
+    assert.ok(c.text().includes("Failed: No answer from Framey"));
+    assert.ok(!c.text().includes("Updated Alpha"));
+    assert.ok(!c.w.sessionStorage.fyRes);
+  }
+});
+
+t("ordinary update preserves explicit boolean and module-id successes", async () => {
+  for (const marker of [{ ok: true }, { ok: "a" }]) {
+    const c = boot({ update: Object.assign({ version: "2.0.0" }, marker) });
+    await c.open("modules");
+    await c.click("Update");
+    await c.click("Install");
+    assert.ok(c.text().includes("Updated Alpha to v2.0.0"));
+    assert.ok(!c.text().includes("Failed:"));
+  }
+});
+
+t("ordinary update preserves the already-current result", async () => {
+  const c = boot({ update: { current: true } });
+  await c.open("modules");
+  await c.click("Update");
+  await c.click("Install");
+  assert.ok(c.text().includes("Already up to date"));
+  assert.ok(!c.text().includes("Updated Alpha"));
+});
+
+t("ordinary update preserves a backend error rather than claiming success", async () => {
+  const c = boot({ update: { error: "The package could not be verified", ok: true } });
+  await c.open("modules");
+  await c.click("Update");
+  await c.click("Install");
+  assert.ok(c.text().includes("Failed: The package could not be verified"));
+  assert.ok(!c.text().includes("Updated Alpha"));
+});
+
 t("strings: every key used by the pages exists in the English table, none is unused", async () => {
   const c = boot();
   const used = new Set();

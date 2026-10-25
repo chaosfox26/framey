@@ -298,3 +298,116 @@ test("rail and panel keep a scrolling viewport bound and associate tabs with the
   assert.equal(selected.getAttribute("aria-controls"), content.id);
   assert.equal(content.getAttribute("aria-labelledby"), selected.id);
 });
+
+test("global cleanup cannot reopen a disposed catalog synchronously or from queued cleanup work", async t => {
+  const e = cleanup(t, fresh());
+  const F = e.window.Framey, core = e.window.__S.K;
+  let renders = 0, during;
+  F.pages = { decky_store: {
+    render() { renders++; },
+    dispose() { during = core.call("catalog_sources"); F.open("#decky-store"); },
+  } };
+  e.window.__bindFramey("a", "tok-a-0000", {}).register({ render() {}, dispose() {
+    F.open("#decky-store");
+    Promise.resolve().then(() => { F.open("#decky-store"); core.call("catalog_sources"); });
+  } });
+  F.open("#decky-store");
+  const before = e.calls.length;
+  core.dispose();
+  assert.equal((await during).code, "disposed");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(renders, 1);
+  assert.equal(e.calls.length, before);
+  assert.equal(core.pending(), 0);
+  assert.equal(e.clock.pending(), 0);
+});
+
+test("an old globally disposed instance permanently blocks navigation, binding and ordinary RPC", async t => {
+  const e = cleanup(t, fresh()), F = e.window.Framey, core = e.window.__S.K;
+  const proxy = e.window.__bindFramey("a", "tok-a-0000", {});
+  F.open("#modules");
+  F.toggle();
+  core.dispose();
+  const before = e.calls.length;
+  F.open("#decky-store"); F.toggle(); F.restore(); F.redraw();
+  core.post("toggle"); core.post("panel", true);
+  assert.equal((await core.call("catalog_sources")).code, "disposed");
+  assert.equal((await proxy.call("a", "read")).code, "disposed");
+  assert.throws(() => core.bind("b", "tok-b-0000", {}), /panel disposed/);
+  assert.throws(() => proxy.register({ render() {} }), /panel disposed/);
+  assert.equal(e.calls.length, before);
+  assert.equal(core.pending(), 0);
+  assert.equal(e.document.querySelector('[role="region"][aria-label="Framey"]').style.display, "none");
+});
+
+test("scoped plugin disposal still restores the panel hidden by its full page", t => {
+  const e = cleanup(t, fresh({ loadFiles: ["fy-api.js", "fy-ui.js", "fy-pages.js"] }));
+  const api = e.plugin("a");
+  const page = api.pages.register({ id: "full", mode: "full", render(box) { box.textContent = "Full page"; } });
+  e.window.Framey.open("#decky-store");
+  page.open();
+  const panel = e.document.querySelector('[role="region"][aria-label="Framey"]');
+  assert.equal(panel.style.display, "none");
+  e.window.Framey.dispose("a", TOK);
+  assert.equal(panel.style.display, "flex");
+  assert.equal(e.window.sessionStorage.fyTab, "#decky-store");
+});
+
+test("global cleanup still sends already-owned resource token revocations", async t => {
+  const e = cleanup(t, fresh()), api = e.plugin("a");
+  const resource = api.resource("data", "cover.png");
+  e.answer(e.sent("resource").at(-1), { url: "http://127.0.0.1/resource/test", token: "owned-token" });
+  await resource;
+  e.window.__S.K.dispose();
+  const revokes = e.sent("resource").filter(x => x.arg && x.arg.revoke);
+  assert.equal(revokes.length, 1);
+  assert.equal(revokes[0].arg.revoke, "owned-token");
+  assert.equal(e.window.__S.K.pending(), 0);
+});
+
+test("a resource resolved just before global teardown revokes its token from the queued continuation", async t => {
+  const e = cleanup(t, fresh()), api = e.plugin("a");
+  const token = "c".repeat(32);
+  const pending = api.resource("data", "cover.png");
+  const request = e.sent("resource").at(-1);
+  e.answer(request, { url: "http://127.0.0.1/resource/queued", token });
+  const rejected = assert.rejects(pending, error => error.code === "disposed");
+  e.window.__S.K.dispose();
+  await rejected;
+  const revoke = e.sent("resource").filter(x => x.arg && x.arg.revoke);
+  assert.equal(revoke.length, 1);
+  assert.equal(revoke[0].id, 0);
+  assert.equal(revoke[0].t, request.t);
+  assert.deepEqual(revoke[0].arg, { revoke: token, pid: "a" });
+  assert.equal(e.window.__S.K.pending(), 0);
+  assert.equal(e.clock.pending(), 0);
+});
+
+test("the dead-instance cleanup exception accepts only bounded owner-scoped resource revocations", t => {
+  const e = cleanup(t, fresh());
+  let pluginPost;
+  e.window.Framey.ext.push((api, p, res, io) => { pluginPost = io.post; });
+  e.plugin("a");
+  const core = e.window.__S.K, token = "d".repeat(32);
+  core.dispose();
+  const before = e.calls.length;
+  for (const [method, arg] of [
+    ["catalog_sources", { revoke: token, pid: "a" }],
+    ["resource", { revoke: token, pid: "b" }],
+    ["resource", { revoke: token, pid: "a", path: "cover.png" }],
+    ["resource", { revoke: token, pid: "a", root: "data" }],
+    ["resource", { revoke: "x".repeat(129), pid: "a" }],
+    ["resource", { revoke: "", pid: "a" }],
+    ["resource", { revoke: "../bad", pid: "a" }],
+    ["resource", { revoke: token }],
+    ["resource", [token, "a"]],
+  ]) pluginPost(method, arg);
+  core.post("resource", { revoke: token, pid: "a" });
+  assert.equal(e.calls.length, before);
+  pluginPost("resource", { revoke: token, pid: "a" });
+  assert.equal(e.calls.length, before + 1);
+  assert.equal(e.calls.at(-1).id, 0);
+  assert.equal(e.calls.at(-1).t, "tok-a-0000");
+  assert.deepEqual(e.calls.at(-1).arg, { revoke: token, pid: "a" });
+  assert.equal(core.pending(), 0);
+});

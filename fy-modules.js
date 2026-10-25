@@ -412,12 +412,14 @@
       };
       const update = m =>
         k.work(T("m.updating", { name: m.name }), () => call("update", m.id), (r, out) => {
-          if (r.current) {
+          if (!r.error && r.current === true) {
             res[m.id] = { state: "current" };
             return k.result(out, {}, T("m.already"), back);
           }
-          if (!r.error) delete res[m.id];
-          k.result(out, r, T(r.version ? "m.updated_v" : "m.updated", { name: m.name, v: r.version }), back);
+          const valid = r.ok === true || r.ok === m.id;
+          const result = r.error || valid ? r : { error: T("c.noanswer") };
+          if (!result.error) delete res[m.id];
+          k.result(out, result, T(r.version ? "m.updated_v" : "m.updated", { name: m.name, v: r.version }), back);
         });
       const updateAsk = m => {
         const s = obj(res[m.id]);

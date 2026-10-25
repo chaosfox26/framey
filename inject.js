@@ -46,7 +46,7 @@ const __FY = (() => {
   let cur = "";
   let st = {};
   let returnTo = null;
-  let extLocked = false;
+  let extLocked = false, closing = false, closed = false;
   const safe = f => { try { return f(); } catch (e) {} };
   const ss = (k, v) => safe(() => (v === undefined ? sessionStorage[k] : (sessionStorage[k] = v)));
   const stamp = pl => gen + ":" + pl + "." + (inst[pl] | 0);
@@ -60,8 +60,13 @@ const __FY = (() => {
   const owned = id => [...document.querySelectorAll("[data-fy]")].filter(e => e.dataset.fy === id);
   const lock = (o, ...ks) => ks.forEach(k => defProp(o, k, { value: o[k], writable: false, configurable: false }));
   const wire = (o, t) => (t === undefined ? stringify(o) : '{"t":"' + t + '",' + stringify(o).slice(1));
-  const post = (method, arg, t) => safe(() => fyCall(wire({ id: 0, plugin: "_core", method, arg }, t)));
-  const send = (plugin, method, arg, t, who, to) =>
+  const disposed = who => ({ error: who === "_core" ? "Framey panel disposed" : "module disposed", code: "disposed" });
+  const cleanupRevoke = (method, arg, t, who) => method === "resource" && arg && typeof arg === "object" && !Array.isArray(arg) && O.keys(arg).length === 2 && O.keys(arg).every(k => k === "pid" || k === "revoke") && arg.pid === who && ID.test(who) && bound.get(who) === t && typeof arg.revoke === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(arg.revoke);
+  const post = (method, arg, t, who) => {
+    if ((closing || closed) && !cleanupRevoke(method, arg, t, who)) return;
+    safe(() => fyCall(wire({ id: 0, plugin: "_core", method, arg }, t)));
+  };
+  const send = (plugin, method, arg, t, who, to) => closing || closed ? P.resolve(disposed(who)) :
     new P(r => {
       const id = ++n;
       const g = stamp(who);
@@ -76,7 +81,7 @@ const __FY = (() => {
   const io = (id, tok) => ({
     core: (method, arg) => send("_core", method, arg, tok, id),
     be: (method, arg, to) => send(id, method, arg, tok, id, to),
-    post: (method, arg) => post(method, arg, tok),
+    post: (method, arg) => post(method, arg, tok, id),
   });
   const adopt = v => {
     if (!v || !Array.isArray(v.order) || !Array.isArray(v.hidden)) return;
@@ -89,6 +94,7 @@ const __FY = (() => {
     }
   };
   const reg = (i, p) => {
+    if (closing || closed) throw new Error("Framey panel disposed");
     if (i.used) throw new Error("this module is already registered");
     if (!p || typeof p !== "object") throw new Error("register needs a module object");
     if (p.id !== undefined && p.id !== i.id) throw new Error("module id does not match " + i.id);
@@ -194,6 +200,7 @@ const __FY = (() => {
     return freeze(o);
   };
   const bindPlugin = (id, tok, meta) => {
+    if (closing || closed) throw new Error("Framey panel disposed");
     if (typeof id !== "string" || !ID.test(id)) throw new Error("invalid module id");
     if (RESERVED.includes(id)) throw new Error("module id " + id + " is reserved");
     if (typeof tok !== "string" || tok.length < 8 || tok.length > 256) throw new Error("invalid module token");
@@ -207,26 +214,31 @@ const __FY = (() => {
   };
   const apiOf = t => APIS.get(t);
   const disposeMods = only => {
-    if (!only) {
-      ["click", "keydown", "pointerdown"].forEach(t => window.removeEventListener(t, mark, true));
-      all().filter(t => !t.plugin && !apiOf(t)).forEach(t => { if (t.dispose) safe(t.dispose); });
+    if (closing || closed) return;
+    if (!only) closing = true;
+    try {
+      if (!only) {
+        ["click", "keydown", "pointerdown"].forEach(t => window.removeEventListener(t, mark, true));
+        safe(() => all().filter(t => !t.plugin && !apiOf(t)).forEach(t => { if (t.dispose) safe(t.dispose); }));
+      }
+      mods.forEach(p => {
+        if (gone.has(p) || (only && p.id !== only)) return;
+        gone.add(p);
+        try { if (p.dispose) p.dispose(); } catch (e) { safe(() => FY.toast("Module " + p.id + " cleanup failed: " + (e && e.message), 4000)); }
+        safe(() => APIS.get(p)._clear());
+        safe(() => owned(p.id).forEach(e => e.remove()));
+        inst[p.id] = (inst[p.id] | 0) + 1;
+      });
+      O.keys(calls).forEach(k => {
+        const c = calls[k];
+        if (only && c.p !== only) return;
+        unlater(c.t);
+        delete calls[k];
+        c.r(disposed(c.p));
+      });
+    } finally {
+      if (!only) { inst._core = (inst._core | 0) + 1; closed = true; closing = false; }
     }
-    mods.forEach(p => {
-      if (gone.has(p) || (only && p.id !== only)) return;
-      gone.add(p);
-      try { if (p.dispose) p.dispose(); } catch (e) { safe(() => FY.toast("Module " + p.id + " cleanup failed: " + (e && e.message), 4000)); }
-      safe(() => APIS.get(p)._clear());
-      safe(() => owned(p.id).forEach(e => e.remove()));
-      inst[p.id] = (inst[p.id] | 0) + 1;
-    });
-    O.keys(calls).forEach(k => {
-      const c = calls[k];
-      if (only && c.p !== only) return;
-      unlater(c.t);
-      delete calls[k];
-      c.r({ error: c.p === "_core" ? "Framey panel disposed" : "module disposed", code: "disposed" });
-    });
-    if (!only) inst._core = (inst._core | 0) + 1;
   };
   const FY = {
     ext: [],
@@ -234,7 +246,7 @@ const __FY = (() => {
       if (TOK && tok === TOK) disposeMods(only);
     },
     redraw(only) {
-      if (!isOpen()) return;
+      if (closing || closed || !isOpen()) return;
       const t = find(cur);
       if (!t) show(shown()[0]);
       else if (only ? only === cur : apiOf(t)) show(t);
@@ -250,6 +262,7 @@ const __FY = (() => {
       c.r(v);
     },
     toast(text, ms) {
+      if (closing || closed) return;
       if (!tc || !tc.isConnected) {
         tc = el("position:fixed;left:50%;bottom:40px;transform:translateX(-50%);z-index:99999;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none");
         tc.setAttribute("role", "status");
@@ -264,7 +277,7 @@ const __FY = (() => {
   };
   const K = {
     call: (method, arg) => send("_core", method, arg, TOK, "_core"),
-    post: (method, arg) => post(method, arg, TOK),
+    post: (method, arg) => post(method, arg, TOK, "_core"),
     pending: () => O.keys(calls).length,
     lock,
     tab: () => cur,
@@ -441,6 +454,7 @@ const __FY = (() => {
   };
   const note = () => post("panel", isOpen(), TOK);
   const go = (on, id) => {
+    if (closing || closed) return;
     const was = isOpen();
     if (on && !was) returnTo = document.activeElement;
     panel.style.display = on ? "flex" : "none";
@@ -464,6 +478,7 @@ const __FY = (() => {
   FY.toggle = () => go(!isOpen());
   FY.open = id => go(true, id);
   FY.restore = () => {
+    if (closing || closed) return;
     if (ss("fyOpen")) go(true, ss("fyRes") ? "#modules" : undefined);
     else note();
     const m = ss("fyMsg");

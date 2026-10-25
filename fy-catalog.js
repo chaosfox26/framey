@@ -332,7 +332,7 @@
           if (!r.error) {
             const incoming = (Array.isArray(r.rows) ? r.rows : []).slice(0, 50).map(normal).filter(Boolean);
             const unique = new Map((more ? rows : []).concat(incoming).map(item => [identity(item), item]));
-            rows = [...unique.values()].slice(0, 500);
+            rows = [...unique.values()].slice(0, 512);
           }
           draw();
         }, err => {

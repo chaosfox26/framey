@@ -145,6 +145,26 @@ test("Decky source selection stays isolated from the native Store across page na
   assert.equal(c.sent("catalog_assess").length, 0);
 });
 
+test("pagination reaches all 512 bounded catalog rows and stops at the last page", async () => {
+  const entries = Array.from({ length: 512 }, (_, index) => decky({
+    id: "decky-" + (index + 1),
+    name: "Catalog module " + String(index + 1).padStart(3, "0"),
+    identity: (index + 1).toString(16).padStart(64, "0"),
+  }));
+  const c = boot({ catalog_list: arg => {
+    const rows = entries.slice(arg.offset, arg.offset + arg.limit);
+    return Object.assign(list(rows, arg.source), { total: entries.length, offset: arg.offset, limit: rows.length });
+  } });
+  await c.open();
+  for (let page = 0; page < 12 && c.has("Load more"); page++) await c.click("Load more");
+  assert.deepEqual(c.sent("catalog_list").map(request => request.arg.offset), [0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]);
+  assert.equal(c.controls().filter(node => node.getAttribute("aria-label").startsWith("Details: ")).length, 512);
+  assert.ok(c.has("Details: Catalog module 512"));
+  assert.ok(!c.has("Load more"), "the final bounded page must not request offset 500 repeatedly");
+  c.noInstall();
+  assert.equal(c.sent("catalog_assess").length, 0);
+});
+
 test("Decky details show format, port requirement and unverified ARM64 state", async () => {
   const c = boot();
   await c.open();

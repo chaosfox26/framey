@@ -179,9 +179,18 @@ def describe(host, plugin):
         pid, m = plugin, host.manifest(host.plugin_dir(plugin)) or {}
     elif isinstance(plugin, str):
         m = {"source": plugin}
-    found = [x.strip() for x in (read(host.plugin_dir(pid) / ".source") if pid else "", m.get("source")) if isinstance(x, str) and x.strip()]
+    recorded = read(host.plugin_dir(pid) / ".source") if pid else ""
+    found = [x.strip() for x in (recorded, m.get("source")) if isinstance(x, str) and x.strip()]
     for x in found:
         g = parse_source(x)
+        if not g and x == recorded:
+            try:
+                u = urllib.parse.urlsplit(x)
+                scoped = u.hostname == "github.com" and len([p for p in u.path.split("/") if p]) > 2
+            except ValueError:
+                scoped = False
+            if scoped:
+                return {"id": pid, "source": text(x, 200), "unknown": "invalid_source"}
         if g:
             sub = g["path"]
             if not sub and m.get("source_path") not in (None, ""):
@@ -266,7 +275,10 @@ def load(host, now=None):
     for k, v in list(ents.items())[:ENTRIES_MAX * 2]:
         e = clean_entry(k, v)
         if e:
-            e["ok_at"] = min(e["ok_at"], now)
+            if e["ok_at"] > now:
+                e["ok_at"], e["facts"] = 0, None
+                if not e["fail"]:
+                    continue
             if e["fail"]:
                 e["fail"]["at"] = min(e["fail"]["at"], now)
             bound = WAIT_MAX if e["fail"] and e["fail"]["code"] == "rate_limited" else COOLDOWN

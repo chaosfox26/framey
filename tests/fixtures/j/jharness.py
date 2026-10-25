@@ -239,6 +239,33 @@ class Page:
         return [x[1] for x in self.trace() if isinstance(x, tuple) and x[0] == "event"]
 
 
+class PluginPage(Page):
+    def __init__(self):
+        super().__init__()
+        self.runs = []
+        self.hold_runs = False
+
+    def reply(self, obj, result=None, failure=False):
+        body = {'result': result or {}}
+        if failure:
+            body['exceptionDetails'] = {'text': 'Uncaught', 'exception': {'description': 'Error: fixture failure'}}
+        self.q.put_nowait(json.dumps({'id': obj['id'], 'result': body}))
+
+    async def send(self, obj):
+        await super().send(obj)
+        params = obj['params']
+        if obj['method'] == 'Runtime.evaluate' and params.get('expression', '').startswith('(function(Framey){'):
+            self.reply(obj, {'objectId': 'source-' + str(obj['id'])})
+        elif obj['method'] == 'Runtime.callFunctionOn':
+            declaration = params.get('functionDeclaration', '')
+            if 'this.bind(' in declaration:
+                self.reply(obj, {'objectId': 'api-' + str(obj['id'])})
+            elif declaration == 'function(p){return this(p)}':
+                self.runs.append(obj)
+                if not self.hold_runs:
+                    self.reply(obj)
+
+
 class Fail(Exception):
     pass
 

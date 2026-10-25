@@ -156,6 +156,8 @@ def _native_header(data):
             return "Mach-O", "unknown"
         order = "little" if data[:4] in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe") else "big"
         cpu = int.from_bytes(data[4:8], order) if len(data) >= 8 else 0
+        if bool(cpu & 0x1000000) != (size == 32):
+            return "Mach-O", "unknown"
         return "Mach-O", {0x100000C: "aarch64", 0x1000007: "x86_64"}.get(cpu, "unknown")
     return None
 
@@ -518,4 +520,6 @@ class DeckyCatalog:
         except (OSError, ValueError, fy_net.NetError) as error:
             if isinstance(error, CatalogError):
                 raise
+            if isinstance(error, fy_net.NetError) and error.code == "too_large":
+                _fail("too_large", "This package exceeds the 5 MB inspection limit; compatibility remains unverified.")
             _fail("unverified", "The package could not be inspected; compatibility remains unverified")

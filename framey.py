@@ -711,10 +711,10 @@ def plugin_args(m, keep=False):
     return m, tok, (PLUGINS / m["id"] / "main.js").read_text()
 
 
-async def load_plugin(m, tok, src, pid=None):
+async def load_plugin(m, tok, src, pid=None, redraw=True):
     f = LIVE.get("main")
     if f and getattr(f, "plugin", None):
-        await f.plugin(m, tok, src, pid)
+        await f.plugin(m, tok, src, pid, redraw)
 
 
 def page_root_ok(a):
@@ -1326,9 +1326,7 @@ async def page_reload(pid, redraw=True):
     send, m = LIVE.get("main"), manifest(PLUGINS / pid) if ok_id(pid) else None
     if send and m and pid not in settings()["disabled"] and not safe() and (PLUGINS / pid / "main.js").exists():
         await call_core(send, DISPOSE, [pid])
-        await load_plugin(*plugin_args(m, True), pid=pid)
-        if redraw:
-            await send("Runtime.evaluate", expression="window.Framey&&Framey.redraw()")
+        await load_plugin(*plugin_args(m, True), pid=pid, redraw=redraw)
 
 
 async def reload_one(pid):
@@ -2086,11 +2084,15 @@ async def session(name, tab, code, probe_expr, marker=None):
         mark(pid, "load", msg)
         await send("Runtime.evaluate", expression="Framey.fail(%s,{message:%s})" % (json.dumps(pid), json.dumps(msg)))
 
-    async def plug(m, tok, src, pid):
-        await send("Runtime.evaluate", _pid=("#src", pid, tok, m), expression="(function(Framey){" + src + "\n})")
+    async def plug(m, tok, src, pid, redraw=True):
+        await send("Runtime.evaluate", _pid=("#src", pid, tok, m, redraw), expression="(function(Framey){" + src + "\n})")
 
     async def step():
         while todo:
+            if todo[0][0] == "Framey.restore()":
+                world = (iso.ctx, getattr(iso, "epoch", None)) if iso and iso.on else None
+                if any(isinstance(p[0], tuple) and p[0][0] in ("#src", "#bind", "#run") and p[1] == load_epoch and p[2] == world for p in pending.values()):
+                    return
             expr, pid = todo.pop(0)
             if isinstance(expr, tuple):
                 await plug(*expr, pid)
@@ -2101,6 +2103,16 @@ async def session(name, tab, code, probe_expr, marker=None):
         target = getattr(host, "targets", None)
         if name in WIPES and target and hasattr(target, "reconcile"):
             await target.reconcile(name)
+
+    async def registered(generation, world, who=None):
+        current = (iso.ctx, getattr(iso, "epoch", None)) if iso and iso.on else None
+        if generation != load_epoch or world != current:
+            return
+        if todo:
+            if todo[0][0] == "Framey.restore()":
+                await step()
+        elif who:
+            await send("Runtime.evaluate", expression="window.Framey&&Framey.redraw(%s)" % json.dumps(who))
 
     send.ping = ping
     send.main = lambda expression: send("Runtime.evaluate", expression=expression, _main=True)
@@ -2215,13 +2227,15 @@ async def session(name, tab, code, probe_expr, marker=None):
                     if d or not send.core or (stage != "#run" and not oid):
                         await fail_load(who, d)
                         await release(oid, *(rest if stage in ("#bind", "#run") else []))
+                        await registered(generation, world)
                     elif stage == "#src":
-                        tok, mf = rest
-                        await send("Runtime.callFunctionOn", _pid=("#bind", who, oid), objectId=send.core, functionDeclaration=BIND, arguments=[{"value": mf["id"]}, {"value": tok}, {"value": mf}])
+                        tok, mf, redraw = rest
+                        await send("Runtime.callFunctionOn", _pid=("#bind", who, oid, redraw), objectId=send.core, functionDeclaration=BIND, arguments=[{"value": mf["id"]}, {"value": tok}, {"value": mf}])
                     elif stage == "#bind":
-                        await send("Runtime.callFunctionOn", _pid=("#run", who, rest[0], oid), objectId=rest[0], functionDeclaration=RUN, arguments=[{"objectId": oid}])
+                        await send("Runtime.callFunctionOn", _pid=("#run", who, rest[0], oid, rest[1]), objectId=rest[0], functionDeclaration=RUN, arguments=[{"objectId": oid}])
                     elif stage == "#run":
                         await release(*rest, oid)
+                        await registered(generation, world, who if rest[2] else None)
                     continue
                 d = res.get("exceptionDetails")
                 if d:

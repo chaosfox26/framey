@@ -191,7 +191,9 @@ class PagePushTests(Base):
         self.assertEqual(await loader.core("target_add", {"pid": "a", "target": "main", "kind": "css", "key": "k", "code": "body{color:red}"}), {"ok": True})
         self.assertEqual(await loader.core("target_add", {"pid": "a", "target": "bar", "kind": "js", "key": "j", "code": "window.X=1", "teardown": "window.X=0"}), {"ok": True})
         self.assertEqual(await loader.core("target_add", {"pid": "a", "target": "store", "kind": "css", "key": "k", "code": "x"}), {"error": "Unknown target: store", "code": "unknown_target"})
-        main, _ = await self.attach(loader, "main")
+        main, task = await H.attach(loader, "main", page=H.PluginPage())
+        self.addCleanup(task.cancel)
+        self.assertTrue(await H.settle(lambda: "Framey.restore()" in main.exprs()))
         bar, _ = await self.attach(loader, "bar")
         exprs = main.exprs()
         css = [i for i, e in enumerate(exprs) if "body{color:red}" in e]
@@ -460,19 +462,24 @@ class ContainmentTests(Base):
     async def test_reload_one_disposes_the_old_instance_and_evaluates_only_that_plugin(self):
         loader = await self.start(plugins=("a", "b"))
         fy = loader.fy
-        main, _ = await self.attach(loader)
+        main, task = await H.attach(loader, page=H.PluginPage())
+        self.addCleanup(task.cancel)
+        self.assertTrue(await H.settle(lambda: "Framey.restore()" in main.exprs()))
         fy.mark("a", "backend", "kaput")
         n = len(main.sent)
         self.assertEqual(await loader.core("reload_one", "a"), {"ok": True})
+        self.assertTrue(await H.settle(lambda: 'window.Framey&&Framey.redraw("a")' in main.exprs()))
         sent = main.trace(n)
         self.assertEqual(sent[0], ("dispose", ["a"]))
         self.assertEqual(sent[1], "(function(Framey){window.RAN_a=1\n})")
         self.assertNotIn("RAN_b", sent[1])
         self.assertNotIn(fy.CORE_TOK, repr(sent))
         self.assertNotIn("fyCall", sent[1])
-        self.assertEqual(sent[2], "window.Framey&&Framey.redraw()")
+        self.assertEqual(sent[2][0], "bind")
+        self.assertEqual(sent[3][0], "run")
+        self.assertEqual(sent[4], 'window.Framey&&Framey.redraw("a")')
         self.assertNotIn("a", fy.FAILS)
-        self.assertEqual(len(sent), 3)
+        self.assertEqual(len(sent), 5)
 
     async def test_the_loader_reply_flow_refreshes_the_page_after_a_change(self):
         loader = await self.start(plugins=("a",))

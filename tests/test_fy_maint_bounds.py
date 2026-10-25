@@ -19,6 +19,59 @@ class TimestampTests(unittest.TestCase):
 
 
 class SourceAndReplyTests(support.Base):
+    async def test_malformed_recorded_github_scope_does_not_fall_back_to_repository(self):
+        for suffix in ("/tree", "/tree/main/plugins/../demo", "/tree/main//plugins/demo", "/tree//main/plugins/demo"):
+            with self.subTest(suffix=suffix):
+                h = self.host(support.api_for())
+                h.calls.clear()
+                source = support.SRC + suffix
+                h.add("demo", source=support.SRC, dot_source=source)
+                result = await fm.check_one(h, "demo")
+                self.assertEqual(result["label"], "unknown")
+                self.assertEqual(result["scope"], "")
+                self.assertEqual(result["source"], source)
+                self.assertIn("source path", result["reason"])
+                self.assertEqual(h.calls, [])
+
+    async def test_unsupported_non_github_recorded_source_still_uses_manifest(self):
+        h = self.host(support.api_for())
+        h.add("demo", source=support.SRC, dot_source="https://gitlab.com/example/project/tree/main/plugins/demo")
+        result = await fm.check_one(h, "demo")
+        self.assertEqual((result["repo"], result["source"], result["label"]), ("acme/widget", support.SRC, "recent"))
+        self.assertTrue(h.calls)
+
+    async def test_future_success_stays_unknown_across_clock_correction_and_restart(self):
+        h = self.host(support.api_for())
+        h.add("demo", source=support.SRC)
+        await fm.check_one(h, "demo")
+        h.t = support.NOW - 365 * fm.DAY
+        future_bytes = (h.CONF.parent / "maint.json").read_bytes()
+        restarted = support.FakeHost(self.tmp, now=h.t)
+        restarted.add("demo", source=support.SRC)
+        for host, now in ((h, h.t), (restarted, h.t + 2 * fm.DAY)):
+            with self.subTest(now=now):
+                call_count = len(host.calls)
+                result = fm.cached(host, "demo", now)
+                self.assertEqual(result["label"], "unknown")
+                self.assertTrue(result["stale"])
+                self.assertEqual(result["checked_at"], 0)
+                self.assertTrue(fm.wanted(fm.load(host, now), "acme/widget@#", now, False))
+                self.assertEqual(len(host.calls), call_count)
+        self.assertEqual((h.CONF.parent / "maint.json").read_bytes(), future_bytes)
+
+    async def test_normal_bounded_check_repairs_future_success_after_restart(self):
+        h = self.host(support.api_for())
+        h.add("demo", source=support.SRC)
+        await fm.check_one(h, "demo")
+        restarted = support.FakeHost(self.tmp, api=support.api_for(), now=support.NOW - 365 * fm.DAY)
+        restarted.add("demo", source=support.SRC)
+        result = (await fm.check_all(restarted, restarted.manifests()))["demo"]
+        self.assertFalse(result["stale"])
+        self.assertEqual(result["checked_at"], restarted.t)
+        self.assertEqual(len(restarted.calls), 4)
+        self.assertLessEqual(len(restarted.calls), fm.CAP)
+        self.assertEqual(restarted.stored()["entries"]["acme/widget@#"]["ok_at"], restarted.t)
+
     async def test_incomplete_tree_sources_never_broaden_to_repository(self):
         for suffix in ("/tree", "/tree/", "/tree//main", "/tree/main//plugins/demo"):
             with self.subTest(suffix=suffix):

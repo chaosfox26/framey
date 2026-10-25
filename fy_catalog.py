@@ -194,7 +194,10 @@ def _entry(raw):
 
 
 def parse_catalog(data):
-    raw = _decode(data)
+    return _normalize_catalog(_decode(data))
+
+
+def _normalize_catalog(raw):
     if not isinstance(raw, dict) or set(raw) - {"schema", "name", "plugins"} or type(raw.get("schema")) is not int or raw["schema"] != 1:
         _fail("bad_catalog", "Catalog schema is not supported")
     plugins = raw.get("plugins")
@@ -300,7 +303,8 @@ class Catalog:
             if not isinstance(key, str) or not HEX.fullmatch(key) or not isinstance(value, dict):
                 continue
             try:
-                catalog = parse_catalog(_json(value["catalog"]))
+                encoded = json.dumps(value["catalog"], ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                catalog = _normalize_catalog(_decode(encoded, CACHE_MAX))
                 downloaded = value["downloaded_at"]
                 if not isinstance(downloaded, (int, float)) or isinstance(downloaded, bool) or not 0 <= downloaded <= now + 60:
                     continue
