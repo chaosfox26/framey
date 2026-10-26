@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import TimeoutError as FutureTimeout
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
@@ -25,7 +26,7 @@ BAD_VALUE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 TEXTY = re.compile(r"text/|json|xml|javascript|x-www-form-urlencoded", re.I)
 DROP = frozenset(("host", "content-length", "connection", "transfer-encoding", "accept-encoding", "expect", "upgrade", "te", "keep-alive", "trailer"))
 CROSS_HOST_KEEP = frozenset(("accept", "accept-language", "content-type", "user-agent", "range", "if-none-match", "if-modified-since"))
-KEEP = ("content-type", "content-length", "etag", "last-modified")
+KEEP = ("content-type", "content-length", "etag", "last-modified", "retry-after")
 REDIRECTS = frozenset((301, 302, 303, 307, 308))
 CGNAT = ipaddress.ip_network("100.64.0.0/10")
 NAT64 = ipaddress.ip_network("64:ff9b::/96")
@@ -36,6 +37,7 @@ DEST_MAX = 20 * 1024 * 1024
 QUOTA = 64 * 1024 * 1024
 QUOTA_FILES = 20000
 DNS_MAX = 5.0
+RETRY_AFTER_MAX = 7 * 86400
 ADDRESSES_MAX = 64
 TEXT_JSON_MAX = 700000
 HOPS_MAX = 5
@@ -51,10 +53,31 @@ _save_condition = threading.Condition()
 
 
 class NetError(Exception):
-    def __init__(self, code, message):
+    def __init__(self, code, message, *, status=None, retry_after=None):
         super().__init__(message)
         self.code = code
         self.message = message[:300]
+        self.status = status if type(status) is int and 100 <= status <= 599 else None
+        self.retry_after = min(RETRY_AFTER_MAX, max(0, retry_after)) if type(retry_after) is int else None
+
+
+def retry_after_seconds(value, now=None):
+    if not isinstance(value, str) or len(value) > 256 or not value.isascii() or BAD_VALUE.search(value):
+        return 0
+    value = value.strip(" \t")
+    if value.isdecimal():
+        return min(RETRY_AFTER_MAX, int(value))
+    try:
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is None:
+            return 0
+        now = time.time() if now is None else now
+        if type(now) not in (int, float) or not math.isfinite(now):
+            return 0
+        seconds = date.timestamp() - now
+        return min(RETRY_AFTER_MAX, max(0, math.ceil(seconds)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 class _Transfer:
@@ -468,7 +491,13 @@ def _run(url, method, headers, body, deadline, limit, dest, allow_http, resolver
                 n = _save(r, sock, method, deadline, dest, socks)
                 return _shape(r, b"", n, False, str(dest[0]))
             if binary and r.status != 200:
-                raise NetError("network", "The server did not return a complete download")
+                if r.status in (401, 403):
+                    code, message = "access_denied", "The server denied access to the download"
+                elif r.status == 429:
+                    code, message = "rate_limited", "The server asked Framey to wait before downloading"
+                else:
+                    code, message = "network", "The server did not return a complete download"
+                raise NetError(code, message, status=r.status, retry_after=retry_after_seconds(r.getheader("retry-after")))
             data, n, cut = _read(r, sock, method, limit, deadline, None)
             if binary:
                 if cut:

@@ -14,7 +14,7 @@ from pathlib import Path
 import fy_net
 import fy_pkg
 import fy_store
-from fy_catalog import CatalogError, _decode, _json, _safe, validate_source_url
+from fy_catalog import ACCESS_CODES, ACCESS_RETRY_MAX, CatalogError, _access_error, _decode, _json, _response_access, _safe, _transport_access, _user_agent, validate_source_url
 
 FEED_MAX = 524288
 REPLY_MAX = 600000
@@ -32,7 +32,6 @@ SOURCES = {
     "decky_testing": {"id": "decky_testing", "label": "Decky Store Testing", "url": "https://testing.deckbrew.xyz/plugins", "format": "decky"},
 }
 PORT_REASON = "Built for Decky’s interface; it needs a Framey version before it can run here."
-HEADERS = {"Accept": "application/json", "User-Agent": "Framey/1.0 catalog"}
 
 
 def _fail(code, message):
@@ -319,22 +318,38 @@ class DeckyCatalog:
                 if not isinstance(value, dict):
                     continue
                 try:
-                    if isinstance(value.get("raw"), list):
-                        encoded = json.dumps(value["raw"], ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-                    elif isinstance(value.get("catalog"), dict):
-                        encoded = _cache_bytes(value["catalog"])
-                    else:
+                    access = _access_error(value.get("access_code"), label="The Decky Store")
+                    catalog = None
+                    try:
+                        if isinstance(value.get("raw"), list):
+                            encoded = json.dumps(value["raw"], ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                            catalog = parse_decky(encoded)
+                        elif isinstance(value.get("catalog"), dict):
+                            catalog = parse_decky(_cache_bytes(value["catalog"]))
+                        elif access is None:
+                            continue
+                    except (CatalogError, KeyError, TypeError, ValueError):
+                        if access is None:
+                            raise
+                    if catalog is None and access is None:
                         continue
-                    catalog = parse_decky(encoded)
-                    downloaded = value["downloaded_at"]
+                    downloaded = value.get("downloaded_at", 0)
                     if type(downloaded) not in (int, float) or not 0 <= downloaded <= now + 60:
                         continue
                     retry = value.get("retry_after", 0)
-                    retry = retry if type(retry) in (int, float) and 0 <= retry <= now + RETRY else 0
+                    retry = retry if type(retry) in (int, float) and 0 <= retry <= now + (ACCESS_RETRY_MAX if access else RETRY) else 0
                     checked = value.get("checked_at", downloaded)
                     checked = checked if type(checked) in (int, float) and downloaded <= checked <= now + 60 else downloaded
-                    self.cache[key] = {"catalog": catalog, "downloaded_at": downloaded,
-                                       "checked_at": checked, "error": "Previous Decky catalog refresh failed" if value.get("error") else "", "retry_after": retry}
+                    record = {"downloaded_at": downloaded, "checked_at": checked,
+                              "error": access.message if access else "Previous Decky catalog refresh failed" if value.get("error") else "", "retry_after": retry}
+                    if catalog is not None:
+                        record["catalog"] = catalog
+                    if access:
+                        record["access_code"] = access.code
+                    archive = value.get("archive_access")
+                    if isinstance(archive, dict) and _access_error(archive.get("code")) and type(archive.get("retry_after")) in (int, float) and 0 <= archive["retry_after"] <= now + ACCESS_RETRY_MAX:
+                        record["archive_access"] = {"code": archive["code"], "retry_after": archive["retry_after"]}
+                    self.cache[key] = record
                 except (CatalogError, KeyError, TypeError, ValueError):
                     continue
 
@@ -356,7 +371,10 @@ class DeckyCatalog:
     async def _download(self, url):
         if self.fetcher is not None:
             return await self.fetcher(url, FEED_MAX)
-        reply = await fy_net.fetch_plugin("_core", url, headers=HEADERS, timeout=15, max_bytes=FEED_MAX, allow_http=False)
+        reply = await fy_net.fetch_plugin("_core", url, headers={"Accept": "application/json", "User-Agent": _user_agent(self.host)}, timeout=15, max_bytes=FEED_MAX, allow_http=False)
+        access = _response_access(reply, self.now(), "The Decky Store")
+        if access:
+            raise access
         if reply.get("status") != 200 or reply.get("truncated"):
             _fail("download_failed", "The Decky server did not return a complete catalog")
         if isinstance(reply.get("text"), str):
@@ -372,9 +390,15 @@ class DeckyCatalog:
         try:
             catalog = parse_decky(await self._download(source["url"]))
             record = {"catalog": catalog, "downloaded_at": now, "checked_at": now, "error": "", "retry_after": 0}
+            if self.cache.get(key, {}).get("archive_access"):
+                record["archive_access"] = self.cache[key]["archive_access"]
         except Exception as error:
             record = dict(self.cache.get(key, {}))
-            record.update(error=getattr(error, "message", None) or "Decky catalog could not be refreshed", checked_at=now, retry_after=now + RETRY)
+            access = _transport_access(error, "The Decky Store")
+            record.update(error=access.message if access else error.message if isinstance(error, CatalogError) else "Decky catalog could not be refreshed", checked_at=now, retry_after=now + (access.retry_after if access else RETRY))
+            record.pop("access_code", None)
+            if access:
+                record["access_code"] = access.code
         self.cache[key] = record
         warning = "" if record.get("error") and self.invalid_cache else await self._save()
         if warning:
@@ -388,7 +412,8 @@ class DeckyCatalog:
         record = self.cache.get(key)
         refresh = arg.get("refresh") is True or not record or now - record.get("downloaded_at", 0) >= TTL or bool(record.get("error"))
         fetched = False
-        if refresh and (arg.get("refresh") is True or not record or now >= record.get("retry_after", 0)):
+        blocked = record and record.get("access_code") in ACCESS_CODES and now < record.get("retry_after", 0)
+        if refresh and not blocked and (arg.get("refresh") is True or not record or now >= record.get("retry_after", 0)):
             task = self.refreshes.get(key)
             if task is None:
                 task = self.refreshes[key] = asyncio.create_task(self._refresh(source))
@@ -403,9 +428,12 @@ class DeckyCatalog:
         warning = "The Decky catalog is unavailable; no saved catalog exists" if catalog is None else "Saved Decky catalog; refresh failed" if error else "Saved Decky catalog is older than 24 hours" if stale else ""
         if record and record.get("save_warning"):
             warning = record["save_warning"]
+        if record and record.get("access_code") in ACCESS_CODES:
+            warning = error
         return catalog or {"plugins": []}, {"source": source, "origin": origin, "stale": stale,
                                             "checked_at": record.get("checked_at", 0) if record else 0,
-                                            "downloaded_at": downloaded, "error": None, "fetch_error": error or None, "warning": warning}
+                                            "downloaded_at": downloaded, "error": None, "fetch_error": error or None, "warning": warning,
+                                            "retry_after": record.get("retry_after", 0) if record else 0}
 
     def _row(self, record, source, details=False):
         version = record["versions"][0]["name"] if record["versions"] else ""
@@ -468,7 +496,7 @@ class DeckyCatalog:
     async def _archive(self, url):
         if self.archive_fetcher is not None:
             return await self.archive_fetcher(url, ARCHIVE_MAX)
-        return await fy_net.fetch_bytes("_core", url, headers={"User-Agent": HEADERS["User-Agent"]}, timeout=30, max_bytes=ARCHIVE_MAX)
+        return await fy_net.fetch_bytes("_core", url, headers={"User-Agent": _user_agent(self.host)}, timeout=30, max_bytes=ARCHIVE_MAX)
 
     async def _assess(self, arg):
         source = self.source(arg)
@@ -485,7 +513,20 @@ class DeckyCatalog:
             _fail("stale_catalog", "The selected Decky version changed; choose it again")
         if not chosen["artifact"]:
             _fail("unverified", "The selected version has no supported public package link")
-        data = await self._archive(chosen["artifact"])
+        record_state = self.cache[source["id"]]
+        archive_access = record_state.get("archive_access", {})
+        access = _access_error(archive_access.get("code"), label="The Decky Store")
+        if access and self.now() < archive_access.get("retry_after", 0):
+            raise access
+        try:
+            data = await self._archive(chosen["artifact"])
+        except fy_net.NetError as error:
+            access = _transport_access(error, "The Decky Store")
+            if access is None:
+                raise
+            self.cache[source["id"]]["archive_access"] = {"code": access.code, "retry_after": self.now() + access.retry_after}
+            await self._save()
+            raise access
         from fy_updates import _finish_transaction
         assessment = await _finish_transaction(asyncio.to_thread(inspect_archive, data, chosen["hash"], getattr(self.host, "PLATFORM", "linux-aarch64")))
         result = {"id": record["id"], "format": "decky", "read_only": True, "version": chosen["name"], "hash": chosen["hash"],

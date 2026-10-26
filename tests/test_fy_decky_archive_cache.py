@@ -277,7 +277,7 @@ class ArchiveIdentityTests(unittest.IsolatedAsyncioTestCase):
             result = await self.catalog.assess(selected)
         self.assert_receipt(result, selected, "2.0.0")
         fetch.assert_awaited_once_with("_core", decky.CDN + self.hashes["2.0.0"] + ".zip",
-                                      headers={"User-Agent": decky.HEADERS["User-Agent"]},
+                                      headers={"User-Agent": "Framey/1.0.2 (+https://github.com/chaosfox26/framey)"},
                                       timeout=30, max_bytes=decky.ARCHIVE_MAX)
 
     async def test_successful_inspection_is_read_only_and_does_not_reuse_a_stale_verdict(self):

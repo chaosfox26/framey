@@ -25,9 +25,12 @@ CACHE_MAX = 1572864
 CACHE_SOURCES = 2
 TTL = 86400
 RETRY = 900
+ACCESS_RETRY_MAX = 604800
+ACCESS_CODES = ("access_denied", "rate_limited", "server_retry")
 DEFAULT_URL = "https://raw.githubusercontent.com/chaosfox26/framey/experimental/catalog/index.json"
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
 REPO = re.compile(r"https://github\.com/([A-Za-z0-9][A-Za-z0-9_.-]{0,99})/([A-Za-z0-9][A-Za-z0-9_.-]{0,99})\Z")
+PROJECT_URL = "https://github.com/chaosfox26/framey"
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 ENTRY_KEYS = frozenset(("id", "name", "version", "description", "category", "tags", "license", "homepage", "channel", "updated", "kind", "platform", "api", "framey", "source", "artifact"))
@@ -217,6 +220,46 @@ def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
 
 
+def _user_agent(host):
+    version = getattr(host, "VERSION", None)
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9A-Za-z.+-]{1,80}", version) or fy_pkg.parse_version(version) is None:
+        version = "unknown"
+    project = getattr(host, "LOADER", PROJECT_URL)
+    if not isinstance(project, str) or not REPO.fullmatch(project):
+        project = PROJECT_URL
+    return "Framey/%s (+%s)" % (version, project)
+
+
+def _access_error(code, retry=0, label="The catalog server"):
+    messages = {"access_denied": "%s denied Framey access. Try again later or report the problem to Framey." % label,
+                "rate_limited": "%s asked Framey to slow down. Wait for the retry delay before trying again." % label,
+                "server_retry": "%s is temporarily unavailable. Wait for the retry delay before trying again." % label}
+    if code not in messages:
+        return None
+    error = CatalogError(code, messages[code])
+    delay = retry if type(retry) in (int, float) and 0 <= retry <= ACCESS_RETRY_MAX else 0
+    error.retry_after = max(RETRY, delay)
+    return error
+
+
+def _response_access(reply, now, label="The catalog server"):
+    status = reply.get("status") if isinstance(reply, dict) else None
+    code = "access_denied" if status in (401, 403) else "rate_limited" if status == 429 else ""
+    if not code and status != 503:
+        return None
+    headers = reply.get("headers", {})
+    delay = fy_net.retry_after_seconds(headers.get("retry-after") if isinstance(headers, dict) else None, now)
+    return _access_error(code or "server_retry", delay, label) if code or delay > 0 else None
+
+
+def _transport_access(error, label="The catalog server"):
+    delay = getattr(error, "retry_after", 0)
+    access = _access_error(getattr(error, "code", None), delay, label)
+    if access is None and getattr(error, "status", None) == 503 and type(delay) in (int, float) and 0 < delay <= ACCESS_RETRY_MAX:
+        access = _access_error("server_retry", delay, label)
+    return access
+
+
 def _fingerprint(source, entry):
     return hashlib.sha256(_json({"source": source, "entry": entry}).encode()).hexdigest()
 
@@ -303,17 +346,31 @@ class Catalog:
             if not isinstance(key, str) or not HEX.fullmatch(key) or not isinstance(value, dict):
                 continue
             try:
-                encoded = json.dumps(value["catalog"], ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-                catalog = _normalize_catalog(_decode(encoded, CACHE_MAX))
-                downloaded = value["downloaded_at"]
+                access = _access_error(value.get("access_code"))
+                catalog = None
+                if "catalog" in value:
+                    try:
+                        encoded = json.dumps(value["catalog"], ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                        catalog = _normalize_catalog(_decode(encoded, CACHE_MAX))
+                    except (CatalogError, TypeError, ValueError):
+                        if access is None:
+                            raise
+                elif access is None:
+                    continue
+                downloaded = value.get("downloaded_at", 0)
                 if not isinstance(downloaded, (int, float)) or isinstance(downloaded, bool) or not 0 <= downloaded <= now + 60:
                     continue
                 checked = value.get("checked_at", downloaded)
                 checked = checked if type(checked) in (int, float) and 0 <= checked <= now + 60 else downloaded
                 retry = value.get("retry_after", 0)
-                retry = retry if type(retry) in (int, float) and 0 <= retry <= now + RETRY else 0
-                self.state["cache"][key] = {"catalog": catalog, "downloaded_at": downloaded, "checked_at": checked,
-                                            "error": "Previous catalog refresh failed" if value.get("error") else "", "retry_after": retry}
+                retry = retry if type(retry) in (int, float) and 0 <= retry <= now + (ACCESS_RETRY_MAX if access else RETRY) else 0
+                record = {"downloaded_at": downloaded, "checked_at": checked,
+                          "error": access.message if access else "Previous catalog refresh failed" if value.get("error") else "", "retry_after": retry}
+                if catalog is not None:
+                    record["catalog"] = catalog
+                if access:
+                    record["access_code"] = access.code
+                self.state["cache"][key] = record
             except (KeyError, CatalogError, TypeError, ValueError):
                 continue
 
@@ -367,7 +424,10 @@ class Catalog:
     async def _download(self, url):
         if self.fetcher is not None:
             return await _await(self.fetcher(url, CATALOG_MAX))
-        reply = await fy_net.fetch_plugin("_core", url, headers={"Accept": "application/json", "User-Agent": "Framey"}, timeout=15, max_bytes=CATALOG_MAX, allow_http=False)
+        reply = await fy_net.fetch_plugin("_core", url, headers={"Accept": "application/json", "User-Agent": _user_agent(self.host)}, timeout=15, max_bytes=CATALOG_MAX, allow_http=False)
+        access = _response_access(reply, self.now())
+        if access:
+            raise access
         if not isinstance(reply, dict) or reply.get("status") != 200 or reply.get("truncated"):
             _fail("download_failed", "The catalog server did not return a complete catalog")
         if isinstance(reply.get("text"), str):
@@ -385,7 +445,11 @@ class Catalog:
             record = {"catalog": catalog, "downloaded_at": now, "checked_at": now, "error": "", "retry_after": 0}
         except Exception as error:
             record = dict(old or {})
-            record.update(checked_at=now, error=getattr(error, "message", None) or "Catalog could not be refreshed", retry_after=now + RETRY)
+            access = _transport_access(error)
+            record.update(checked_at=now, error=access.message if access else error.message if isinstance(error, CatalogError) else "Catalog could not be refreshed", retry_after=now + (access.retry_after if access else RETRY))
+            record.pop("access_code", None)
+            if access:
+                record["access_code"] = access.code
         self.state["cache"][key] = record
         while len(self.state["cache"]) > CACHE_SOURCES:
             victim = min((k for k in self.state["cache"] if k != key), key=lambda k: self.state["cache"][k].get("checked_at", 0))
@@ -403,7 +467,8 @@ class Catalog:
         key = hashlib.sha256(_json(source).encode()).hexdigest()
         record, now = self.state["cache"].get(key), self.now()
         refresh = arg.get("refresh") is True or not record or now - record.get("downloaded_at", 0) >= TTL or bool(record.get("error"))
-        if refresh and (arg.get("refresh") is True or not record or now >= record.get("retry_after", 0)):
+        blocked = record and record.get("access_code") in ACCESS_CODES and now < record.get("retry_after", 0)
+        if refresh and not blocked and (arg.get("refresh") is True or not record or now >= record.get("retry_after", 0)):
             task = self.refreshes.get(key)
             if task is None:
                 task = self.refreshes[key] = asyncio.create_task(self._refresh(source, key))
@@ -429,7 +494,10 @@ class Catalog:
         warning = "Bundled catalog; remote source unavailable" if origin == "bundled" else "Saved catalog; refresh failed" if error else "Saved catalog is older than 24 hours" if stale else ""
         if record and record.get("save_warning"):
             warning = record["save_warning"]
-        return catalog, {"source": source, "origin": origin, "stale": stale, "checked_at": record.get("checked_at", 0) if record else 0, "downloaded_at": downloaded, "error": None, "fetch_error": error or None, "warning": warning}
+        if record and record.get("access_code") in ACCESS_CODES:
+            warning = error
+        return catalog, {"source": source, "origin": origin, "stale": stale, "checked_at": record.get("checked_at", 0) if record else 0, "downloaded_at": downloaded, "error": None, "fetch_error": error or None, "warning": warning,
+                         "retry_after": record.get("retry_after", 0) if record else 0}
 
     def _row(self, entry, source):
         row = dict(entry)
