@@ -57,9 +57,11 @@ loader or build step runs on the headset. The manifest explicitly supports
 platform entries are **metadata evidence only**, not a hardware test result.
 The automated tests exercise manifest policy, ZIP extraction, native JavaScript
 loading, calls/events and Python settings through the real worker on the test
-host. They do not establish ARM64 execution, controller input, Steam UI behavior
-or compatibility of an original Decky release. Device UI behavior still needs
-headset testing. This local example intentionally has no
+host. Fixture execution does not establish physical controller input, Steam UI usability
+or compatibility of an original Decky release. See the root README's
+[current verification](../../README.md#current-verification) for the latest ARM64
+fixture scope and remaining device limits; this example's VR interface still
+needs physical acceptance. This local example intentionally has no
 update-source URL; give your own port its own repository identity before publishing.
 
 Settings use `framey_api.settings` in the plugin's config directory. The Python
@@ -87,7 +89,12 @@ running in Python; this example's backend has no ongoing resources to release.
 
 ## Edit and verify
 
-Edit `source.js`, then run this from the repository root:
+Follow the [development guide](../../docs/development.md#development-tools) for
+pinned contributor tools, formatting and source standards, and the
+[testing guide](../../docs/testing.md) for the separate jsdom fixture setup.
+These development dependencies are not required on the headset. Edit `source.js`
+(or the shared `compat/decky-source.js` adapter), format those authored inputs,
+then run this from the repository root:
 
 ```sh
 python3 examples/decky-style/build.py
@@ -96,7 +103,8 @@ node tests/js/decky-example.test.js
 ```
 
 `build.py` prepends the **exact** repository adapter to `source.js` and writes
-`main.js`. Do not maintain a second helper implementation inside the example.
+`main.js`. Do not edit or format that generated output independently, or maintain
+a second helper implementation inside the example.
 The checked-in generated file lets normal installations run without a build tool.
 The JavaScript test uses the repository's existing jsdom API harness; use its
 `FRAMEY_JSDOM` or `NODE_PATH` setup if jsdom is not on the default module path.

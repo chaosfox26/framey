@@ -9,3 +9,10 @@ The backend rejects malformed arguments and keeps settings in the loader's per-p
 The 30-second call intentionally exceeds the manifest's 15-second timeout. Try it to see an error reply; use `await` for waits so the worker can cancel them. `api.call` resolves with the result or `{error}`. Backend arguments must still be validated even when the page normally sends a valid value.
 
 Follow the [developer quickstart](../../docs/developer-quickstart.md) for local checks and packaging, and the [plugin reference](../../docs/plugins.md) for lifecycle and compatibility details. No Node.js build or dependency installation is required to run this example.
+
+The platform declarations describe requirements, not acceptance on every device.
+Check the root README's [current verification](../../README.md#current-verification)
+for the tested loader snapshot and remaining controller/VR limits; verify your
+own edited plugin on its target. Loader contributors can use the
+[development guide](../../docs/development.md) for source standards and pinned
+checks, and the [testing guide](../../docs/testing.md) for optional browser fixtures.

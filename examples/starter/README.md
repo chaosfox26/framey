@@ -30,3 +30,12 @@ A small Framey plugin that demonstrates the main API generation 1 workflows: reg
 - Whether the Steam controller moves focus to these controls is not verified on a headset; keyboard arrows, Enter and Space are what is tested.
 
 See the [developer quickstart](../../docs/developer-quickstart.md) for test commands, archive packaging, and Decky source-port guidance. The example runs as plain JavaScript and Python; Node.js is optional browser-test tooling. `api.visible` follows panel/document visibility and does not identify the selected plugin tab.
+
+Both declared platforms are requirements metadata; the example's controls still
+need physical controller and VR acceptance for your port. The root README's
+[current verification](../../README.md#current-verification) identifies the tested
+loader snapshot and remaining device limits. Use the
+[testing guide](../../docs/testing.md) for browser-fixture dependencies and the
+[development guide](../../docs/development.md) for source standards and pinned
+quality checks. These tools run on a contributor machine or in CI, not as part of
+the headset runtime.

@@ -9,6 +9,13 @@ URLs are not download locations. The `stable` channel identifies the example
 snapshot, not production readiness or headset verification. `updated` records
 the catalog entry date, not an upstream release date.
 
+The catalog in this experimental branch still points at that earlier example
+snapshot; it does not automatically track edits to `examples/` or a branch head.
+Loader source version 1.0.2 and catalog channel names do not identify a released
+installer or certify those examples for physical VR use. See the root README's
+[current verification](../README.md#current-verification) for dated checks and
+remaining device limits.
+
 Each plugin source names a repository, immutable commit, and optional package
 subdirectory. Metadata contains no guessed release assets or download URLs.
 Catalog metadata is not package signing: a pinned commit identifies source, but
@@ -52,3 +59,13 @@ ARM64 support is unknown before inspection. An ARM64 binary header is evidence
 only; it does not establish operating-system, dependency, hardware, or Framey
 compatibility. Detected Intel/AMD code, administrator flags, additional binary
 downloads, and Steam Deck hardware paths can require further porting work.
+
+## Publishing a native example or port
+
+Start with the [developer quickstart](../docs/developer-quickstart.md) and
+[offline validation and packaging tools](../docs/plugin-tools.md). Give your module
+its own identity and real update repository, preserve its license and credits,
+and verify the exact archive you intend to publish. Editing this discovery file
+alone does not create a release or make an original Decky package installable.
+The [development guide](../docs/development.md) describes contributor tools and
+source standards; those tools are not installed with the headset runtime.
