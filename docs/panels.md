@@ -58,17 +58,39 @@ surfaces; they do not become aliases for the separate panel.
 
 ## Verification and resource limits
 
-The owned popup's hidden creation, hide/close lifecycle and native positioning
-have been checked on Steam Frame. Automated checks cover the browser controller
-and its failure handling. Full mode-switching and live interface validation are
-still pending; no 2D or VR game was launched for these checks. Controller aiming,
-readability, comfort, game input and recovery during actual gameplay need their
-own on-device verification.
+Commit `4641a14` was deployed on an ARM64 Steam Frame running SteamOS VR 0.5.6.
+Trusted browser-debugger clicks on the actual Settings controls verified **Inside
+Steam → Beside Steam dashboard → Floating during games → Inside Steam → Beside
+Steam dashboard**. There was one active frontend and no service restart.
+Dashboard/floating transitions reused the popup; returning inside Steam restored
+Settings in the main interface and removed the popup target and its owned
+reference. Fan Control telemetry rendered in the separate panel without changing
+fan profiles, presets or its privileged service. The bottom-bar button hid the
+Framey overlay while Steam's dashboard stayed visible, then reopened the same
+separate target and Fan page; Settings remained usable.
+
+Native checks confirmed that Framey's overlay was visible with Steam's dashboard
+open and that extra gameplay pointer interaction was off in that state. Hidden
+creation, hide/close cleanup and scaled native positioning also passed. **The
+Steam-menu-closed floating state and its gameplay pointer activation remain
+unverified.** No 2D or VR game was launched. Physical controller aiming,
+readability, comfort, game input and recovery during gameplay still need their
+own validation. See the
+[automated-check receipts](using.md#verification-status) for their separate scope.
 
 The targets remain less than **400 MB total added memory** for Framey, its
 workers and its interface in Steam, with minimal CPU use while idle. Reusing
-Steam's browser host does not prove those targets: its additional browser/GPU
-cost and active-panel behavior still need measurement. These are not guarantees
-for arbitrary plugins. See [verification status](using.md#verification-status)
-and the [recorded performance evidence](decky-comparison.md#memory-and-cpu-target)
-for the scope of earlier measurements.
+Steam's browser host does not prove those targets. In a 21.3-second sample with
+floating mode selected and Steam's dashboard visible, the service cgroup used
+about **32.58 MiB**, with average CPU about **0.486% of one core**. A separate
+38.08-second closed-panel observation, with the Fan worker already loaded,
+measured **47.18 MiB** and **0.176% of one core**. A warm comparison of whole-Steam
+PSS between dashboard and embedded modes differed by about
+**9.6 MiB**; that includes other Steam activity and cannot be attributed exactly
+to Framey or its GPU allocations.
+
+These short observations do not establish sustained idle cost, peak memory,
+gameplay performance or total added memory. The targets are not guarantees for
+arbitrary plugins. See [verification status](using.md#verification-status) and the
+[recorded performance evidence](decky-comparison.md#memory-and-cpu-target) for the
+scope of earlier measurements.
