@@ -1046,6 +1046,153 @@ t("ArrowUp and ArrowLeft move from focused pending Inspect to Version without sc
   assert.ok(!c.calls.some(call => /cancel/.test(call.method)));
 });
 
+const deferredPreview = () => {
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+};
+const reportShape = context => {
+  assert.deepEqual(Object.keys(context).sort(), ["code", "error", "plugin"]);
+  assert.deepEqual(Object.keys(context.plugin).sort(), ["name", "source", "version"]);
+  assert.equal(typeof context.error, "string");
+  assert.equal(typeof context.code, "string");
+};
+
+t("report preview starts only on a click and ignores duplicate clicks until manual preview close", async () => {
+  const c = deckyBoot();
+  const preview = deferredPreview();
+  const reports = [];
+  c.K.report = context => { reports.push(JSON.parse(JSON.stringify(context))); return preview.promise; };
+  await c.open();
+  await c.click("Details: Decky alpha utility");
+  await selectDeckyVersion(c, "1.0.0");
+  assert.equal(reports.length, 0);
+  const transportBefore = c.calls.length;
+  const report = c.find("Report to Framey");
+  report.click();
+  report.click();
+  await settle();
+  report.click();
+  await settle();
+  assert.equal(reports.length, 1);
+  reportShape(reports[0]);
+  assert.deepEqual(reports[0].plugin, { name: "Decky alpha utility", version: "1.0.0", source: "decky_stable" });
+  assert.equal(c.calls.length, transportBefore);
+  assert.equal(c.find("Report to Framey").getAttribute("aria-disabled"), "true");
+  assert.ok(selectedDeckyVersion(c).includes("1.0.0"));
+  preview.resolve({ closed: true });
+  await settle();
+  assert.equal(reports.length, 1);
+  assert.equal(c.calls.length, transportBefore);
+  assert.equal(c.find("Report to Framey").getAttribute("aria-disabled"), "false");
+  assert.ok(selectedDeckyVersion(c).includes("1.0.0"));
+  assert.ok(!/issue (?:created|submitted)|report (?:sent|submitted)/i.test(c.text()));
+});
+
+t("rejected or throwing report previews are recoverable only through another explicit click", async () => {
+  const c = deckyBoot();
+  let attempts = 0;
+  c.K.report = () => {
+    attempts++;
+    if (attempts === 1) return Promise.reject(new Error("Example preview rejection"));
+    if (attempts === 2) throw new Error("Example preview exception");
+    return Promise.resolve({ closed: true });
+  };
+  await c.open();
+  await c.click("Details: Decky alpha utility");
+  await selectDeckyVersion(c, "1.0.0");
+  await c.click("Report to Framey");
+  assert.equal(attempts, 1);
+  assert.match(c.text(), /report.{0,80}(?:unavailable|failed|could not)|(?:unavailable|failed).{0,80}report/i);
+  assert.equal(c.find("Report to Framey").getAttribute("aria-disabled"), "false");
+  assert.ok(selectedDeckyVersion(c).includes("1.0.0"));
+  assert.ok(c.has("Inspect compatibility"));
+  await settle();
+  assert.equal(attempts, 1);
+  await c.click("Report to Framey");
+  assert.equal(attempts, 2);
+  assert.equal(c.find("Report to Framey").getAttribute("aria-disabled"), "false");
+  assert.ok(selectedDeckyVersion(c).includes("1.0.0"));
+  await c.click("Report to Framey");
+  assert.equal(attempts, 3);
+  assert.ok(selectedDeckyVersion(c).includes("1.0.0"));
+  assert.equal(c.sent("catalog_assess").length, 0);
+  assert.equal(c.sent("catalog_install").length, 0);
+  assert.ok(!/issue (?:created|submitted)|report (?:sent|submitted)/i.test(c.text()));
+});
+
+t("a report captures the current Decky entry, version, source and error rather than a late prior error", async () => {
+  const c = deckyBoot();
+  const reports = [];
+  c.K.report = context => { reports.push(JSON.parse(JSON.stringify(context))); return Promise.resolve({ closed: true }); };
+  await c.open();
+  await startInspection(c);
+  const obsolete = c.last("catalog_assess");
+  await c.click("Back");
+  await c.click("Filters");
+  await select(c, "Source", "decky_testing");
+  await c.click("Details: Decky beta utility");
+  await selectDeckyVersion(c, "1.0.0");
+  await c.click("Inspect compatibility");
+  const current = c.last("catalog_assess");
+  await c.answer(obsolete, { error: "Obsolete alpha archive error", code: "obsolete_archive" });
+  await c.answer(current, { error: "Current beta archive is unavailable", code: "current_archive" });
+  assert.equal(reports.length, 0);
+  await c.click("Report to Framey");
+  assert.equal(reports.length, 1);
+  reportShape(reports[0]);
+  assert.deepEqual(reports[0], {
+    plugin: { name: "Decky beta utility", version: "1.0.0", source: "decky_testing" },
+    error: "Current beta archive is unavailable", code: "current_archive",
+  });
+  assert.ok(!JSON.stringify(reports[0]).includes("Obsolete"));
+  assert.ok(selectedDeckyVersion(c).includes("1.0.0"));
+});
+
+t("a native install error report uses the Framey source enum without adding package metadata", async () => {
+  const c = boot({ catalog_install: { error: "Example native package error", code: "install_failed" } });
+  const reports = [];
+  c.K.report = context => { reports.push(JSON.parse(JSON.stringify(context))); return Promise.resolve({ closed: true }); };
+  await c.open();
+  await startInstall(c);
+  assert.equal(reports.length, 0);
+  await c.click("Report to Framey");
+  assert.equal(reports.length, 1);
+  reportShape(reports[0]);
+  assert.deepEqual(reports[0], {
+    plugin: { name: "Alpha utility", version: "1.0.0", source: "framey" },
+    error: "Example native package error", code: "install_failed",
+  });
+  assert.ok(c.has("Install Alpha utility"));
+});
+
+t("late report-preview completion or failure cannot resurrect a navigated or disposed view", async () => {
+  for (const dispose of [false, true]) for (const rejected of [false, true]) {
+    const c = deckyBoot();
+    const preview = deferredPreview();
+    let attempts = 0;
+    c.K.report = () => { attempts++; return preview.promise; };
+    await c.open();
+    await c.click("Details: Decky alpha utility");
+    await c.click("Report to Framey");
+    assert.equal(attempts, 1);
+    const oldBox = c.box();
+    if (dispose) { c.K.dispose(); c.K.dispose(); await settle(); }
+    else await c.openNative();
+    const current = c.text();
+    const oldText = oldBox.textContent;
+    if (rejected) preview.reject(new Error("Late obsolete preview failure"));
+    else preview.resolve({ closed: true });
+    await settle();
+    assert.equal(c.text(), current);
+    assert.equal(oldBox.textContent, oldText);
+    assert.ok(!c.body().includes("Late obsolete preview failure"));
+    assert.equal(attempts, 1);
+    assert.equal(c.sent("catalog_install").length, 0);
+    if (!dispose) assert.ok(c.has("Details: Alpha utility"));
+  }
+});
+
 (async () => {
   let pass = 0, fail = 0;
   for (const [name, run] of tests) {

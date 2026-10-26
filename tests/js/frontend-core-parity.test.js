@@ -224,6 +224,99 @@ test("retained controls from a disposed module cannot trigger actions or navigat
   } finally { h.K.dispose(); h.window.close(); }
 });
 
+test("private diagnostics accept fixed codes only, saturate counts and expose detached snapshots", () => {
+  const h = setup();
+  try {
+    const proxy = h.window.__bindFramey("alpha", "tok-alpha-0000", { name: "Alpha" });
+    const api = proxy.register({ render() {} });
+    assert.strictEqual(typeof h.K.diagnostic, "function");
+    assert.strictEqual(typeof h.K.diagnostics, "function");
+    for (const value of [h.FY, proxy, api]) {
+      assert.strictEqual(value.diagnostic, undefined);
+      assert.strictEqual(value.diagnostics, undefined);
+    }
+    const marker = "PRIVATE_CALLBACK_DETAIL_MUST_NOT_BE_COLLECTED";
+    let coerced = 0, consoleCalls = 0;
+    const opaque = { toString() { coerced++; throw new Error(marker); } };
+    h.window.console.error = h.window.console.warn = () => { consoleCalls++; };
+    const before = { calls: h.calls.length, timers: h.clock.pending(), html: h.document.body.innerHTML };
+    for (const code of [marker, "unknown.callback", "__proto__", null, undefined, opaque]) h.K.diagnostic(code);
+    assert.deepStrictEqual(plain(h.K.diagnostics()), []);
+    for (let i = 0; i < 10020; i++) h.K.diagnostic("core.event_failed", { message: marker });
+    const snapshot = h.K.diagnostics();
+    assert.ok(snapshot.length <= 32);
+    assert.deepStrictEqual(plain(snapshot), [{ code: "core.event_failed", count: 9999 }]);
+    Reflect.set(snapshot[0], "count", -1);
+    Reflect.set(snapshot, snapshot.length, { code: marker, count: 1 });
+    assert.deepStrictEqual(plain(h.K.diagnostics()), [{ code: "core.event_failed", count: 9999 }]);
+    assert.strictEqual(coerced, 0);
+    assert.strictEqual(consoleCalls, 0);
+    assert.strictEqual(h.calls.length, before.calls);
+    assert.strictEqual(h.clock.pending(), before.timers);
+    assert.strictEqual(h.document.body.innerHTML, before.html);
+    assert.ok(!JSON.stringify(h.K.diagnostics()).includes(marker));
+    const old = h.K;
+    old.dispose();
+    assert.deepStrictEqual(plain(old.diagnostics()), [{ code: "core.event_failed", count: 9999 }]);
+    h.window.eval('document.querySelectorAll("[data-fy]").forEach(node => node.remove());delete window.Framey');
+    h.load("inject.js");
+    assert.deepStrictEqual(plain(h.window.__S.K.diagnostics()), []);
+    h.window.__S.K.dispose();
+  } finally { h.K.dispose(); h.window.close(); }
+});
+
+test("repeated extension initialization preserves callback order and isolates core event failures privately", () => {
+  const h = setup();
+  try {
+    const extensions = h.FY.ext.length;
+    for (const file of ["fy-api.js", "fy-ui.js", "fy-pages.js"]) h.load(file);
+    assert.strictEqual(h.FY.ext.length, extensions);
+    const order = [];
+    const marker = "PRIVATE_EVENT_DETAIL_MUST_NOT_BE_COLLECTED";
+    const firstOff = h.K.listen("progress", () => { order.push("first"); throw new Error(marker); });
+    const lastOff = h.K.listen("progress", () => order.push("last"));
+    const before = { calls: h.calls.length, timers: h.clock.pending(), html: h.document.body.innerHTML };
+    h.event("_core", "progress", { privateDetail: marker });
+    h.event("_core", "progress", { privateDetail: marker });
+    assert.deepStrictEqual(order, ["first", "last", "first", "last"]);
+    assert.strictEqual(h.K.diagnostics().find(row => row.code === "core.event_failed").count, 2);
+    firstOff();
+    lastOff();
+    h.event("_core", "progress", {});
+    assert.deepStrictEqual(order, ["first", "last", "first", "last"]);
+    assert.strictEqual(h.calls.length, before.calls);
+    assert.strictEqual(h.clock.pending(), before.timers);
+    assert.strictEqual(h.document.body.innerHTML, before.html);
+    assert.ok(!JSON.stringify(h.K.diagnostics()).includes(marker));
+  } finally { h.K.dispose(); h.window.close(); }
+});
+
+test("panel callback isolation records a fixed code without suppressing later callbacks or leaking the error", async () => {
+  const h = setup();
+  try {
+    const marker = "PRIVATE_PANEL_DETAIL_MUST_NOT_BE_COLLECTED";
+    const order = [];
+    const badOff = h.FY.onPanel(open => { order.push("first:" + open); throw new Error(marker); });
+    const goodOff = h.FY.onPanel(open => order.push("last:" + open));
+    h.FY.open("#modules");
+    await settle();
+    h.FY.toggle();
+    assert.deepStrictEqual(order, ["first:true", "last:true", "first:false", "last:false"]);
+    assert.strictEqual(h.K.diagnostics().find(row => row.code === "core.panel_failed").count, 2);
+    assert.ok(!h.document.body.textContent.includes(marker));
+    assert.ok(!JSON.stringify(h.calls).includes(marker));
+    assert.ok(!JSON.stringify(h.K.diagnostics()).includes(marker));
+    assert.strictEqual(h.sent("log").length, 0);
+    assert.strictEqual(h.document.querySelectorAll('[role="alert"],[role="status"]').length, 0);
+    badOff();
+    goodOff();
+    h.FY.open("#modules");
+    await settle();
+    assert.strictEqual(order.length, 4);
+    assert.strictEqual(h.K.diagnostics().find(row => row.code === "core.panel_failed").count, 2);
+  } finally { h.K.dispose(); h.window.close(); }
+});
+
 (async () => {
   let passed = 0;
   for (const [name, run] of cases) {

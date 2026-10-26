@@ -96,6 +96,24 @@ const bootDecky = (item, overrides = {}) => boot([item], item, {
   ...overrides,
 }, "decky_store");
 
+const reportSpy = c => {
+  const reports = [];
+  c.env.window.__S.K.report = context => {
+    reports.push(JSON.parse(JSON.stringify(context)));
+    return new Promise(() => {});
+  };
+  return reports;
+};
+const assertReportContext = context => {
+  assert.deepEqual(Object.keys(context).sort(), ["code", "error", "plugin"]);
+  assert.deepEqual(Object.keys(context.plugin).sort(), ["name", "source", "version"]);
+  for (const [value, limit] of [[context.plugin.name, 200], [context.plugin.version, 200], [context.error, 600], [context.code, 80]]) {
+    assert.equal(typeof value, "string");
+    assert.ok(value.length <= limit, "Report context must be bounded before it reaches the shared preview");
+  }
+  assert.ok(["framey", "decky_stable", "decky_testing"].includes(context.plugin.source));
+};
+
 const tests = [];
 const t = (name, fn) => tests.push([name, fn]);
 
@@ -383,6 +401,94 @@ t("archive inspection report exposes its heading hierarchy for navigation", asyn
     assert.ok(heading(title), "Missing report section heading: " + title);
     assert.equal(heading(title).getAttribute("aria-level"), "4");
   }
+  assertPassive(c);
+});
+
+t("native report context contains only bounded selected metadata", async () => {
+  const name = '<b data-catalog-marker="report-name">Sample module</b>' + "N".repeat(2000);
+  const version = '<i data-catalog-marker="report-version">1.0.0</i>' + "V".repeat(2000);
+  const omitted = "synthetic-unrelated-private-marker";
+  const item = entry({ name, version, logs: omitted, token: omitted, diagnostics: { detail: omitted }, private_query: omitted, extra_entry: { detail: omitted } });
+  const c = boot([item], item);
+  const reports = reportSpy(c);
+  await c.open();
+  await c.details(name.slice(0, 200));
+  assert.equal(reports.length, 0);
+  assertPassive(c);
+  await c.click("Report to Framey");
+  assert.equal(reports.length, 1);
+  assertReportContext(reports[0]);
+  assert.equal(reports[0].plugin.name, name.slice(0, 200));
+  assert.equal(reports[0].plugin.version, version.slice(0, 200));
+  assert.equal(reports[0].plugin.source, "framey");
+  assert.equal(reports[0].error, "");
+  assert.ok(!JSON.stringify(reports[0]).includes(omitted));
+  assert.ok(c.text().includes(name.slice(0, 200)), "Opening the shared preview must preserve the selected details underneath it");
+  assert.equal(c.box.querySelectorAll("[data-catalog-marker],b,i").length, 0);
+  assert.equal(c.sent("catalog_install").length, 0);
+  assertPassive(c);
+});
+
+t("Decky report uses the selected version and source with a bounded literal inspection error", async () => {
+  const selectedName = '<i data-catalog-marker="selected-version">2.0.0</i>' + "V".repeat(1000);
+  const error = '<img src="https://example.invalid/error.png"><b data-catalog-marker="inspection-error">Inspection unavailable</b>' + "E".repeat(2000);
+  const omitted = "synthetic-unrelated-private-marker";
+  const selectedVersion = { ...deckyEntry().versions[0], name: selectedName, hash: "f".repeat(64), identity: "a".repeat(64) };
+  const testing = { id: "decky_testing", label: "Decky testing", url: "https://testing.deckbrew.xyz/plugins" };
+  const item = deckyEntry({ versions: [deckyEntry().versions[0], selectedVersion], version_count: 2, source: { repository: "", url: testing.url }, logs: omitted, token: omitted, diagnostics: { detail: omitted } });
+  const c = bootDecky(item, {
+    catalog_list: { ...list([item]), source: testing },
+    catalog_details: { entry: item, source: testing, origin: "downloaded", stale: false, error: "", warning: "" },
+    catalog_assess: { error, code: "C".repeat(500), logs: omitted, diagnostics: { detail: omitted } },
+  });
+  c.env.window.sessionStorage.fyDeckyCatalogSource = "decky_testing";
+  const reports = reportSpy(c);
+  await c.open();
+  await c.details(item.name);
+  const choice = c.box.querySelector('select[aria-label="Version"]');
+  assert.ok(choice);
+  choice.value = selectedVersion.identity;
+  choice.dispatchEvent(new c.env.window.Event("change", { bubbles: true }));
+  await settle();
+  assert.equal(reports.length, 0);
+  assert.equal(c.sent("catalog_assess").length, 0);
+  await c.click("Inspect compatibility");
+  assert.equal(reports.length, 0);
+  assert.ok(c.text().includes(error.slice(0, 600)));
+  assertPassive(c);
+  await c.click("Report to Framey");
+  assert.equal(reports.length, 1);
+  assertReportContext(reports[0]);
+  assert.equal(reports[0].plugin.name, item.name);
+  assert.equal(reports[0].plugin.version, selectedName.slice(0, 200));
+  assert.equal(reports[0].plugin.source, "decky_testing");
+  assert.equal(reports[0].error, error.slice(0, 600));
+  assert.ok(!JSON.stringify(reports[0]).includes(omitted));
+  assert.equal(c.box.querySelectorAll("[data-catalog-marker],b,i").length, 0);
+  assert.equal(c.sent("catalog_assess").length, 1);
+  assert.equal(c.sent("catalog_install").length, 0);
+  assertPassive(c);
+});
+
+t("native details errors stay literal and report only concise context", async () => {
+  const error = '<img src="https://example.invalid/error.png"><b data-catalog-marker="details-error">Details unavailable</b>' + "E".repeat(2000);
+  const omitted = "synthetic-unrelated-private-marker";
+  const item = entry({ logs: omitted, diagnostics: { detail: omitted }, token: omitted });
+  const c = boot([item], item, { catalog_details: { error, code: "C".repeat(500), logs: omitted, token: omitted, diagnostics: { detail: omitted } } });
+  const reports = reportSpy(c);
+  await c.open();
+  await c.details(item.name);
+  assert.ok(c.text().includes(error.slice(0, 600)));
+  assert.equal(reports.length, 0);
+  assertPassive(c);
+  await c.click("Report to Framey");
+  assert.equal(reports.length, 1);
+  assertReportContext(reports[0]);
+  assert.deepEqual(reports[0].plugin, { name: item.name, version: item.version, source: "framey" });
+  assert.equal(reports[0].error, error.slice(0, 600));
+  assert.ok(!JSON.stringify(reports[0]).includes(omitted));
+  assert.equal(c.box.querySelectorAll("[data-catalog-marker],b").length, 0);
+  assert.equal(c.sent("catalog_install").length, 0);
   assertPassive(c);
 });
 

@@ -10,6 +10,14 @@
     closed: ["Debug port is closed", GREY],
     unknown: ["Debug port state could not be checked", GREY],
   };
+  const REPORT_CONTEXTS = {
+    developer_diagnostics: "Report a problem with Framey's Developer page.",
+    developer_diagnostics_failed: "The Developer page could not collect diagnostics.",
+    developer_debug_targets_failed: "The Developer page could not discover Steam debug targets.",
+    developer_status_failed: "The Developer page could not refresh loader status.",
+    developer_module_list_failed: "The Developer page could not list installed modules.",
+    developer_hot_reload_failed: "A hot-reload setting change could not be completed.",
+  };
   const cut = (v, n) => String(v == null ? "" : v).slice(0, n);
   const failure = e => ({ error: cut(e && e.message || e || "no answer", 200) });
   const ask = (method, arg) => {
@@ -83,8 +91,14 @@
         ask("dev_set", { id: m.id, hot: !h }).then(r => {
           view.pending.delete(m.id);
           if (!view.alive()) return;
-          if (r.error) FY.toast("Failed: " + cut(r.error, 120), 4000);
-          else if (r.warning) FY.toast(cut(r.warning, 200), 4000);
+          if (r.error) {
+            view.failure("developer_hot_reload_failed");
+            FY.toast("Failed: " + cut(r.error, 120), 4000);
+          }
+          else {
+            view.clearFailure("developer_hot_reload_failed");
+            if (r.warning) FY.toast(cut(r.warning, 200), 4000);
+          }
           again();
         });
       }, "width:90px;" + (h ? "background:" + BLUE : ""));
@@ -128,7 +142,7 @@
   let live = null;
 
   const render = box => {
-    const view = { pending: new Set(), refresh: 0, feedback: 0 };
+    const view = { pending: new Set(), refresh: 0, feedback: 0, reportCode: "developer_diagnostics" };
     live = view;
     box.replaceChildren(mk("font-size:28px;font-weight:700", "Developer"), note("For plugin authors. Nothing here runs by itself; it updates when you press a button."));
     const expo = mk("margin-top:12px"), hot = mk("margin-top:16px"), dbg = mk("margin-top:16px"), dg = mk("margin-top:16px");
@@ -144,6 +158,12 @@
         feedback.style.color = failed ? RED : GREEN;
       };
     };
+    view.failure = code => {
+      if (view.alive() && Object.prototype.hasOwnProperty.call(REPORT_CONTEXTS, code)) view.reportCode = code;
+    };
+    view.clearFailure = code => {
+      if (view.alive() && view.reportCode === code) view.reportCode = "developer_diagnostics";
+    };
     const targets = mk("");
     const find = btn("Find debug targets", () => {
       if (!view.alive() || find.disabled) return;
@@ -154,6 +174,8 @@
         if (!view.alive()) return;
         find.disabled = false;
         find.removeAttribute("aria-busy");
+        if (r.error) view.failure("developer_debug_targets_failed");
+        else view.clearFailure("developer_debug_targets_failed");
         paintTargets(targets, r, view);
       });
     });
@@ -175,16 +197,50 @@
         run.disabled = false;
         run.removeAttribute("aria-busy");
         out.value = r.text;
+        if (r.error) view.failure("developer_diagnostics_failed");
+        else view.clearFailure("developer_diagnostics_failed");
         report(r.error ? "Diagnostics failed: " + cut(r.error, 200) : "Diagnostics ready.", !!r.error);
       });
     });
-    dg.append(head("Diagnostics"), note("Versions, status, counters and recent log lines. Recognized sensitive values are hidden; review before sharing."), run, btn("Copy", () => { if (view.alive()) copy(out.value, view.reporter()); }, "margin-left:10px"), out);
+    const reportButton = btn("Report to Framey", () => {
+      if (!view.alive() || reportButton.disabled) return;
+      const showReportFeedback = view.reporter();
+      if (typeof K.report !== "function") {
+        showReportFeedback("Reporting is unavailable. Refresh Framey and try again.", true);
+        return;
+      }
+      reportButton.disabled = true;
+      reportButton.setAttribute("aria-busy", "true");
+      const reportContext = { code: view.reportCode, error: REPORT_CONTEXTS[view.reportCode] };
+      const finished = result => {
+        if (!view.alive()) return;
+        reportButton.disabled = false;
+        reportButton.removeAttribute("aria-busy");
+        if (!result || result.error || result.closed !== true) showReportFeedback("The report review could not be confirmed. Refresh Framey and try again. Framey did not submit an issue.", true);
+        else showReportFeedback("Report review closed. Framey did not submit an issue.", false);
+      };
+      try {
+        showReportFeedback("Review the report before sharing it. Framey does not submit issues.", false);
+        Promise.resolve(K.report(reportContext)).then(finished, () => finished(null));
+      } catch (error) {
+        finished(null);
+      }
+    });
+    const diagnosticActions = mk("display:flex;flex-wrap:wrap;gap:10px;align-items:center");
+    diagnosticActions.append(run, btn("Copy", () => { if (view.alive()) copy(out.value, view.reporter()); }), reportButton);
+    dg.append(head("Diagnostics"), note("Versions, status, counters and recent log lines. Recognized sensitive values are hidden; review before sharing."), diagnosticActions, note("Report to Framey opens an editable review. It does not submit an issue automatically."), out);
     const reload = btn("Refresh status", () => { if (view.alive()) refresh(); });
     box.append(feedback, reload, expo, hot, dbg, dg);
     const refresh = () => {
       const request = ++view.refresh;
       return Promise.all([ask("dev_status"), ask("list")]).then(([st, list]) => {
         if (!view.alive() || request !== view.refresh) return;
+        if (st.error) view.failure("developer_status_failed");
+        else if (list && list.error) view.failure("developer_module_list_failed");
+        else {
+          view.clearFailure("developer_status_failed");
+          view.clearFailure("developer_module_list_failed");
+        }
         const at = [...hot.querySelectorAll("button")].indexOf(document.activeElement);
         paintExposure(expo, st);
         paintHot(hot, st, list, refresh, view);

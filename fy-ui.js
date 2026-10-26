@@ -2,7 +2,6 @@
   const FY = __FY;
   const K = FY._k && FY._k(typeof __fyt === "string" ? __fyt : "");
   if (FY.uiReady) return;
-  FY.uiReady = true;
   const style = document.createElement("style");
   style.id = "fy-ui-style";
   style.dataset.fy = "core";
@@ -30,7 +29,26 @@
     ".fy-em{padding:12px;font:18px sans-serif;color:#8a8aa0}",
     ".fy-g{display:flex;gap:10px;align-items:stretch}",
   ].join("");
-  document.head.append(style);
+
+  const diagnostic = code => {
+    if (K && typeof K.diagnostic === "function") K.diagnostic(code);
+  };
+  const namedError = (error, name) => {
+    try { return !!error && error.name === name; } catch (ignored) { return false; }
+  };
+  const callbackFailed = error => {
+    if (namedError(error, "AbortError")) return false;
+    diagnostic("ui.callback_failed");
+    return true;
+  };
+  const invoke = (options, name, ...args) => {
+    try {
+      const callback = options[name];
+      if (typeof callback !== "function") return;
+      const result = callback.apply(options, args);
+      if (result && typeof result.then === "function") Promise.resolve(result).then(undefined, callbackFailed);
+    } catch (error) { callbackFailed(error); }
+  };
 
   const txt = x => (x == null ? "" : String(x).slice(0, 300));
   const num = (x, d) => (x == null || x === "" || !isFinite(x) ? d : +x);
@@ -87,7 +105,7 @@
       const done = () => { busy = false; draw(); };
       const failed = err => {
         done();
-        if ((!err || err.name !== "AbortError") && active(e)) FY.fail(id, err);
+        if (callbackFailed(err) && active(e)) FY.toast("Action failed. Try again or report the problem to Framey.", 4000);
       };
       busy = true;
       draw();
@@ -116,7 +134,7 @@
     press(e, () => {
       v = !v;
       draw();
-      if (o.onchange) o.onchange(v);
+      invoke(o, "onchange", v);
     });
     return e;
   };
@@ -144,7 +162,8 @@
     let v = snap(num(o.value, min));
     const draw = () => {
       const p = max > min ? ((v - min) / (max - min)) * 100 : 0;
-      const t = txt(fmt(v));
+      let t;
+      try { t = txt(fmt(v)); } catch (error) { callbackFailed(error); t = String(v); }
       fill.style.width = p + "%";
       thumb.style.left = p + "%";
       val.textContent = t;
@@ -156,19 +175,23 @@
       if (x === v) return false;
       v = x;
       draw();
-      if (o.oninput) o.oninput(v);
+      invoke(o, "oninput", v);
       return true;
     };
     Object.defineProperty(e, "value", { get: () => v, set: x => { discard(); v = snap(num(x, min)); draw(); } });
     draw();
-    let dirty = false, from = null, pointer = null;
-    const release = p => {
-      if (p != null && rw.releasePointerCapture) {
-        try { rw.releasePointerCapture(p); } catch (err) {}
+    let dirty = false, from = null, pointer = null, revision = 0;
+    const release = pointerId => {
+      if (pointerId == null || !rw.isConnected || typeof rw.releasePointerCapture !== "function") return;
+      try {
+        if (typeof rw.hasPointerCapture !== "function" || rw.hasPointerCapture(pointerId)) rw.releasePointerCapture(pointerId);
+      } catch (error) {
+        if (!namedError(error, "NotFoundError")) diagnostic("ui.pointer_release_failed");
       }
     };
     function discard() {
       const p = pointer;
+      revision++;
       dirty = false;
       from = pointer = null;
       release(p);
@@ -177,7 +200,7 @@
     const commit = () => {
       if (!dirty) return;
       dirty = false;
-      if (active(e) && !off(e) && o.onchange) o.onchange(v);
+      if (active(e) && !off(e)) invoke(o, "onchange", v);
     };
     const keys = new Set(["ArrowRight", "ArrowLeft", "Home", "End", "PageUp", "PageDown"]);
     e.addEventListener("keydown", ev => {
@@ -186,7 +209,8 @@
       if (!active(e) || off(e) || !__trusted(ev)) return;
       const value = ev.key === "Home" ? min : ev.key === "End" ? max
         : v + (ev.key === "ArrowRight" ? 1 : ev.key === "ArrowLeft" ? -1 : ev.key === "PageUp" ? 10 : -10) * step;
-      if (set(value)) dirty = true;
+      const before = revision;
+      if (set(value) && revision === before && active(e) && !off(e)) dirty = true;
     });
     e.addEventListener("keyup", ev => { if (ev.target === e && keys.has(ev.key)) commit(); });
     e.addEventListener("blur", commit);
@@ -200,17 +224,21 @@
       const changed = from !== v, p = pointer;
       from = pointer = null;
       release(p);
-      if (changed && active(e) && !off(e) && o.onchange) o.onchange(v);
+      if (changed && active(e) && !off(e)) invoke(o, "onchange", v);
     };
     rw.addEventListener("pointerdown", ev => {
       if (!active(e) || off(e) || from !== null || ev.button != null && ev.button !== 0 || !__trusted(ev)) return;
       ev.preventDefault();
       commit();
+      if (!active(e) || off(e)) return;
       e.focus();
+      if (!active(e) || off(e)) return;
       from = v;
       pointer = ev.pointerId == null ? null : ev.pointerId;
-      if (rw.setPointerCapture && pointer != null) {
-        try { rw.setPointerCapture(pointer); } catch (err) {}
+      if (typeof rw.setPointerCapture === "function" && pointer != null) {
+        try { rw.setPointerCapture(pointer); } catch (error) {
+          if (!namedError(error, "NotFoundError")) diagnostic("ui.pointer_capture_failed");
+        }
       }
       at(ev);
     });
@@ -239,7 +267,7 @@
       if (o.multi) sel.has(it.id) ? sel.delete(it.id) : sel.add(it.id);
       else { sel.clear(); sel.add(it.id); }
       mark();
-      if (o.onselect) o.onselect(value());
+      invoke(o, "onselect", value());
     };
     e.setItems = next => {
       const focused = e.contains(document.activeElement), previous = cur >= 0 && items[cur] ? items[cur].id : null;
@@ -357,8 +385,15 @@
     };
     return { button: own(button), toggle: own(toggle), slider: own(slider), list: own(list), group: own(group), focus };
   };
+  try {
+    document.head.append(style);
+    FY.ext.push((api, p) => {
+      api.ui = kit(api.id, () => !p || !p.dead);
+    });
+  } catch (error) {
+    style.remove();
+    throw error;
+  }
   if (K) K.ui = Object.freeze(kit("core"));
-  FY.ext.push((api, p) => {
-    api.ui = kit(api.id, () => !p || !p.dead);
-  });
+  FY.uiReady = true;
 })();

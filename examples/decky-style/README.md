@@ -10,6 +10,13 @@ React UI components, Decky Python dispatchers and Steam Deck hardware integratio
 do not automatically run here. No Decky plugin code is included. The example does
 not control hardware, invoke sudo, start subprocesses or require npm/React.
 
+Framey is independent of Decky Loader and is not affiliated with or endorsed by it.
+The source helper is experimental; compatibility of other plugins varies. Report
+Framey compatibility problems to [Framey](https://github.com/chaosfox26/framey/issues),
+not Decky or an upstream plugin author by default. Decky and plugin authors are not
+expected to support Framey-specific failures. This example makes no request to
+Decky's store API and does not install or execute an original Decky release.
+
 ## What “ported” means here
 
 “Ported” means the author has adapted the source and produced a new **Framey-native

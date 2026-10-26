@@ -9,8 +9,16 @@ package and does not impersonate a Decky loader connection.
 The familiar call, callable, listener and factory shapes are informed by the
 public [Decky loader API](https://github.com/SteamDeckHomebrew/loader-api) and
 [loader event implementation](https://github.com/SteamDeckHomebrew/decky-loader/blob/main/frontend/src/plugin-loader.tsx).
-No upstream implementation is bundled or copied by this helper. Preserve all
-original licenses and credits when porting any third-party plugin source.
+This helper does not bundle Decky Loader or the `@decky/api` package. Preserve
+all original licenses and credits when porting any third-party plugin source.
+
+Framey is independent of Decky Loader and is not affiliated with or endorsed by
+it. Source-port compatibility is experimental and varies by plugin. Report
+Framey compatibility problems to [Framey](https://github.com/chaosfox26/framey/issues),
+rather than expecting Decky maintainers or plugin authors to support
+Framey-specific failures. Review and remove private details before submitting a
+public issue. The Decky Store currently browses and inspects original packages;
+it does not install or run them.
 
 ## Package assessments and source ports
 
@@ -56,11 +64,12 @@ const api = Framey.register({
 });
 const decky = createDeckySourceAdapter(api);
 const read = decky.callable("read");
-read().then(value => api.log("info", JSON.stringify(value))).catch(error => {
-  api.log("error", error.message);
+read().then(() => api.log("info", "Read completed")).catch(() => {
+  // Avoid logging raw backend errors, which may contain private details.
+  api.log("error", "Could not read the plugin value");
 });
-const listener = decky.addEventListener("changed", value => {
-  api.log("info", JSON.stringify(value));
+const listener = decky.addEventListener("changed", () => {
+  api.log("info", "Change received");
 });
 // For early removal: decky.removeEventListener("changed", listener).
 ```
@@ -113,8 +122,13 @@ string `code` is preserved. Other values pass through, including any
 `success`/`result` fields, which are not unwrapped. Reserve top-level `error`
 for failures. Transport rejections and synchronous call errors also reject.
 Invalid listener names or factories throw `TypeError`; invalid calls reject.
-Listener throws and rejected listener promises are contained and reported via
-`api.log("error", ...)` when available; other listeners can still run.
+Listener throws and rejected listener promises are contained; other listeners can
+still run. When `api.log` is available, the adapter reports a fixed failure
+category and validated event name, excluding exception text and payloads. It
+emits at most four diagnostic details and one suppression notice per adapter
+lifetime. Cleanup removal failures share that limit. Logger failures are
+contained without recursively logging them. Caller-visible call errors retain
+their existing values; sanitize them before writing logs or public reports.
 
 Disabling, reloading or unloading the Framey plugin runs adapter cleanup.
 Manual `cleanup()` releases its cleanup registration and is safe to repeat.

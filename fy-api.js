@@ -2,79 +2,94 @@
   const FY = __FY;
   const TOK = typeof __fyt === "string" ? __fyt : "";
   const K = FY && FY._k && FY._k(TOK);
-  if (!K || FY.apiReady) return;
-  const O = Object;
-  const P = Promise;
-  const PR = Intl.PluralRules;
-  const later = setTimeout;
-  const unlater = clearTimeout;
-  const raf = requestAnimationFrame;
-  const caf = cancelAnimationFrame;
-  FY.apiReady = true;
+  if (!K || FY.apiReady || K.apiInitialization) return;
+  const diagnose = code => {
+    try { if (typeof K.diagnostic === "function") K.diagnostic(code); } catch {} // Diagnostics must not create a second callback failure.
+  };
+  if (!Array.isArray(FY.ext) || !Object.isExtensible(FY.ext)) {
+    diagnose("core.extension_failed");
+    return;
+  }
+  let installedPagehide = null;
+  let previousPagehide = null;
+  K.apiInitialization = "initializing";
+  try {
+  // Cleanup uses the same scheduling APIs that created the pending work.
+  const NativePromise = Promise;
+  const PluralRules = Intl.PluralRules;
+  const scheduleTimeout = setTimeout;
+  const cancelTimeout = clearTimeout;
+  const requestFrame = requestAnimationFrame;
+  const cancelFrame = cancelAnimationFrame;
   const NAME = /^[a-z0-9_.-]{1,40}$/;
   const LANG = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
   const LEVELS = ["debug", "info", "warning", "error"];
   const OPEN = new Map([["open:modules", "#modules"], ["open:settings", "#settings"]]);
-  const W = new WeakMap();
+  const moduleStates = new WeakMap();
   const noop = () => {};
   const cut = (v, n) => String(v == null ? "" : v).slice(0, n);
-  const safe = (f, ...a) => { try { return f(...a); } catch (e) {} };
-  const RT = window.FY_RUNTIME || {};
-  const rt = () => RT;
+  const invokeSafely = (code, callback, ...args) => {
+    try {
+      const result = callback(...args);
+      if (result && typeof result.then === "function") NativePromise.resolve(result).catch(() => diagnose(code));
+      return result;
+    } catch { diagnose(code); }
+  };
+  const runtimeMetadata = window.FY_RUNTIME || {};
 
-  const hub = (cap, onerr) => {
-    const m = new Map();
-    let n = 0;
-    const drop = (name, r) => {
-      const a = m.get(name);
-      const i = a ? a.indexOf(r) : -1;
+  const createEventHub = cap => {
+    const listenersByName = new Map();
+    let subscriptionCount = 0;
+    const removeSubscription = (name, subscription) => {
+      const listeners = listenersByName.get(name);
+      const i = listeners ? listeners.indexOf(subscription) : -1;
       if (i < 0) return;
-      r.dead = true;
-      a.splice(i, 1);
-      n--;
-      if (!a.length) m.delete(name);
+      subscription.dead = true;
+      listeners.splice(i, 1);
+      subscriptionCount--;
+      if (!listeners.length) listenersByName.delete(name);
     };
     return {
-      get size() { return n; },
+      get size() { return subscriptionCount; },
       on(name, fn, once) {
         if (typeof name !== "string" || !NAME.test(name) || typeof fn !== "function") return noop;
-        if (n >= cap) throw new RangeError("too many event subscriptions");
-        const r = { fn, once };
-        if (!m.has(name)) m.set(name, []);
-        m.get(name).push(r);
-        n++;
-        return () => drop(name, r);
+        if (subscriptionCount >= cap) throw new RangeError("too many event subscriptions");
+        const subscription = { fn, once };
+        if (!listenersByName.has(name)) listenersByName.set(name, []);
+        listenersByName.get(name).push(subscription);
+        subscriptionCount++;
+        return () => removeSubscription(name, subscription);
       },
       off(name, fn) {
-        const a = m.get(name);
-        const r = a && a.find(x => x.fn === fn);
-        if (r) drop(name, r);
+        const listeners = listenersByName.get(name);
+        const subscription = listeners && listeners.find(candidate => candidate.fn === fn);
+        if (subscription) removeSubscription(name, subscription);
       },
       emit(name, payload, info) {
-        const a = m.get(name);
-        if (!a) return;
-        a.slice().forEach(r => {
-          if (r.dead) return;
-          if (r.once) drop(name, r);
-          try { r.fn(payload, info); } catch (e) { onerr(name, e); }
+        const listeners = listenersByName.get(name);
+        if (!listeners) return;
+        listeners.slice().forEach(subscription => {
+          if (subscription.dead) return;
+          if (subscription.once) removeSubscription(name, subscription);
+          invokeSafely("core.event_failed", () => subscription.fn(payload, info));
         });
       },
       clear() {
-        m.forEach(a => a.forEach(r => { r.dead = true; }));
-        m.clear();
-        n = 0;
+        listenersByName.forEach(listeners => listeners.forEach(subscription => { subscription.dead = true; }));
+        listenersByName.clear();
+        subscriptionCount = 0;
       },
     };
   };
 
-  const core = hub(64, noop);
+  const core = createEventHub(64);
   const byKey = new Map();
   K.listen = (name, fn) => core.on(name, fn, false);
   K.event = (plugin, name, payload, dropped) => {
     if (typeof name !== "string" || !NAME.test(name)) return;
     const info = { name, dropped: dropped | 0, open: FY.panelOpen, tab: K.tab() };
     if (plugin === "_core") {
-      if (name === "notice") FY.notify(payload);
+      if (name === "notice") invokeSafely("api.notification_failed", () => FY.notify(payload));
       core.emit(name, payload, info);
       return;
     }
@@ -83,7 +98,7 @@
   };
 
   let isPanel = false;
-  O.defineProperty(FY, "panelOpen", { get: () => isPanel, enumerable: true });
+  Object.defineProperty(FY, "panelOpen", { get: () => isPanel, enumerable: true });
   const pan = new Set();
   const vis = new Set();
   let last = false;
@@ -92,7 +107,7 @@
     const v = nowVisible();
     if (v === last) return;
     last = v;
-    [...vis].forEach(r => { if (vis.has(r)) safe(r.fn, v); });
+    [...vis].forEach(r => { if (vis.has(r)) invokeSafely("core.visibility_failed", r.fn, v); });
   };
   const addVis = fn => {
     const r = { fn };
@@ -110,7 +125,7 @@
     open = !!open;
     if (open === isPanel) return;
     isPanel = open;
-    [...pan].forEach(r => { if (pan.has(r)) safe(r.fn, open); });
+    [...pan].forEach(r => { if (pan.has(r)) invokeSafely("core.panel_failed", r.fn, open); });
     poke();
   };
   FY.onPanel = fn => {
@@ -125,11 +140,11 @@
   let userLang = "";
   const norm = l => (typeof l === "string" && LANG.test(l) ? l.toLowerCase() : "");
   const plural = (l, n) => {
-    if (!rules.has(l)) rules.set(l, safe(() => new PR(l)) || null);
+    if (!rules.has(l)) rules.set(l, invokeSafely("api.locale_failed", () => new PluralRules(l)) || null);
     const r = rules.get(l);
     return r ? r.select(n) : "other";
   };
-  const fill = (s, v) => s.replace(/\{([A-Za-z0-9_]{1,32})\}/g, (m, k) => (O.prototype.hasOwnProperty.call(v, k) ? String(v[k]) : m));
+  const fill = (s, v) => s.replace(/\{([A-Za-z0-9_]{1,32})\}/g, (m, k) => (Object.prototype.hasOwnProperty.call(v, k) ? String(v[k]) : m));
   const addStr = (plugin, lang, dict) => {
     const l = norm(lang);
     if (!l || typeof plugin !== "string" || !dict || typeof dict !== "object") return 0;
@@ -144,7 +159,7 @@
     }
     const d = langs.get(l);
     let n = 0;
-    for (const k of O.keys(dict)) {
+    for (const k of Object.keys(dict)) {
       if (typeof dict[k] !== "string" || k.length > 128 || (d.size >= 2000 && !d.has(k))) continue;
       d.set(k, dict[k].slice(0, 1024));
       n++;
@@ -160,7 +175,7 @@
     return c.filter((x, i) => x && c.indexOf(x) === i);
   };
   const I18N = (FY.i18n = {
-    lang() { return userLang || (norm(rt().lang) && rt().lang) || (norm(navigator.language) && navigator.language) || "en"; },
+    lang() { return userLang || (norm(runtimeMetadata.lang) && runtimeMetadata.lang) || (norm(navigator.language) && navigator.language) || "en"; },
     setLang(l) {
       if (l && !norm(l)) return false;
       userLang = l || "";
@@ -183,7 +198,7 @@
     },
   });
   addStr("core", "en", { "notify.dismiss": "Dismiss" });
-  O.freeze(I18N);
+  Object.freeze(I18N);
 
   const ns = { vis: [], q: [], n: 0, host: null };
   const mk = (tag, css, text) => {
@@ -220,7 +235,7 @@
     if (i < 0 && j < 0) return;
     if (i >= 0) ns.vis.splice(i, 1);
     else ns.q.splice(j, 1);
-    unlater(r.t);
+    cancelTimeout(r.t);
     if (r.el) r.el.remove();
     pump();
     if (!ns.vis.length && ns.host) {
@@ -228,13 +243,13 @@
       ns.host = null;
     }
     if (!silent && r.onclose) {
-      try { r.onclose(reason); } catch (e) { r.log("error", "notification onclose: " + e.message); }
+      invokeSafely("api.notification_failed", () => r.onclose(reason));
     }
   };
   const pick = (r, a) => {
-    if (OPEN.has(a.id)) safe(() => FY.open(OPEN.get(a.id)));
+    if (OPEN.has(a.id)) invokeSafely("api.notification_failed", () => FY.open(OPEN.get(a.id)));
     if (r.onaction) {
-      try { r.onaction(a.id); } catch (e) { r.log("error", "notification onaction: " + e.message); }
+      invokeSafely("api.notification_failed", () => r.onaction(a.id));
     }
     close(r, "action");
   };
@@ -257,9 +272,9 @@
     r.el = draw(r);
     stack().append(r.el);
     ns.vis.push(r);
-    if (r.ms) r.t = later(() => close(r, "timeout"), r.ms);
+    if (r.ms) r.t = scheduleTimeout(() => close(r, "timeout"), r.ms);
   };
-  const notify = (p, pid, o, log) => {
+  const notify = (p, pid, o) => {
     o = o && typeof o === "object" ? o : {};
     const title = cut(o.title, 80);
     const body = cut(o.body, 400);
@@ -275,7 +290,6 @@
       ms: o.duration == null || !isFinite(d) || d < 0 ? 4000 : Math.min(d, 60000),
       onaction: typeof o.onaction === "function" ? o.onaction : null,
       onclose: typeof o.onclose === "function" ? o.onclose : null,
-      log: log || noop,
     };
     if (room(r)) show(r);
     else {
@@ -291,12 +305,12 @@
   FY.ext.push((api, p, res, io) => {
     const s = { p, regs: 0, raf: new Set(), tok: new Map(), lt: 0, ln: 0 };
     const key = api.id;
-    O.defineProperty(api, "id", { value: key, enumerable: true, writable: false, configurable: false });
+    Object.defineProperty(api, "id", { value: key, enumerable: true, writable: false, configurable: false });
     const alive = () => !p.dead && byKey.get(key) === s;
-    const disposed = () => O.assign(new Error("module disposed"), { code: "disposed" });
-    const revokeToken = token => io.post("resource", { revoke: token, pid: p.id });
+    const disposed = () => Object.assign(new Error("module disposed"), { code: "disposed" });
+    const revokeToken = token => invokeSafely("api.resource_failed", () => io.post("resource", { revoke: token, pid: key }));
     const rpc = (method, arg) => api._rpc(method, arg);
-    s.hub = hub(64, (name, e) => s.log("error", "event " + name + ": " + (e && e.message)));
+    s.hub = createEventHub(64);
     s.log = (level, msg) => {
       const t = Date.now();
       if (t - s.lt >= 1000) {
@@ -306,7 +320,7 @@
       if (s.ln++ >= 5) return;
       io.post("log", { pid: p.id, level: LEVELS.includes(level) ? level : "info", msg: cut(msg, 2048) });
     };
-    W.set(p, s);
+    moduleStates.set(p, s);
     byKey.set(key, s);
     const put = f => {
       if (s.regs >= 256) throw new RangeError("too many registrations");
@@ -322,7 +336,7 @@
     res.push(() => {
       if (byKey.get(key) === s) byKey.delete(key);
       s.hub.clear();
-      s.raf.forEach(h => caf(h));
+      s.raf.forEach(h => invokeSafely("core.timer_failed", cancelFrame, h));
       s.raf.clear();
       s.tok.forEach(revokeToken);
       s.tok.clear();
@@ -332,25 +346,25 @@
     api.cleanup = fn => {
       if (typeof fn !== "function") return noop;
       if (p.dead) {
-        safe(fn);
+        invokeSafely("core.cleanup_failed", fn);
         return noop;
       }
-      return put(() => fn());
+      return put(() => invokeSafely("core.cleanup_failed", fn));
     };
     api.call = (method, arg, to) => (alive()
       ? io.be(method, arg, to).then(r => alive() ? r : { error: "module disposed", code: "disposed" })
-      : P.resolve({ error: "module disposed", code: "disposed" }));
+      : NativePromise.resolve({ error: "module disposed", code: "disposed" }));
     api.raf = fn => {
       if (p.dead || typeof fn !== "function") return 0;
       if (s.raf.size >= 256) {
         const o = s.raf.values().next().value;
-        caf(o);
+        cancelFrame(o);
         s.raf.delete(o);
       }
-      const h = raf(t => {
+      const h = requestFrame(t => {
         s.raf.delete(h);
         if (!alive()) return;
-        try { fn(t); } catch (e) { s.log("error", "animation frame: " + (e && e.message)); }
+        invokeSafely("core.timer_failed", fn, t);
       });
       s.raf.add(h);
       return h;
@@ -360,13 +374,13 @@
       once: (name, fn) => (p.dead ? noop : s.hub.on(name, fn, true)),
       off: (name, fn) => { if (!p.dead) s.hub.off(name, fn); },
     };
-    api.notify = o => (p.dead ? { id: 0, dismiss: noop } : notify(p, key, o, s.log));
+    api.notify = o => (p.dead ? { id: 0, dismiss: noop } : notify(p, key, o));
     api.onVisible = fn => {
       if (p.dead || typeof fn !== "function") return noop;
       let off = noop;
       const d = put(() => off());
       off = addVis(v => {
-        try { fn(v); } catch (e) { s.log("error", "visibility handler: " + e.message); }
+        invokeSafely("core.visibility_failed", fn, v);
       });
       return () => {
         d();
@@ -377,11 +391,18 @@
     api.i18n = {
       add: (lang, dict) => alive() ? addStr(key, lang, dict) : 0,
       load: lang => {
-        if (!alive() || !norm(lang)) return P.resolve(false);
-        return io.core("locale", { id: key, lang }).then(r => !!(alive() && r && r.strings && addStr(key, lang, r.strings)), () => false);
+        if (!alive() || !norm(lang)) return NativePromise.resolve(false);
+        return io.core("locale", { id: key, lang }).then(r => {
+          if (!alive()) return false;
+          if (!r || !r.strings) { diagnose("api.locale_failed"); return false; }
+          return !!addStr(key, lang, r.strings);
+        }, () => {
+          if (alive()) diagnose("api.locale_failed");
+          return false;
+        });
       },
     };
-    api.fetch = (url, o) => rpc("fetch", O.assign({}, o, { url, pid: key })).then(r => {
+    api.fetch = (url, o) => rpc("fetch", Object.assign({}, o, { url, pid: key })).then(r => {
       if (!alive()) throw disposed();
       return r;
     });
@@ -406,25 +427,31 @@
         s.tok.set(r.url, token);
       }
       return r.url;
+    }).catch(error => {
+      if (alive()) diagnose("api.resource_failed");
+      throw error;
     });
     api.revoke = url => {
       const t = s.tok.get(url);
-      if (!t) return P.resolve(false);
+      if (!t) return NativePromise.resolve(false);
       return rpc("resource", { revoke: t, pid: key }).then(r => {
         if (s.tok.get(url) === t) s.tok.delete(url);
         return !!(r && r.ok);
-      }, () => false);
+      }, () => {
+        if (alive()) diagnose("api.resource_failed");
+        return false;
+      });
     };
     api.log = (level, msg) => { if (alive()) s.log(level, msg); };
-    O.defineProperties(api, {
+    Object.defineProperties(api, {
       visible: { enumerable: true, get: () => !p.dead && nowVisible() },
       lang: { enumerable: true, get: () => I18N.lang() },
       runtime: {
         enumerable: true,
         get: () => {
-          const r = rt();
+          const r = runtimeMetadata;
           const m = p.meta || {};
-          return O.freeze({
+          return Object.freeze({
             framey: typeof r.version === "string" ? r.version : "",
             api: Number.isInteger(r.api) ? r.api : 1,
             platform: typeof r.platform === "string" ? r.platform : "",
@@ -438,18 +465,18 @@
   });
 
   FY.diag = () => {
-    const plugins = FY.plugins.filter(p => !p.dead && W.has(p)).map(p => {
-      const s = W.get(p);
+    const plugins = FY.plugins.filter(p => !p.dead && moduleStates.has(p)).map(p => {
+      const s = moduleStates.get(p);
       const a = K.apiOf(p) || {};
-      const x = safe(() => a._diag()) || {};
-      const c = safe(() => a._n()) || {};
+      const x = typeof a._diag === "function" ? invokeSafely("core.callback_failed", () => a._diag()) || {} : {};
+      const c = typeof a._n === "function" ? invokeSafely("core.callback_failed", () => a._n()) || {} : {};
       return {
         id: p.id,
         timers: c.timers | 0,
         intervals: c.intervals | 0,
         listeners: c.listeners | 0,
         subscriptions: s.hub.size,
-        pages: x.pages | 0 || safe(() => a.pages.list().length) | 0,
+        pages: x.pages | 0 || (a.pages && typeof a.pages.list === "function" ? invokeSafely("core.callback_failed", () => a.pages.list().length) | 0 : 0),
         globals: x.globals | 0,
         targets: x.targets | 0,
         notifications: ns.vis.concat(ns.q).filter(r => r.p === p).length,
@@ -463,11 +490,30 @@
     return { plugins, calls, notifications: ns.vis.length + ns.q.length, subs, heap: mem ? mem.usedJSHeapSize : null, untrusted_clicks: K.untrusted() };
   };
 
-  FY.lazy = name => (name === "picker" || name === "dev" ? P.resolve() : P.reject(new Error("unknown asset " + cut(name, 20))));
+  FY.lazy = name => (name === "picker" || name === "dev" ? NativePromise.resolve() : NativePromise.reject(new Error("unknown asset " + cut(name, 20))));
 
   const bye = () => K.dispose();
-  if (window.__fyBye) window.removeEventListener("pagehide", window.__fyBye);
+  previousPagehide = window.__fyBye;
+  if (previousPagehide) window.removeEventListener("pagehide", previousPagehide);
+  installedPagehide = bye;
   window.__fyBye = bye;
   window.addEventListener("pagehide", bye);
   K.lock(FY, "_panel", "onPanel", "notify", "diag", "lazy", "i18n");
+  FY.apiReady = true;
+  K.apiInitialization = "ready";
+  } catch {
+    if (installedPagehide) {
+      try {
+        window.removeEventListener("pagehide", installedPagehide);
+        if (window.__fyBye === installedPagehide) {
+          if (previousPagehide) {
+            window.__fyBye = previousPagehide;
+            window.addEventListener("pagehide", previousPagehide);
+          } else delete window.__fyBye;
+        }
+      } catch { diagnose("core.cleanup_failed"); }
+    }
+    K.apiInitialization = "failed";
+    diagnose("core.extension_failed");
+  }
 })();

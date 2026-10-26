@@ -197,7 +197,7 @@ t("details: repository, branch, scope, dates, archived flag, declaration, fork, 
   assert.ok(x.includes("- Declared by example-maintainer"));
   assert.ok(x.includes("- Last commit 2024-01-02"));
   assert.ok(x.includes("Informational only. Framey never disables, removes, replaces or blocks a module"));
-  assert.deepEqual(c.all().map(e => e.getAttribute("aria-label")), ["Refresh", "Back"]);
+  assert.deepEqual(c.all().map(e => e.getAttribute("aria-label")), ["Refresh", "Back", "Report to Framey"]);
 });
 
 t("details: whole-repository scope explains itself, archived is shown, no release says so", async () => {

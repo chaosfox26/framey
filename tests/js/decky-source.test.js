@@ -138,8 +138,140 @@ test("listener exceptions and rejected promises are contained and logged", async
   await flush();
   assert.deepStrictEqual(got, [2]);
   assert.deepStrictEqual(e.logs.map(entry => entry.level), ["error", "error"]);
-  assert.match(e.logs[0].message, /sync failed/);
-  assert.match(e.logs[1].message, /async failed/);
+  assert.strictEqual(e.logs[0].message, "source event changed: listener threw; callback isolated");
+  assert.strictEqual(e.logs[1].message, "source event changed: listener promise rejected; callback isolated");
+});
+
+test("callback diagnostics never inspect exception contents and stop after four details plus a notice", async () => {
+  const e = stub(), decky = createDeckySourceAdapter(e.api);
+  let inspected = 0;
+  const hostile = {
+    get message() { inspected++; throw new Error("private message"); },
+    get stack() { inspected++; throw new Error("private stack"); },
+    get name() { inspected++; throw new Error("private name"); },
+    toString() { inspected++; throw new Error("private conversion"); },
+  };
+  decky.addEventListener("changed", () => { throw hostile; });
+  decky.addEventListener("changed", () => Promise.reject("secret-token-and-private-path"));
+  for (let i = 0; i < 20; i++) e.emit("changed", []);
+  await flush();
+  assert.strictEqual(inspected, 0);
+  assert.strictEqual(e.logs.length, 5);
+  assert.ok(e.logs.slice(0, 4).every(entry => entry.message === "source event changed: listener threw; callback isolated"));
+  assert.strictEqual(e.logs[4].message, "source adapter: further diagnostics suppressed");
+  assert.ok(e.logs.every(entry => entry.message.length < 160));
+  assert.ok(!/secret|private|token/.test(JSON.stringify(e.logs)));
+});
+
+test("failing diagnostic sinks do not recurse or block other listeners", async () => {
+  for (const asynchronous of [false, true]) {
+    const e = stub();
+    let logAttempts = 0, delivered = 0;
+    e.api.log = () => {
+      logAttempts++;
+      if (asynchronous) return Promise.reject(new Error("logger failure"));
+      throw new Error("logger failure");
+    };
+    const decky = createDeckySourceAdapter(e.api);
+    decky.addEventListener("changed", () => { throw new Error("callback failure"); });
+    decky.addEventListener("changed", () => delivered++);
+    for (let i = 0; i < 20; i++) e.emit("changed", []);
+    await flush();
+    assert.strictEqual(logAttempts, 5);
+    assert.strictEqual(delivered, 20);
+  }
+});
+
+test("dispatch skips removed registrations and defers newly added registrations", () => {
+  const e = stub(), decky = createDeckySourceAdapter(e.api), seen = [];
+  const later = () => seen.push("later");
+  const added = () => seen.push("added");
+  const first = () => {
+    seen.push("first");
+    decky.removeEventListener("tick", first);
+    decky.removeEventListener("tick", later);
+    decky.addEventListener("tick", later);
+    decky.addEventListener("tick", added);
+  };
+  decky.addEventListener("tick", first);
+  decky.addEventListener("tick", later);
+  e.emit("tick", []);
+  assert.deepStrictEqual(seen, ["first"]);
+  e.emit("tick", []);
+  assert.deepStrictEqual(seen, ["first", "later", "added"]);
+});
+
+test("reentrant dispatch preserves order and cleanup stops the outer dispatch", () => {
+  const e = stub(), decky = createDeckySourceAdapter(e.api), seen = [];
+  decky.addEventListener("tick", value => {
+    seen.push("first:" + value);
+    if (value === "outer") {
+      e.emit("tick", ["inner"]);
+      decky.cleanup();
+    }
+  });
+  decky.addEventListener("tick", value => seen.push("second:" + value));
+  e.emit("tick", ["outer"]);
+  e.emit("tick", ["late"]);
+  assert.deepStrictEqual(seen, ["first:outer", "first:inner", "second:inner"]);
+});
+
+test("cleanup isolates remover failures while rejecting pending calls and clearing identity", async () => {
+  const e = stub(), slow = deferred();
+  const subscribe = e.api.events.on;
+  const removed = [];
+  e.api.events.on = (name, listener) => {
+    const unsubscribe = subscribe(name, listener);
+    return () => {
+      removed.push(name);
+      if (name === "first") throw new Error("private removal failure");
+      unsubscribe();
+    };
+  };
+  e.api.cleanup = () => () => { throw new Error("private cleanup failure"); };
+  e.api.call = () => slow.promise;
+  const decky = createDeckySourceAdapter(e.api);
+  let delivered = 0;
+  decky.addEventListener("first", () => delivered++);
+  decky.addEventListener("second", () => delivered++);
+  const request = decky.call("slow");
+  const rejection = assert.rejects(request, error => error.code === "adapter_disposed");
+  assert.doesNotThrow(() => decky.cleanup());
+  decky.cleanup();
+  await rejection;
+  e.emit("first", []);
+  assert.strictEqual(delivered, 0);
+  assert.deepStrictEqual(removed, ["first", "second"]);
+  assert.deepStrictEqual(e.logs.map(entry => entry.message), [
+    "source event first: listener removal failed during cleanup",
+    "source adapter: cleanup registration removal failed",
+  ]);
+  slow.resolve("late");
+  await flush();
+});
+
+test("constructor still propagates native cleanup registration failure", () => {
+  const e = stub(), full = new RangeError("too many registrations");
+  e.api.cleanup = () => { throw full; };
+  assert.throws(() => createDeckySourceAdapter(e.api), error => error === full);
+  assert.strictEqual(e.handlers.size, 0);
+  assert.strictEqual(e.calls.length, 0);
+});
+
+test("native subscription cap failures leave room reusable after removal", () => {
+  const e = makeDom({ loadFiles: ["fy-api.js"] });
+  const decky = createDeckySourceAdapter(e.plugin("bounded"));
+  const listener = () => {};
+  for (let i = 0; i < 64; i++) decky.addEventListener("event" + i, listener);
+  assert.strictEqual(decky.addEventListener("event0", listener), listener);
+  assert.throws(() => decky.addEventListener("extra", listener), error => error.name === "RangeError");
+  decky.removeEventListener("event0", listener);
+  assert.strictEqual(decky.addEventListener("extra", listener), listener);
+  assert.strictEqual(e.window.Framey.diag().plugins.find(plugin => plugin.id === "bounded").subscriptions, 64);
+  decky.cleanup();
+  assert.strictEqual(e.window.Framey.diag().plugins.find(plugin => plugin.id === "bounded").subscriptions, 0);
+  e.window.Framey.dispose(undefined, TOK);
+  e.window.close();
 });
 
 test("definePlugin defers invocation, forwards arguments and preserves returned values", () => {

@@ -11,6 +11,12 @@
       const { btn, sw } = k;
       let ld = {}, st = { prefs: {} }, auto = {}, mp = {}, ss = null, lres = null, cand = null, info = null, line = null;
       const saving = new Set();
+      const supportContext = { error: "", code: "settings_support" };
+      const supportError = (error, code) => {
+        supportContext.error = String(error || T("c.noanswer")).slice(0, 300);
+        supportContext.code = code;
+        return { ...supportContext };
+      };
       k.names = id => (id === "_loader" ? T("s.framey") : "");
       const draw = () => {
         k.show(tx(TITLE, T("s.title")), col(GREY, T("c.loading")));
@@ -26,7 +32,10 @@
       };
       const back = () => draw();
       k.back = back;
-      k.bad = e => k.show(tx(TITLE, T("s.title")), col(BAD, T("c.failed", { msg: String((e && e.message) || T("c.noanswer")).slice(0, 200) })), row(btn(T("c.retry"), draw)));
+      k.bad = e => {
+        const context = supportError((e && e.message) || e, "settings_error");
+        k.show(tx(TITLE, T("s.title")), col(BAD, T("c.failed", { msg: context.error.slice(0, 200) })), row(btn(T("c.retry"), draw), k.reportButton(context)));
+      };
       const write = (method, key, value, el, previous, apply, after) => {
         if (saving.has(key)) {
           if (el) el.value = previous;
@@ -46,6 +55,7 @@
           }
           if (r.error || typeof saved !== typeof value) {
             if (el) el.value = previous;
+            supportError(r.error, "settings_save_failed");
             warn(r.error || T("c.noanswer"));
             return;
           }
@@ -78,6 +88,7 @@
           cand = r.candidate || (lres && lres.candidate) || null;
           info = r.installed || null;
           line = lres ? null : T("c.failed", { msg: r.error || T("c.noanswer") });
+          if (r.error || (lres && lres.state === "error")) supportError(r.error || lres.msg, "loader_check_failed");
           if (after && checkedCandidate(cand) && lres && lres.state !== "error") return after();
           if (after && !line && (!lres || lres.state !== "current")) line = T("c.failed", { msg: (lres && lres.msg) || T("c.noanswer") });
           home();
@@ -91,13 +102,14 @@
             return k.result(out, {}, T("s.already"), back);
           }
           if (r.ok) {
-            try { sessionStorage.fyMsg = T("s.updated"); } catch (e) {}
+            try { sessionStorage.fyMsg = T("s.updated"); }
+            catch (e) { if (typeof K.diagnostic === "function") K.diagnostic("core.storage_failed"); }
             const b = k.btn(T("c.back"), back);
             put(out, col(GOOD, T("s.restarting"), 21, true), row(b));
             b.focus();
             return out;
           }
-          k.result(out, r, "", back);
+          k.result(out, r, "", back, r.error ? supportError(r.error, "loader_update_failed") : undefined);
         });
       const identity = c => [T("s.candidate", { tag: c.tag, c: String(c.commit || "").slice(0, 7) }), day(c.published) && T("s.published", { d: day(c.published) })].filter(Boolean).join(", ");
       const updateAsk = () => {
@@ -137,12 +149,13 @@
         const control = ui().slider({ label: T("s.workers"), min: 1, max: 3, step: 1, value, onchange: v => savePref("workers_max", v, control) });
         return [control, col(GREY, T("s.workers_text"), 16)];
       };
-      const finish = (method, title, okKey) => k.work(title, () => call(method), (r, out) => k.result(out, r, T(okKey), back));
+      const finish = (method, title, okKey) => k.work(title, () => call(method), (r, out) => k.result(out, r, T(okKey), back, r.error ? supportError(r.error, method + "_failed") : undefined));
       const home = () => {
         const p = obj(st.prefs);
         const autoUnavailable = auto.error || typeof auto.enabled !== "boolean" || (auto.enabled && (!Number.isFinite(auto.last) || auto.last < 0 || !Number.isFinite(new Date(auto.last * 1000).getTime())));
         const autoText = autoUnavailable ? T("c.unavailable") + (auto.error ? " — " + T("c.failed", { msg: String(auto.error).slice(0, 200) }) : "")
           : auto.enabled ? (auto.last ? T("s.auto_last", { d: new Date(auto.last * 1000).toLocaleString() }) : T("s.auto_never")) : T("s.auto_off");
+        if (autoUnavailable && !supportContext.error) supportError(auto.error || T("c.unavailable"), "autocheck_status_unavailable");
         const dev = p.dev && p.dev.enabled === true;
         const rv = (window.FY_RUNTIME || {}).version;
         const iv = (info && info.version) || rv;
@@ -163,6 +176,7 @@
           col("#fff", cand ? identity(cand) : T("s.not_checked"), 18),
           cand && cand.prerelease && col(WARN, cand.label || T("s.prerelease"), 18),
           sum,
+          (line || state === "error") && row(k.reportButton(supportContext)),
           col(GREY, T("s.ch_ro", { channel: p.channel === "prerelease" ? "prerelease" : "stable" }), 16),
           row(btn(T("s.check"), () => check(sum), { primary: true }), btn(T("s.update"), updateAsk, { primary: state === "update" })),
           row(
@@ -187,8 +201,9 @@
           col(GREY, T("s.safe_text"), 16),
           col(GREY, T("s.dev_ro", { state: T(dev ? "s.on" : "s.off") }), 16),
           dev && row(btn(T("s.dev_open"), lazyDev), btn(T("s.diag"), lazyDev)),
-          row(btn(T("s.reload"), () => { k.hold(true); call("reload").then(k.guard(r => { k.hold(false); if (r.error) warn(r.error); else say(T("s.reloaded")); })); })),
+          row(btn(T("s.reload"), () => { k.hold(true); call("reload").then(k.guard(r => { k.hold(false); if (r.error) { supportError(r.error, "module_reload_failed"); warn(r.error); } else say(T("s.reloaded")); })); })),
           col(GREY, T("s.trust"), 18),
+          !line && state !== "error" && row(k.reportButton(supportContext)),
         );
       };
       draw();

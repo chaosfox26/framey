@@ -7,17 +7,46 @@ const __trusted = ev => {
 const __FY = (() => {
   if (window.Framey) { console.warn("Framey: window.Framey already defined; not injecting"); return null; }
   const fyCall = window.fyCall;
-  const stringify = JSON.stringify;
-  const defProp = Object.defineProperty;
-  const freeze = Object.freeze;
-  const O = Object;
-  const P = Promise;
-  const later = setTimeout;
-  const unlater = clearTimeout;
-  const every = setInterval;
-  const unevery = clearInterval;
-  const fnText = Function.prototype.toString;
-  if (typeof fyCall !== "function" || !/\[native code\]/.test(fnText.call(fyCall))) {
+  // Capture call boundaries before same-realm plugins run.
+  const serializeJSON = JSON.stringify;
+  const defineProperty = Object.defineProperty;
+  const freezeObject = Object.freeze;
+  const PromiseConstructor = Promise;
+  const scheduleTimeout = setTimeout;
+  const cancelTimeout = clearTimeout;
+  const scheduleInterval = setInterval;
+  const cancelInterval = clearInterval;
+  const functionToString = Function.prototype.toString;
+  const DIAGNOSTIC_CODES = [
+    "core.callback_failed", "core.cleanup_failed", "core.extension_failed", "core.storage_failed",
+    "core.binding_failed", "core.transport_failed", "core.timer_failed", "core.event_failed",
+    "core.visibility_failed", "core.panel_failed", "api.resource_failed", "api.locale_failed",
+    "api.notification_failed", "page.callback_failed", "page.render_failed", "page.cleanup_failed",
+    "page.navigation_failed", "page.focus_failed", "ui.callback_failed", "ui.pointer_capture_failed",
+    "ui.pointer_release_failed", "picker.cleanup_failed", "picker.request_failed", "picker.focus_failed",
+  ];
+  const diagnosticCounts = [];
+  const diagnostic = code => {
+    try {
+      if (typeof code !== "string") return;
+      for (let i = 0; i < DIAGNOSTIC_CODES.length && i < 32; i++) {
+        if (code !== DIAGNOSTIC_CODES[i]) continue;
+        const count = diagnosticCounts[i] || 0;
+        if (count < 9999) diagnosticCounts[i] = count + 1;
+        return;
+      }
+    } catch (error) { /* Diagnostics must not create another failure. */ }
+  };
+  const diagnostics = () => {
+    try {
+      const rows = [];
+      for (let i = 0; i < DIAGNOSTIC_CODES.length && i < 32; i++) {
+        if (diagnosticCounts[i]) rows.push({ code: DIAGNOSTIC_CODES[i], count: diagnosticCounts[i] });
+      }
+      return rows;
+    } catch (error) { return []; }
+  };
+  if (typeof fyCall !== "function" || !/\[native code\]/.test(functionToString.call(fyCall))) {
     const m = document.createElement("div");
     m.dataset.fy = "";
     m.setAttribute("role", "alert");
@@ -26,7 +55,7 @@ const __FY = (() => {
     document.body.append(m);
     return null;
   }
-  try { defProp(window, "fyCall", { value: fyCall, writable: false, configurable: true }); } catch (e) {}
+  try { defineProperty(window, "fyCall", { value: fyCall, writable: false, configurable: true }); } catch (error) { diagnostic("core.binding_failed"); }
   const mark = ev => { if (ev && ev.isTrusted === true) __trust.seen = true; };
   ["click", "keydown", "pointerdown"].forEach(t => window.addEventListener(t, mark, true));
   const TOK = typeof __fyt === "string" ? __fyt : "";
@@ -47,8 +76,11 @@ const __FY = (() => {
   let st = {};
   let returnTo = null;
   let extLocked = false, closing = false, closed = false;
-  const safe = f => { try { return f(); } catch (e) {} };
-  const ss = (k, v) => safe(() => (v === undefined ? sessionStorage[k] : (sessionStorage[k] = v)));
+  const safe = (fn, code = "core.callback_failed") => {
+    try { return fn(); } catch (error) { diagnostic(code); }
+  };
+  const cleanup = fn => safe(fn, "core.cleanup_failed");
+  const ss = (k, v) => safe(() => (v === undefined ? sessionStorage[k] : (sessionStorage[k] = v)), "core.storage_failed");
   const stamp = pl => gen + ":" + pl + "." + (inst[pl] | 0);
   const el = (css, text) => {
     const e = document.createElement("div");
@@ -58,22 +90,23 @@ const __FY = (() => {
     return e;
   };
   const owned = id => [...document.querySelectorAll("[data-fy]")].filter(e => e.dataset.fy === id);
-  const lock = (o, ...ks) => ks.forEach(k => defProp(o, k, { value: o[k], writable: false, configurable: false }));
-  const wire = (o, t) => (t === undefined ? stringify(o) : '{"t":"' + t + '",' + stringify(o).slice(1));
+  const lock = (o, ...ks) => ks.forEach(k => defineProperty(o, k, { value: o[k], writable: false, configurable: false }));
+  const wire = (o, t) => (t === undefined ? serializeJSON(o) : '{"t":"' + t + '",' + serializeJSON(o).slice(1));
   const disposed = who => ({ error: who === "_core" ? "Framey panel disposed" : "module disposed", code: "disposed" });
-  const cleanupRevoke = (method, arg, t, who) => method === "resource" && arg && typeof arg === "object" && !Array.isArray(arg) && O.keys(arg).length === 2 && O.keys(arg).every(k => k === "pid" || k === "revoke") && arg.pid === who && ID.test(who) && bound.get(who) === t && typeof arg.revoke === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(arg.revoke);
+  const cleanupRevoke = (method, arg, t, who) => method === "resource" && arg && typeof arg === "object" && !Array.isArray(arg) && Object.keys(arg).length === 2 && Object.keys(arg).every(k => k === "pid" || k === "revoke") && arg.pid === who && ID.test(who) && bound.get(who) === t && typeof arg.revoke === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(arg.revoke);
   const post = (method, arg, t, who) => {
     if ((closing || closed) && !cleanupRevoke(method, arg, t, who)) return;
-    safe(() => fyCall(wire({ id: 0, plugin: "_core", method, arg }, t)));
+    safe(() => fyCall(wire({ id: 0, plugin: "_core", method, arg }, t)), "core.transport_failed");
   };
-  const send = (plugin, method, arg, t, who, to) => closing || closed ? P.resolve(disposed(who)) :
-    new P(r => {
+  const send = (plugin, method, arg, t, who, to) => closing || closed ? PromiseConstructor.resolve(disposed(who)) :
+    new PromiseConstructor(r => {
       const id = ++n;
       const g = stamp(who);
       const c = { r, g, p: who, t: 0 }; calls[id] = c;
-      c.t = later(() => { if (calls[id] === c) { delete calls[id]; r({ error: "Framey " + (plugin === "_core" ? "core" : "module") + " did not reply in " + limit(plugin, method, to) / 1000 + " s" }); } }, limit(plugin, method, to));
+      c.t = scheduleTimeout(() => { if (calls[id] === c) { delete calls[id]; r({ error: "Framey " + (plugin === "_core" ? "core" : "module") + " did not reply in " + limit(plugin, method, to) / 1000 + " s" }); } }, limit(plugin, method, to));
       try { fyCall(wire({ gen: g, id, plugin, method, arg }, t)); } catch (e) {
-        unlater(c.t);
+        diagnostic("core.transport_failed");
+        cancelTimeout(c.t);
         delete calls[id];
         r({ error: String((e && e.message) || e) });
       }
@@ -85,9 +118,9 @@ const __FY = (() => {
   });
   const adopt = v => {
     if (!v || !Array.isArray(v.order) || !Array.isArray(v.hidden)) return;
-    const was = stringify(st);
+    const was = serializeJSON(st);
     st = { order: v.order, hidden: v.hidden };
-    if (isOpen() && stringify(st) !== was) {
+    if (isOpen() && serializeJSON(st) !== was) {
       const visible = shown();
       if (!visible.some(t => key(t) === cur)) show(visible[0]);
       else paint();
@@ -112,14 +145,17 @@ const __FY = (() => {
     const room = (m, what) => {
       if (m.size >= 256) throw new RangeError("too many " + what);
     };
+    const runTimer = fn => {
+      try { return fn(); } catch (error) { diagnostic("core.timer_failed"); throw error; }
+    };
     const api = {
       id,
       timeout(fn, ms) {
         if (p.dead) return 0;
         room(tm, "timers");
-        const h = later(() => {
+        const h = scheduleTimeout(() => {
           tm.delete(h);
-          if (!p.dead) fn();
+          if (!p.dead) runTimer(fn);
         }, ms);
         tm.add(h);
         return h;
@@ -127,9 +163,9 @@ const __FY = (() => {
       interval(fn, ms) {
         if (p.dead) return 0;
         room(iv, "intervals");
-        const h = every(() => {
-          if (p.dead) unevery(h);
-          else fn();
+        const h = scheduleInterval(() => {
+          if (p.dead) cancelInterval(h);
+          else runTimer(fn);
         }, ms);
         iv.add(h);
         return h;
@@ -137,8 +173,8 @@ const __FY = (() => {
       clear(h) {
         const t = tm.delete(h);
         const i = iv.delete(h);
-        if (t || !i) unlater(h);
-        if (i || !t) unevery(h);
+        if (t || !i) cancelTimeout(h);
+        if (i || !t) cancelInterval(h);
       },
       on(t, type, fn, o) {
         if (p.dead) return () => {};
@@ -152,22 +188,22 @@ const __FY = (() => {
       },
       _clear() {
         const a = res.splice(0);
-        while (a.length) safe(a.pop());
+        while (a.length) cleanup(a.pop());
       },
     };
     APIS.set(p, api);
-    defProp(api, "_n", { value: () => ({ timers: tm.size, intervals: iv.size, listeners: ls.size }) });
+    defineProperty(api, "_n", { value: () => ({ timers: tm.size, intervals: iv.size, listeners: ls.size }) });
     res.push(() => {
-      tm.forEach(unlater);
-      iv.forEach(unevery);
+      tm.forEach(cancelTimeout);
+      iv.forEach(cancelInterval);
       tm.clear();
       iv.clear();
       [...ls].forEach(f => f());
     });
     const x = io(id, i.tok);
-    defProp(api, "_rpc", {
+    defineProperty(api, "_rpc", {
       value: (method, arg) =>
-        (p.dead ? P.reject(O.assign(new Error("module disposed"), { code: "disposed" })) : x.core(method, arg)).then(r => {
+        (p.dead ? PromiseConstructor.reject(Object.assign(new Error("module disposed"), { code: "disposed" })) : x.core(method, arg)).then(r => {
           if (r && r.error) {
             const e = new Error(String(r.error));
             e.code = r.code;
@@ -176,9 +212,11 @@ const __FY = (() => {
           return r;
         }),
     });
-    FY.ext.forEach(f => { try { f(api, p, res, x); } catch (e) {} });
+    FY.ext.forEach(extend => {
+      try { extend(api, p, res, x); } catch (error) { diagnostic("core.extension_failed"); }
+    });
     i.events = api.events;
-    defProp(p, "dead", { get: () => gone.has(p) || undefined, enumerable: true }); freeze(p);
+    defineProperty(p, "dead", { get: () => gone.has(p) || undefined, enumerable: true }); freezeObject(p);
     const k = mods.findIndex(q => q.id === id);
     if (k < 0) mods.push(p);
     else {
@@ -188,16 +226,16 @@ const __FY = (() => {
     return api;
   };
   const proxy = i => {
-    const o = O.create(null);
-    const put = (k, v) => defProp(o, k, { value: v, enumerable: true });
+    const o = Object.create(null);
+    const put = (k, v) => defineProperty(o, k, { value: v, enumerable: true });
     put("register", p => reg(i, p));
     put("call", (pid, method, arg, to) => send(i.id, method, arg, i.tok, i.id, to));
     put("dispose", () => disposeMods(i.id));
     put("listen", (name, fn) => (i.events ? i.events.on(name, fn) : () => {}));
     put("_meta", i.meta);
     ["el", "button", "toast", "fail", "notify", "onPanel", "lazy", "open", "toggle", "restore", "redraw"].forEach(k => put(k, FY[k]));
-    defProp(o, "panelOpen", { get: () => FY.panelOpen, enumerable: true });
-    return freeze(o);
+    defineProperty(o, "panelOpen", { get: () => FY.panelOpen, enumerable: true });
+    return freezeObject(o);
   };
   const bindPlugin = (id, tok, meta) => {
     if (closing || closed) throw new Error("Framey panel disposed");
@@ -206,11 +244,11 @@ const __FY = (() => {
     if (typeof tok !== "string" || tok.length < 8 || tok.length > 256) throw new Error("invalid module token");
     if (bound.has(id) ? bound.get(id) !== tok : bound.size >= 64) throw new Error("module id " + id + " is already in use");
     if (!extLocked) {
-      freeze(FY.ext);
+      freezeObject(FY.ext);
       extLocked = true;
     }
     const given = meta && typeof meta === "object" ? meta : {};
-    return proxy({ id, tok, meta: freeze(O.assign({}, given, { id })), used: false });
+    return proxy({ id, tok, meta: freezeObject(Object.assign({}, given, { id })), used: false });
   };
   const apiOf = t => APIS.get(t);
   const disposeMods = only => {
@@ -219,20 +257,21 @@ const __FY = (() => {
     try {
       if (!only) {
         ["click", "keydown", "pointerdown"].forEach(t => window.removeEventListener(t, mark, true));
-        safe(() => all().filter(t => !t.plugin && !apiOf(t)).forEach(t => { if (t.dispose) safe(t.dispose); }));
+        closeReport();
+        cleanup(() => all().filter(t => !t.plugin && !apiOf(t)).forEach(t => { if (t.dispose) cleanup(t.dispose); }));
       }
       mods.forEach(p => {
         if (gone.has(p) || (only && p.id !== only)) return;
         gone.add(p);
-        try { if (p.dispose) p.dispose(); } catch (e) { safe(() => FY.toast("Module " + p.id + " cleanup failed: " + (e && e.message), 4000)); }
-        safe(() => APIS.get(p)._clear());
-        safe(() => owned(p.id).forEach(e => e.remove()));
+        if (p.dispose) cleanup(() => p.dispose());
+        cleanup(() => APIS.get(p)._clear());
+        cleanup(() => owned(p.id).forEach(e => e.remove()));
         inst[p.id] = (inst[p.id] | 0) + 1;
       });
-      O.keys(calls).forEach(k => {
+      Object.keys(calls).forEach(k => {
         const c = calls[k];
         if (only && c.p !== only) return;
-        unlater(c.t);
+        cancelTimeout(c.t);
         delete calls[k];
         c.r(disposed(c.p));
       });
@@ -252,11 +291,11 @@ const __FY = (() => {
       else if (only ? only === cur : apiOf(t)) show(t);
       else paint();
     },
-    call: (plugin, method, arg) => (plugin === "_core" ? P.resolve({ error: "not authorized" }) : send(plugin, method, arg, undefined, plugin)),
+    call: (plugin, method, arg) => (plugin === "_core" ? PromiseConstructor.resolve({ error: "not authorized" }) : send(plugin, method, arg, undefined, plugin)),
     _reply(g, id, v) {
       const c = calls[id];
       if (!c || g !== c.g || g !== stamp(c.p)) return;
-      unlater(c.t);
+      cancelTimeout(c.t);
       delete calls[id];
       if (c.p === "_core") adopt(v);
       c.r(v);
@@ -271,14 +310,16 @@ const __FY = (() => {
       while (tc.childElementCount >= 4) tc.firstElementChild.remove();
       const t = el("background:#101018;color:#fff;border-radius:14px;padding:14px 24px;font:22px sans-serif", String(text).slice(0, 200));
       tc.append(t);
-      later(() => t.remove(), Math.min(ms || 2500, 60000));
+      scheduleTimeout(() => t.remove(), Math.min(ms || 2500, 60000));
     },
     fail(id, e) { FY.toast("Module " + id + " failed: " + (e && e.message), 4000); },
   };
   const K = {
     call: (method, arg) => send("_core", method, arg, TOK, "_core"),
     post: (method, arg) => post(method, arg, TOK, "_core"),
-    pending: () => O.keys(calls).length,
+    pending: () => Object.keys(calls).length,
+    diagnostic,
+    diagnostics,
     lock,
     tab: () => cur,
     untrusted: () => __trust.n,
@@ -287,6 +328,7 @@ const __FY = (() => {
     bind: bindPlugin,
     reply: FY._reply,
   };
+  const closeReport = () => K.report && cleanup(() => K.report.close());
   FY._k = t => (TOK && t === TOK ? K : null);
   const panel = el("position:fixed;top:11px;right:11px;z-index:99999;box-sizing:border-box;width:520px;max-width:calc(100vw - 22px);max-height:min(585px,calc(100vh - 22px));overflow:hidden;background:#101018;color:#fff;border-radius:16px;padding:14px;display:none;gap:12px;font:20px sans-serif");
   panel.setAttribute("role", "region");
@@ -331,7 +373,7 @@ const __FY = (() => {
       if (m && typeof m.render === "function") return m.render(box);
       box.append(el("font-size:22px;font-weight:700;margin-bottom:12px", name + " is not available."));
       if (k === "store" || k === "decky_store") {
-        box.append(el("font-size:19px;color:#b9b9cc;margin-bottom:12px", "Reload modules to try again. You can still install and manage modules from Modules."));
+        box.append(el("font-size:19px;color:#b9b9cc;margin-bottom:12px", "Reload modules, or use Modules to manage installed plugins."));
         box.append(FY.button("Open Modules", "min-height:48px;padding:8px 14px", () => FY.open("#modules")));
       }
     },
@@ -367,7 +409,7 @@ const __FY = (() => {
   const shown = () => all().filter(t => !(st.hidden || []).includes(t.plugin || t.id));
   const tabs = () => [...rail.children];
   const stop = t => tabs().forEach(x => (x.tabIndex = x === t ? 0 : -1));
-  const reveal = t => { if (t) safe(() => t.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" })); };
+  const reveal = t => { if (t && typeof t.scrollIntoView === "function") safe(() => t.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" }), "core.panel_failed"); };
   const focusTab = () => {
     const t = tabs().find(x => x.getAttribute("aria-selected") === "true") || tabs()[0];
     if (t) { stop(t); t.focus({ preventScroll: true }); reveal(t); }
@@ -428,9 +470,10 @@ const __FY = (() => {
     }
   });
   const show = t => {
+    if (cur !== key(t)) closeReport();
     const inside = content.contains(document.activeElement);
     const old = cur !== key(t) && find(cur);
-    if (old && old.leave) safe(old.leave);
+    if (old && old.leave) cleanup(old.leave);
     cur = key(t);
     content.setAttribute("aria-label", String(t.name || t.short || cur));
     ss("fyTab", cur);
@@ -440,21 +483,23 @@ const __FY = (() => {
     content.append(body);
     owner = t.plugin || (apiOf(t) ? t.id : "");
     const source = owner || "_core", generation = stamp(source);
-    const failed = e => {
+    const failed = () => {
       if (!body.isConnected || body.parentNode !== content || cur !== key(t) || generation !== stamp(source)) return;
-      body.textContent = "Module error: " + (e && e.message);
-      if (t.plugin || apiOf(t)) post("fail", { id: t.plugin || t.id, what: "render", msg: String(e && e.message) }, TOK);
+      diagnostic("core.callback_failed");
+      body.textContent = "Module error: render failed.";
+      if (t.plugin || apiOf(t)) post("fail", { id: t.plugin || t.id, what: "render", msg: "render failed" }, TOK);
     };
     try {
       const result = t.render(body, apiOf(t));
-      if (result && typeof result.then === "function") P.resolve(result).catch(failed);
-    } catch (e) { failed(e); }
+      if (result && typeof result.then === "function") PromiseConstructor.resolve(result).catch(failed);
+    } catch (error) { failed(); }
     owner = "";
     if (inside && !focusFirst()) focusTab();
   };
   const note = () => post("panel", isOpen(), TOK);
   const go = (on, id) => {
     if (closing || closed) return;
+    if (!on) closeReport();
     const was = isOpen();
     if (on && !was) returnTo = document.activeElement;
     panel.style.display = on ? "flex" : "none";
@@ -470,7 +515,7 @@ const __FY = (() => {
     } else if (returnTo) {
       const o = returnTo;
       returnTo = null;
-      safe(() => o.focus());
+      safe(() => o.focus(), "core.panel_failed");
     }
     note();
     if (FY._panel) FY._panel(on);
@@ -487,9 +532,9 @@ const __FY = (() => {
       ss("fyMsg", "");
     }
   };
-  defProp(FY, "plugins", { get: () => freeze(mods.slice()), enumerable: true });
+  defineProperty(FY, "plugins", { get: () => freezeObject(mods.slice()), enumerable: true });
   lock(FY, "dispose", "call", "_reply", "_k", "toast", "fail", "el", "button", "ext");
-  defProp(window, "Framey", { value: FY, writable: false, configurable: true });
+  defineProperty(window, "Framey", { value: FY, writable: false, configurable: true });
   document.body.append(panel);
   return FY;
 })();

@@ -925,6 +925,133 @@ t("catalog isolation: switching native and Decky stores preserves peers and hide
   assert.strictEqual(e.sent("catalog_install").length, 0);
 });
 
+t("event lifecycle: once is removed before recursive dispatch and peer ordering is preserved", () => {
+  const e = boot({ files: ["fy-api.js"] });
+  const a = e.plugin("a"), b = e.plugin("b"), seen = [];
+  a.events.once("tick", value => { seen.push("once " + value); e.event("a", "tick", "nested"); });
+  a.events.on("tick", value => seen.push("a " + value));
+  b.events.on("tick", value => seen.push("b " + value));
+  e.event("a", "tick", "outer");
+  e.event("b", "tick", "peer");
+  assert.deepStrictEqual(seen, ["once outer", "a nested", "a outer", "b peer"]);
+  assert.strictEqual(e.FY.diag().plugins.find(plugin => plugin.id === "a").subscriptions, 1);
+});
+
+t("event lifecycle: subscriptions added during dispatch wait and removed callbacks stay removed", () => {
+  const e = boot({ files: ["fy-api.js"] });
+  const a = e.plugin("a"), seen = [];
+  let changed = false, offRemoved;
+  a.events.on("tick", value => {
+    seen.push("first " + value);
+    if (!changed) {
+      changed = true;
+      a.events.on("tick", next => seen.push("added " + next));
+      offRemoved();
+    }
+  });
+  offRemoved = a.events.on("tick", value => seen.push("removed " + value));
+  a.events.on("tick", value => seen.push("last " + value));
+  e.event("a", "tick", "one");
+  e.event("a", "tick", "two");
+  assert.deepStrictEqual(seen, ["first one", "last one", "first two", "last two", "added two"]);
+});
+
+t("event lifecycle: rebind during a callback kills the old dispatch without losing the new instance or peer", () => {
+  const e = boot({ files: ["fy-api.js"] });
+  const a = e.plugin("a"), b = e.plugin("b"), seen = [];
+  a.events.on("tick", value => {
+    seen.push("old " + value);
+    const replacement = e.plugin("a");
+    replacement.events.on("tick", next => seen.push("new " + next));
+    e.event("a", "tick", "nested");
+  });
+  a.events.on("tick", () => seen.push("old after replacement"));
+  b.events.on("tick", value => seen.push("b " + value));
+  e.event("a", "tick", "outer");
+  e.event("a", "tick", "next");
+  e.event("b", "tick", "peer");
+  assert.deepStrictEqual(seen, ["old outer", "new nested", "new next", "b peer"]);
+});
+
+t("event lifecycle: callback errors with hostile message accessors cannot escape or expose their details", () => {
+  const e = boot({ files: ["fy-api.js"] });
+  const a = e.plugin("private_fixture_module"), b = e.plugin("b"), seen = [];
+  const privateText = "token=fixture-secret /home/private-fixture/device 192.0.2.23";
+  let messageReads = 0;
+  const error = Object.defineProperty({}, "message", { get() { messageReads++; throw new Error(privateText); } });
+  a.events.on("tick", () => { throw error; });
+  a.events.on("tick", value => seen.push("a " + value));
+  b.events.on("tick", value => seen.push("b " + value));
+  const calls = e.calls.length;
+  assert.doesNotThrow(() => e.event("private_fixture_module", "tick", "after failure"));
+  e.event("b", "tick", "peer");
+  assert.deepStrictEqual(seen, ["a after failure", "b peer"]);
+  assert.strictEqual(messageReads, 0);
+  assert.strictEqual(e.calls.length, calls);
+  const diagnostics = e.K().diagnostics();
+  assert.ok(diagnostics.some(row => row.count > 0));
+  for (const row of diagnostics) {
+    assert.deepStrictEqual(Object.keys(row).sort(), ["code", "count"]);
+    assert.strictEqual(typeof row.code, "string");
+    assert.ok(Number.isInteger(row.count) && row.count >= 1 && row.count <= 9999);
+  }
+  const exposed = JSON.stringify(diagnostics);
+  for (const value of [privateText, "fixture-secret", "private_fixture_module", "private-fixture", "192.0.2.23"]) assert.ok(!exposed.includes(value));
+  assert.strictEqual(e.document.querySelector('[role="status"],[role="alert"]'), null);
+});
+
+t("event lifecycle: fixed diagnostics are bounded immutable snapshots and reject arbitrary values without coercion", () => {
+  const e = boot({ files: ["fy-api.js"] });
+  const api = e.plugin("a");
+  api.events.on("tick", () => { throw new Error("fixture-private-detail"); });
+  e.event("a", "tick", null);
+  const core = e.K();
+  const row = core.diagnostics().find(entry => entry.count > 0);
+  assert.ok(row);
+  let coerced = false;
+  const before = JSON.stringify(core.diagnostics());
+  const values = ["fixture-private-detail", "__proto__", "constructor", "a", "", null, 1, Symbol("private"), { toString() { coerced = true; throw new Error("do not coerce"); } }];
+  for (const value of values) assert.doesNotThrow(() => core.diagnostic(value));
+  assert.strictEqual(coerced, false);
+  assert.strictEqual(JSON.stringify(core.diagnostics()), before);
+  const calls = e.calls.length;
+  for (let i = 0; i < 12000; i++) core.diagnostic(row.code);
+  const snapshot = core.diagnostics();
+  assert.ok(snapshot.length <= 24);
+  assert.strictEqual(snapshot.find(entry => entry.code === row.code).count, 9999);
+  try { snapshot[0].count = -1; snapshot[0].code = "injected"; snapshot.push({ code: "injected", count: 1 }); } catch (error) {}
+  assert.strictEqual(core.diagnostics().find(entry => entry.code === row.code).count, 9999);
+  assert.ok(!core.diagnostics().some(entry => entry.code === "injected"));
+  assert.strictEqual(e.calls.length, calls);
+  assert.strictEqual(e.clock.pending(), 0);
+  assert.strictEqual("diagnostic" in api, false);
+  assert.strictEqual("diagnostics" in e.FY, false);
+});
+
+t("event lifecycle: diagnostic counters survive module cleanup and reset with a fresh injection", () => {
+  const e = boot({ files: ["fy-api.js"] });
+  const a = e.plugin("a");
+  a.events.on("tick", () => { throw new Error("private-first-error"); });
+  e.event("a", "tick", null);
+  const previous = e.K(), record = previous.diagnostics().find(row => row.count > 0);
+  assert.ok(record);
+  e.FY.dispose("a", TOK);
+  assert.strictEqual(previous.diagnostics().find(row => row.code === record.code).count, record.count);
+  const replacement = e.plugin("a");
+  replacement.events.on("tick", () => { throw new Error("private-second-error"); });
+  e.event("a", "tick", null);
+  assert.strictEqual(previous.diagnostics().find(row => row.code === record.code).count, record.count + 1);
+  e.FY.dispose(undefined, TOK);
+  assert.ok(previous.diagnostics().length > 0);
+  e.window.eval("delete window.Framey");
+  e.load("inject.js");
+  e.load("fy-api.js");
+  const current = e.window.Framey._k(TOK);
+  assert.notStrictEqual(current, previous);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(current.diagnostics())), []);
+  e.window.close();
+});
+
 const main = async () => {
   let pass = 0;
   const failed = [];

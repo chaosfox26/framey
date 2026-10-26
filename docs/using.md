@@ -2,7 +2,7 @@
 
 This guide describes the experimental branch of Framey, currently reporting version 1.0.2. An installed stable build can have different features; the version number alone does not identify its source. Check the installed commit in Settings before comparing its panel with this guide. Editing or checking out this branch does not update the running service. See [Verification status](#verification-status) for the limits of device testing.
 
-Contents: [Install](#install) · [The icon and panel](#the-icon-and-panel) · [Catalog](catalog.md) · [Managing modules](#managing-modules) · [Updates](#updates) · [Upstream project status](#upstream-project-status) · [Configuration files](#configuration-files) · [Developer mode](#developer-mode-and-diagnostics) · [Backend workers](#backend-workers-and-failure-containment) · [Resource limits](#resource-limits) · [Recovery](#recovery) · [Fan Control](#fan-control) · [Known limitations](#known-limitations) · [Verification status](#verification-status)
+Contents: [Install](#install) · [The icon and panel](#the-icon-and-panel) · [Catalog](catalog.md) · [Managing modules](#managing-modules) · [Report to Framey](#report-to-framey) · [Updates](#updates) · [Upstream project status](#upstream-project-status) · [Configuration files](#configuration-files) · [Developer mode](#developer-mode-and-diagnostics) · [Backend workers](#backend-workers-and-failure-containment) · [Resource limits](#resource-limits) · [Recovery](#recovery) · [Fan Control](#fan-control) · [Known limitations](#known-limitations) · [Verification status](#verification-status)
 
 ## Install
 
@@ -57,6 +57,8 @@ If the icon does not appear, check the service log with `journalctl --user -u fr
 - The panel's last page and whether it was open are kept in the page's session storage. They can reset when Steam's interface restarts.
 - Framey checks every 5 seconds whether Steam's interface is still attached. When Steam reloads its interface, Framey reattaches and injects its pages again.
 
+Framey is independent of Decky Loader and is not affiliated with or endorsed by it. Decky-related compatibility is experimental and varies by plugin. Decky and plugin authors are not expected to support Framey-specific failures. The Decky Store currently browses and inspects upstream packages; it does not install them or run their frontend/backend code. Separately adapted Framey-native ports run through Framey's normal module lifecycle and need their own compatibility evidence.
+
 ## Managing modules
 
 Each card on the Modules page shows the name, version, installed commit, an Enabled switch, a compatibility line and the upstream status chip. Less common actions are under **More**.
@@ -75,6 +77,16 @@ Each card on the Modules page shows the name, version, installed commit, an Enab
 ### Leaving a running operation
 
 Progress screens offer **Back** and say "You can go back while this operation continues." Back returns to the page; it does not cancel an install, update, repair or rollback already accepted by the loader. **Cancel** on a confirmation screen returns without starting that action. After leaving a running operation, return to Modules or Settings to check the installed version and result. A slow response or page timeout does not mean that the loader stopped the work.
+
+## Report to Framey
+
+Use **Report to Framey** from module/catalog details or relevant error views for a Framey-specific problem. It opens an editable review panel addressed to the [Framey runtime repository](https://github.com/chaosfox26/framey/issues), rather than the installer, Decky or a plugin author's tracker. Framey does not submit an issue automatically.
+
+Check **Destination**, **Issue title** and **Report details**. The draft can include the plugin name/version and source category, Framey/API/platform/Python versions and a concise error. Fill in the reproduction steps and expected versus actual behavior. Review or remove anything you do not want to share. Optional **Diagnostics (editable)** contains bounded, recognized session-wide callback counters when available; these are not attributed to the selected plugin, and no full logs are collected for this report. Uncheck **Include diagnostics** or choose **Remove diagnostics** to exclude them.
+
+**Open GitHub draft** sends the reviewed draft to GitHub's new-issue page. You still review it, sign in if needed and submit it there. A browser-launch request does not confirm that the page opened or that an issue was created. The report becomes public only if you submit it on GitHub.
+
+**Copy sanitized report** checks the edited draft again before copying it. A long report or browser-opening failure offers copyable text instead; if clipboard access fails, select and copy the visible text. If the repository is unavailable, opening GitHub is disabled but a prepared report can still be sanitized and copied. If the report backend cannot prepare a draft, use **Retry draft** or **Copy basic template** without plugin details. **Back** or **Close** closes the review panel.
 
 ## Updates
 
@@ -184,6 +196,8 @@ Framey does not use React, so React DevTools does not apply. Use Diagnostics and
 ## Backend workers and failure containment
 
 A module's `backend.py` runs in its own worker process. Its interface (`main.js`) runs in Steam's page.
+
+Installing an enabled Framey-native module can load its frontend and start its backend for an installation health check. Later backend calls start a worker as needed. A source port based on a Decky plugin remains experimental: loading an interface is not proof that backend calls, hardware behavior or VR interaction work. Framey-specific failures belong with Framey's support path rather than being treated as an obligation of Decky or the original plugin author.
 
 - **Lazy start.** A worker starts on the module's first call. Each worker runs with `nice 19`, at most 256 open files, a 64 MB file-size limit, no core dumps and `no_new_privs` (so `sudo` and setuid helpers fail inside a backend). Its environment is an allowlist.
 - **Limits.** At most 3 workers run at once. Settings > **Modules running at once** sets the limit from 1 to 3 (`prefs.workers_max` in `settings.json`). When a worker is needed and the limit is reached, the least recently used idle worker is stopped. Idle modules can restart when needed. A worker stops after 120 seconds without a call (`backend.idle`, 10 to 3600).

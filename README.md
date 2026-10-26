@@ -4,7 +4,7 @@
 
 > **Framey is an AI-made project, developed using AI coding tools.**
 >
-> **Framey was inspired by [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) and its contributors’ work making Steam Deck customization accessible through plugins. We gratefully acknowledge that inspiration. Framey is an independent project for Steam Frame, with no claimed affiliation or endorsement.**
+> **Framey was inspired by [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) and its contributors’ work making Steam Deck customization accessible through plugins. We gratefully acknowledge that inspiration. Framey is independent of Decky Loader and is not affiliated with or endorsed by it.**
 
 Framey is a plugin loader that runs on the Steam Frame. It adds an icon to Steam's bottom bar that opens a VR-friendly panel for installed plugins, updates and loader settings. Framey is unofficial and independent of Valve.
 
@@ -49,7 +49,9 @@ Local Python and simulated browser tests provide development evidence. They do n
 
 Framey was inspired by [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader). Its plugin-loader concept, and the way it made Steam Deck customization accessible through plugins, shaped Framey's idea of a small loader with plugins, a Settings page and a Store page. Thank you to the Decky Loader maintainers and contributors for the work and the example. Framey's aim is to bring that kind of convenience to the Steam Frame while respecting the work that inspired it.
 
-What Framey is not: it is not a port of Decky Loader, it is not compatible with Decky plugins, and it has no official relationship with the Decky Loader project. It is also not a clean-room implementation. While Framey was being designed, Decky Loader's public source was read for reference. No Decky Loader code, assets or documentation were copied. An earlier comparison against Decky Loader's source reported one identical line, the generic browser call `document.head.append(style);`. That comparison was not repeated for this verification.
+Framey is independently implemented for Steam Frame. It is not a port of Decky Loader and does not run original Decky plugin bundles. Decky Loader's public source was read for reference during development, so Framey is not a clean-room implementation. The limited source-port helper and demonstration do not bundle Decky Loader, `@decky/api` or `@decky/ui`. Preserve the licenses and credits of any third-party plugin source you adapt.
+
+Decky-related compatibility work is experimental. Browsing a Decky Store listing or inspecting its archive does not install or run it in Framey. Report Framey compatibility problems to [Framey](https://github.com/chaosfox26/framey/issues); Decky maintainers and plugin authors are not expected to support Framey-specific failures. Review and remove private details before submitting a public issue.
 
 Framey is unofficial and independent of Valve.
 

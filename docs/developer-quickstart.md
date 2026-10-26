@@ -54,7 +54,7 @@ The experimental **Store** installs Framey-native modules. The separate **Decky 
 
 ## A lifecycle that survives reloads
 
-`Framey.register({render, dispose})` registers one page. `render(box, api)` runs again when the page is opened; avoid registering another event subscription or page on every render. Starter demonstrates a shared initialization promise and a render generation check, so a delayed initialization cannot populate an obsolete page or recreate UI after disposal.
+`Framey.register({render, dispose})` registers one page. `render(box, api)` runs again when the page is opened; avoid registering another event subscription or page on every render. Starter demonstrates a shared initialization promise and a render generation check, so a delayed initialization cannot populate an obsolete page or recreate UI after disposal. Hello also keeps a delayed settings read from replacing a level the user has already edited. Feedback timers use a revision counter so repeating the same message does not let an older timer clear it early.
 
 Use `api.ui` controls for focus, keyboard operation, and Framey's large touch targets. Use `api.timeout`, `api.interval`, `api.on`, `api.events.on`, and `api.cleanup` to give Framey ownership of timers, listeners, subscriptions, and custom teardown. Release your own observers, sockets, and other resources too. Treat visibility as a hint to reduce work: current `api.visible` reflects panel and document visibility, not a guarantee that your tab is selected.
 
@@ -87,6 +87,12 @@ journalctl --user -u framey.service -n 100 --no-pager
 ```
 
 Plugin logs are under `~/.local/state/framey/<id>/`. A syntax or render failure appears on the Modules page. If plugin UI prevents recovery, create `~/.config/framey/safe` and restart the loader to start without plugins; remove the file after fixing the plugin.
+
+## Framey support and diagnostic privacy
+
+Framey is independent of Decky Loader and is not affiliated with or endorsed by it. Decky source-port compatibility is experimental and limited; upstream Decky and plugin authors are not expected to support Framey-specific failures. Report those problems to [Framey](https://github.com/chaosfox26/framey/issues/new), including the plugin id/version and public source, Framey version/commit, reproduction steps, and expected versus actual behavior. Store browsing, archive inspection, native installation, frontend loading and backend execution are separate checks; say which one failed.
+
+A GitHub new-issue page is an editable draft until you submit it. Review and remove diagnostics before posting. Share only a small relevant excerpt, with necessary OS/hardware versions; omit full logs, home paths, usernames, IP addresses, serial numbers, tokens and credentials. The examples log settings actions and job lifecycle, without logging picker filenames/paths or downloaded response bodies. Keep that boundary when extending them; displaying a selected filename locally does not make it appropriate diagnostic data.
 
 ## Package a release
 

@@ -1158,6 +1158,160 @@ t("ordinary update preserves a backend error rather than claiming success", asyn
   assert.ok(!c.text().includes("Updated Alpha"));
 });
 
+t("plugin details report only on tap and send bounded allowlisted metadata", async () => {
+  const c = boot({ list: [mod("private-internal-id", "Alpha", { source: "https://github.com/example/plugin", token: "must not be forwarded" })] });
+  const reports = [];
+  c.env.window.__S.K.report = context => { reports.push(JSON.parse(JSON.stringify(context))); return Promise.resolve({ closed: true }); };
+  await c.open("modules");
+  await c.click("More");
+  assert.equal(reports.length, 0);
+  await c.click("Report to Framey");
+  assert.equal(reports.length, 1);
+  assert.deepEqual(reports[0], { plugin: { name: "Alpha", version: "1.0.0", source: "framey" }, error: "", code: "plugin_details" });
+  assert.ok(!JSON.stringify(reports[0]).includes("private-internal-id"));
+  assert.ok(!JSON.stringify(reports[0]).includes("github.com"));
+  assert.ok(!JSON.stringify(reports[0]).includes("must not be forwarded"));
+});
+
+t("load render and backend error reports stay attached to their own module", async () => {
+  for (const what of ["load", "render", "backend"]) {
+    const c = boot({ list: [mod("a", "Alpha", { source: "decky_testing", fail: { what, msg: "failure " + "x".repeat(1000), trace: "unrelated full log" } })] });
+    const reports = [];
+    c.env.window.__S.K.report = context => { reports.push(context); return Promise.resolve({ closed: true }); };
+    await c.open("modules");
+    assert.equal(reports.length, 0);
+    await c.click("Report to Framey");
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].plugin.name, "Alpha");
+    assert.equal(reports[0].plugin.source, "decky_testing");
+    assert.equal(reports[0].code, "plugin_" + what + "_failed");
+    assert.equal(reports[0].error.length, 600);
+    assert.ok(!JSON.stringify(reports[0]).includes("unrelated full log"));
+  }
+});
+
+t("an update failure offers a review action with the module context", async () => {
+  const c = boot({ update: { error: "Package verification failed" } });
+  const reports = [];
+  c.env.window.__S.K.report = context => { reports.push(context); return Promise.resolve({ closed: true }); };
+  await c.open("modules");
+  await c.click("Update");
+  await c.click("Install");
+  assert.ok(c.has("Back") && c.has("Report to Framey"));
+  assert.equal(reports.length, 0);
+  await c.click("Report to Framey");
+  assert.equal(reports[0].plugin.name, "Alpha");
+  assert.equal(reports[0].plugin.version, "1.0.0");
+  assert.equal(reports[0].error, "Package verification failed");
+  assert.equal(reports[0].code, "plugin_update_failed");
+});
+
+t("management load errors do not blame an arbitrary selected module", async () => {
+  const c = boot({ list: { error: "The module list could not be read" } });
+  const reports = [];
+  c.env.window.__S.K.report = context => { reports.push(context); return Promise.resolve({ closed: true }); };
+  await c.open("modules");
+  await c.click("Report to Framey");
+  assert.equal(reports[0].code, "management_list_failed");
+  assert.equal(reports[0].error, "The module list could not be read");
+  assert.equal("plugin" in reports[0], false);
+  assert.equal("diagnostics" in reports[0], false);
+});
+
+t("missing reporting support gives visible unavailable feedback without a route request", async () => {
+  const c = boot();
+  await c.open("modules");
+  await c.click("More");
+  const count = c.calls.length;
+  await c.click("Report to Framey");
+  assert.ok(c.d.body.textContent.includes("Report to Framey: Unavailable"));
+  assert.equal(c.calls.length, count);
+});
+
+t("a reporting helper failure stays visible and never becomes submission success", async () => {
+  const c = boot();
+  c.env.window.__S.K.report = () => Promise.reject(Error("private failure details"));
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Report to Framey");
+  assert.ok(c.d.body.textContent.includes("Report to Framey: Unavailable"));
+  assert.ok(!c.d.body.textContent.includes("private failure details"));
+  assert.ok(!/issue created|submitted successfully/i.test(c.text()));
+});
+
+t("report actions stay busy until review closes and do not open duplicates", async () => {
+  const c = boot();
+  let close;
+  let opens = 0;
+  c.env.window.__S.K.report = () => { opens++; return new Promise(resolve => { close = resolve; }); };
+  await c.open("modules");
+  await c.click("More");
+  const report = c.find("Report to Framey");
+  report.click();
+  await settle();
+  assert.equal(report.getAttribute("aria-busy"), "true");
+  report.click();
+  await settle();
+  assert.equal(opens, 1);
+  close({ closed: true });
+  await settle();
+  assert.equal(report.getAttribute("aria-busy"), "false");
+  assert.ok(!/issue created|submitted successfully/i.test(c.text()));
+});
+
+t("background batch failures expose a manual report without attaching one module", async () => {
+  const c = boot();
+  const reports = [];
+  c.env.window.__S.K.report = context => { reports.push(context); return Promise.resolve({ closed: true }); };
+  await c.open("modules");
+  c.env.event("_core", "update_result", { ok: 0, failed: 1, results: [{ id: "a", name: "Alpha", state: "failed", error: "Could not fetch package" }] });
+  await settle();
+  assert.equal(reports.length, 0);
+  await c.click("Report to Framey");
+  assert.equal(reports[0].code, "management_batch_failed");
+  assert.equal("plugin" in reports[0], false);
+});
+
+t("version lookup failures provide a manual module report action", async () => {
+  const c = boot({ ver_list: { error: "Version list unavailable" } });
+  const reports = [];
+  c.env.window.__S.K.report = context => { reports.push(context); return Promise.resolve({ closed: true }); };
+  await c.open("modules");
+  await c.click("More");
+  await c.click("Versions");
+  assert.equal(reports.length, 0);
+  await c.click("Report to Framey");
+  assert.equal(reports[0].plugin.name, "Alpha");
+  assert.equal(reports[0].code, "version_list_failed");
+  assert.equal(reports[0].error, "Version list unavailable");
+});
+
+t("optional storage failures preserve the UI and emit only fixed diagnostic codes", async () => {
+  const c = boot({ update: { ok: true, version: "2.0.0" } });
+  const diagnostics = [];
+  c.env.window.__S.K.diagnostic = code => diagnostics.push(code);
+  Object.defineProperty(c.w, "sessionStorage", { configurable: true, get() { throw Error("private storage failure details"); } });
+  await c.open("modules");
+  assert.ok(c.text().includes("Alpha"));
+  await c.click("Update");
+  await c.click("Install");
+  assert.ok(c.text().includes("Updated Alpha to v2.0.0"));
+  assert.ok(diagnostics.length > 0);
+  assert.ok(diagnostics.every(code => code === "core.storage_failed"));
+  assert.ok(!c.d.body.textContent.includes("private storage failure details"));
+});
+
+t("an isolated UI extension failure keeps other controls and records no exception text", async () => {
+  const c = boot();
+  const diagnostics = [];
+  c.env.window.__S.K.diagnostic = code => diagnostics.push(code);
+  c.FY.ext.push(() => { throw Error("private extension failure details"); });
+  await c.open("modules");
+  assert.ok(c.has("More") && c.has("Check for updates"));
+  assert.deepEqual(diagnostics, ["core.callback_failed"]);
+  assert.ok(!c.d.body.textContent.includes("private extension failure details"));
+});
+
 t("strings: every key used by the pages exists in the English table, none is unused", async () => {
   const c = boot();
   const used = new Set();

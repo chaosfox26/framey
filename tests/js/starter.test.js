@@ -140,6 +140,22 @@ t("a newer note is not cleared by an older timer", async () => {
   assert.ok(!h.texts().includes("Fetched"));
 });
 
+t("repeating the same note gives the latest note its full duration", async () => {
+  const h = boot();
+  await h.show();
+  h.btn("Save").click();
+  h.answer("set", { ok: true }, "starter");
+  await settle();
+  h.env.clock.tick(2000);
+  h.btn("Save").click();
+  h.answer("set", { ok: true }, "starter");
+  await settle();
+  h.env.clock.tick(1500);
+  assert.ok(h.texts().includes("Saved"));
+  h.env.clock.tick(1500);
+  assert.ok(!h.texts().includes("Saved"));
+});
+
 t("job events update the page only while it is visible", async () => {
   const h = boot();
   await h.show();
@@ -347,6 +363,26 @@ t("Hello uses scoped controls and ignores stale or disposed backend replies", as
   await settle();
   assert.equal(env.document.querySelectorAll('[data-fy="hello"]').length, 0);
   assert.equal(env.clock.pending(), 0);
+});
+
+t("Hello does not overwrite user input with its delayed initial value", async () => {
+  const env = makeDom({ loadFiles: ["fy-api.js", "fy-ui.js"] });
+  const meta = JSON.parse(fs.readFileSync(path.join(ROOT, "examples/hello-plugin/plugin.json"), "utf8"));
+  env.loadPlugin("hello", "examples/hello-plugin/main.js", meta);
+  const plugin = env.record("hello");
+  const api = env.window.Framey._k(TOK).apiOf(plugin);
+  const box = env.document.createElement("div");
+  env.document.body.append(box);
+  plugin.render(box, api);
+  const slider = box.querySelector('[role="slider"]');
+  slider.dispatchEvent(new env.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  slider.dispatchEvent(new env.window.KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true }));
+  assert.deepEqual(env.sent("set")[0].arg, { level: 55 });
+  env.answer(env.sent("set")[0], { ok: true });
+  env.answer(env.sent("get")[0], { level: 10 });
+  await settle();
+  assert.equal(slider.value, 55);
+  assert.ok(box.textContent.includes("Saved"));
 });
 
 t("nothing is called on the backend before the first render", async () => {

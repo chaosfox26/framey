@@ -7,106 +7,158 @@ const createDeckySourceAdapter = function (api) {
     throw new TypeError("A plugin-owned Framey API with calls, events and cleanup is required");
   }
 
-  const listeners = new Map();
-  const pending = new Set();
+  const subscriptions = new Map();
+  const pendingCalls = new Set();
   let disposed = false;
-  let detachCleanup = function () {};
-  const disposedError = () => Object.assign(new Error("Source adapter disposed"), { code: "adapter_disposed" });
-  const live = () => { if (disposed) throw disposedError(); };
-  const methodName = name => {
-    if (typeof name !== "string" || !name.length) throw new TypeError("Method must be a nonempty string");
+  let unregisterCleanup = () => {};
+  const createDisposedError = () => Object.assign(new Error("Source adapter disposed"), { code: "adapter_disposed" });
+  const assertActive = () => {
+    if (disposed) throw createDisposedError();
   };
-  const eventName = name => {
+  const validateMethodName = name => {
+    if (typeof name !== "string" || !name.length) {
+      throw new TypeError("Method must be a nonempty string");
+    }
+  };
+  const validateEventName = name => {
     if (typeof name !== "string" || !/^[a-z0-9_.-]{1,40}$/.test(name)) {
       throw new TypeError("Event name must match [a-z0-9_.-]{1,40}");
     }
   };
-  const report = (name, error) => {
+  const failureMessages = {
+    listener_sync: "listener threw; callback isolated",
+    listener_async: "listener promise rejected; callback isolated",
+    unsubscribe: "listener removal failed during cleanup",
+    cleanup: "cleanup registration removal failed",
+  };
+  let diagnosticsReported = 0;
+  const reportFailure = (context, category) => {
+    // Exception contents can contain credentials or private paths. Report only a
+    // fixed category and validated event name, at most four times plus one notice
+    // per adapter lifetime. Native logging applies its own rate limit as well.
+    if (diagnosticsReported >= 5) return;
+    diagnosticsReported++;
+    const message = diagnosticsReported === 5
+      ? "source adapter: further diagnostics suppressed"
+      : "source " + context + ": " + failureMessages[category];
     try {
-      if (typeof api.log === "function") api.log("error", "source event " + name + ": " + String(error && error.message || error));
-    } catch (_) {}
+      if (typeof api.log === "function") {
+        Promise.resolve(api.log("error", message)).catch(() => {
+          // The optional logger is the final fault boundary; do not log recursively.
+        });
+      }
+    } catch {
+      // The same final fault boundary applies to a synchronously failing logger.
+    }
   };
 
   const call = async (method, ...args) => {
-    live();
-    methodName(method);
+    assertActive();
+    validateMethodName(method);
     return new Promise((resolve, reject) => {
       const request = { reject };
-      pending.add(request);
+      pendingCalls.add(request);
       const fail = error => {
-        if (pending.delete(request)) reject(error);
+        if (pendingCalls.delete(request)) reject(error);
       };
       try {
         Promise.resolve(api.call(method, args)).then(value => {
-          if (!pending.delete(request)) return;
+          if (!pendingCalls.delete(request)) return;
           try {
             if (value && value.error) {
               const error = new Error(String(value.error));
               if (typeof value.code === "string") error.code = value.code;
               reject(error);
-            } else resolve(value);
-          } catch (error) { reject(error); }
+            } else {
+              resolve(value);
+            }
+          } catch (error) {
+            reject(error);
+          }
         }, fail);
-      } catch (error) { fail(error); }
+      } catch (error) {
+        fail(error);
+      }
     });
   };
 
   const callable = method => {
-    live();
-    methodName(method);
+    assertActive();
+    validateMethodName(method);
     return (...args) => call(method, ...args);
   };
 
   const addEventListener = (name, listener) => {
-    live();
-    eventName(name);
+    assertActive();
+    validateEventName(name);
     if (typeof listener !== "function") throw new TypeError("Event listener must be a function");
-    const existing = listeners.get(name);
+    const existing = subscriptions.get(name);
     if (existing && existing.has(listener)) return listener;
-    const record = { off: null };
-    record.off = api.events.on(name, payload => {
-      if (disposed || !listeners.get(name) || listeners.get(name).get(listener) !== record) return;
+    const subscription = { unsubscribe: null };
+    subscription.unsubscribe = api.events.on(name, payload => {
+      // Native dispatch may already hold this callback when it is removed and
+      // registered again. Only the current registration may invoke the listener.
+      const current = subscriptions.get(name);
+      if (disposed || !current || current.get(listener) !== subscription) return;
       try {
-        Promise.resolve(listener(...(Array.isArray(payload) ? payload : [payload]))).catch(error => report(name, error));
-      } catch (error) { report(name, error); }
+        const args = Array.isArray(payload) ? payload : [payload];
+        Promise.resolve(listener(...args)).catch(() => reportFailure("event " + name, "listener_async"));
+      } catch {
+        reportFailure("event " + name, "listener_sync");
+      }
     });
-    if (typeof record.off !== "function") throw new TypeError("Framey event registration must return a remover");
-    if (!listeners.has(name)) listeners.set(name, new Map());
-    listeners.get(name).set(listener, record);
+    if (typeof subscription.unsubscribe !== "function") {
+      throw new TypeError("Framey event registration must return a remover");
+    }
+    if (!subscriptions.has(name)) subscriptions.set(name, new Map());
+    subscriptions.get(name).set(listener, subscription);
     return listener;
   };
 
   const removeEventListener = (name, listener) => {
-    const entries = listeners.get(name);
-    const record = entries && entries.get(listener);
-    if (!record) return;
+    const entries = subscriptions.get(name);
+    const subscription = entries && entries.get(listener);
+    if (!subscription) return;
     entries.delete(listener);
-    if (!entries.size) listeners.delete(name);
-    record.off();
+    if (!entries.size) subscriptions.delete(name);
+    subscription.unsubscribe();
   };
 
   const definePlugin = factory => {
-    live();
+    assertActive();
     if (typeof factory !== "function") throw new TypeError("Plugin factory must be a function");
-    return (...args) => { live(); return factory(...args); };
+    return (...args) => {
+      assertActive();
+      return factory(...args);
+    };
   };
 
   const cleanup = () => {
     if (disposed) return;
     disposed = true;
-    const registrations = [...listeners.entries()];
-    listeners.clear();
-    registrations.forEach(([name, entries]) => entries.forEach(record => {
-      try { record.off(); } catch (error) { report(name, error); }
+    // Clear identity and mark disposed before any remover can reenter dispatch.
+    const registrations = [...subscriptions.entries()];
+    subscriptions.clear();
+    registrations.forEach(([name, entries]) => entries.forEach(subscription => {
+      try {
+        subscription.unsubscribe();
+      } catch {
+        reportFailure("event " + name, "unsubscribe");
+      }
     }));
-    pending.forEach(request => request.reject(disposedError()));
-    pending.clear();
-    detachCleanup();
+    pendingCalls.forEach(request => request.reject(createDisposedError()));
+    pendingCalls.clear();
+    try {
+      unregisterCleanup();
+    } catch {
+      reportFailure("adapter", "cleanup");
+    }
   };
-  const detach = api.cleanup(cleanup);
-  if (typeof detach === "function") {
-    detachCleanup = detach;
-    if (disposed) detachCleanup();
+  const unregister = api.cleanup(cleanup);
+  if (typeof unregister === "function") {
+    unregisterCleanup = unregister;
+    // Framey immediately invokes a cleanup registered after native disposal.
+    if (disposed) unregisterCleanup();
   }
   return Object.freeze({ call, callable, addEventListener, removeEventListener, definePlugin, cleanup });
 };

@@ -24,6 +24,7 @@ const boot = (opts = {}) => {
   });
   const w = env.window;
   const d = w.document;
+  if (opts.fixedBinding) Object.defineProperty(w, "fyCall", { value: w.fyCall, writable: false, configurable: false });
   env.load("bar.js");
   const timersAfterBar = env.clock.pending();
   const orig = w.EventTarget.prototype.addEventListener;
@@ -283,6 +284,22 @@ t("uncoercible badge values clear the indication without throwing", () => {
     assert.equal(dots().length, 0);
     assert.equal(btn().getAttribute("aria-label"), "Framey");
   }
+  bar.dispose();
+});
+
+t("a non-configurable native Steam binding remains usable when the optional pin cannot be applied", () => {
+  const { env, w, btn, bar } = boot({ fixedBinding: true });
+  assert.equal(Object.getOwnPropertyDescriptor(w, "fyCall").configurable, false);
+  btn().click();
+  assert.deepEqual(env.calls, [{ id: 0, plugin: "_core", method: "toggle" }]);
+  bar.dispose();
+});
+
+t("the captured request serializer keeps the native button binding usable after unrelated page mutation", () => {
+  const { env, w, btn, bar } = boot();
+  w.JSON.stringify = () => { throw new Error("unrelated page serializer failed"); };
+  btn().click();
+  assert.deepEqual(env.calls, [{ id: 0, plugin: "_core", method: "toggle" }]);
   bar.dispose();
 });
 

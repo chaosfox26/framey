@@ -8,6 +8,7 @@
   let ready = null;
   let disposed = false;
   let renderVersion = 0;
+  let noteVersion = 0;
 
   const ask = (method, arg) => api.call(method, arg).then(r => r || {});
   const el = (css, text) => {
@@ -30,10 +31,11 @@
 
   const say = text => {
     if (disposed) return;
+    const revision = ++noteVersion;
     state.note = text;
     paint(true);
     api.timeout(() => {
-      if (state.note !== text) return;
+      if (disposed || revision !== noteVersion) return;
       state.note = "";
       paint(true);
     }, 3000);

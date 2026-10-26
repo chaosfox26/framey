@@ -185,11 +185,50 @@ const check = async (name, fn) => {
 };
 
 (async () => {
-  const { w, sent, S, deliver } = boot(false);
+  const { w, sent, S, deliver, cdp } = boot(false);
 
   await check("main expression: the whole panel is one body and returns the core handle", async () => {
     assert.ok(S.core, "the panel did not return a core handle: " + JSON.stringify(S.failures));
     assert.ok(w.Framey && typeof w.Framey.open === "function", "window.Framey is not defined after the panel expression");
+  });
+
+  await check("generated panel module errors log a fixed message without exposing the failure and later modules initialize", async () => {
+    const secret = "PANEL_INIT_FIXTURE_SECRET_MUST_NOT_BE_LOGGED";
+    const script = [
+      "import asyncio,json,pathlib,sys",
+      "sys.path.insert(0,sys.argv[1])",
+      "import jharness as H",
+      "loader=H.Loader()",
+      "try:",
+      "    parts=json.loads(sys.argv[2])",
+      "    parts[1]=(loader.root/'inject.js').read_text()",
+      "    print(loader.fy.panel_js(parts))",
+      "finally:",
+      "    asyncio.run(loader.close())",
+    ].join("\n");
+    const parts = [
+      "window.__moduleOrder=['before'];",
+      "",
+      "window.__moduleOrder.push('failing');throw new Error(" + JSON.stringify(secret) + ")",
+      "window.__moduleOrder.push('after');window.__laterModuleInitialized=true;",
+    ];
+    const expression = execFileSync(process.env.FRAMEY_PYTHON || "python", ["-c", script, path.join(ROOT, "tests", "fixtures", "j"), JSON.stringify(parts)], { encoding: "utf8", maxBuffer: 1 << 26 });
+    const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>", { url, runScripts: "outside-only", pretendToBeVisual: true });
+    const logged = [];
+    let held;
+    try {
+      dom.window.fyCall = (function () {}).bind(null);
+      dom.window.console.error = (...args) => logged.push(args);
+      held = dom.window.eval(expression);
+      assert.ok(held && typeof held.dispose === "function", "the generated expression did not return its core handle");
+      assert.deepStrictEqual(Array.from(dom.window.__moduleOrder), ["before", "failing", "after"]);
+      assert.strictEqual(dom.window.__laterModuleInitialized, true, "a failed module prevented the next module from initializing");
+      assert.deepStrictEqual(logged, [["[Framey] Panel module initialization failed"]]);
+      assert.ok(!JSON.stringify(logged).includes(secret), "the module exception detail was logged");
+    } finally {
+      if (held && typeof held.dispose === "function") held.dispose();
+      dom.window.close();
+    }
   });
 
   await check("plugin load: fan and beta register and every loader step runs without throwing", async () => {
@@ -234,7 +273,9 @@ const check = async (name, fn) => {
     tileNamed(w, "Decky Store").click();
     await sleep(60);
     assert.ok(body(w).includes("Example Decky plugin"), "Decky community entry missing");
-    assert.ok(body(w).includes("not affiliated with the Decky project"), "community ownership notice missing");
+    assert.ok(body(w).includes("not affiliated with or endorsed by Decky Loader"), "community ownership notice missing");
+    assert.ok(body(w).includes("Compatibility is experimental and varies"), "experimental compatibility notice missing");
+    assert.ok(body(w).includes("Report Framey-specific problems to Framey"), "Framey-owned support guidance missing");
     assert.ok(body(w).includes("Not compatible") && body(w).includes("needs a Framey version before it can run here"), "port requirement missing");
     assert.ok(body(w).includes("ARM64: Not checked"), "unverified architecture was not stated");
     assert.ok(sent.some(m => m.plugin === "_core" && m.method === "catalog_list" && isDecky(m.arg)), "Decky source was not requested");
@@ -295,6 +336,26 @@ const check = async (name, fn) => {
   await check("a loader event reaches the plugin that owns it", async () => {
     deliver(d.events[1]);
     assert.deepStrictEqual(w.__ping, { n: 7 });
+  });
+
+  await check("bounded callback diagnostics remain behind the held core handle without issuing requests or changing the page", async () => {
+    assert.equal(w.Framey.diagnostic, undefined);
+    assert.equal(w.Framey.diagnostics, undefined);
+    assert.equal(w.__betaApi.diagnostic, undefined);
+    assert.equal(w.__betaApi.diagnostics, undefined);
+    const before = { requests: sent.length, markup: w.document.body.innerHTML };
+    const result = cdp("Runtime.callFunctionOn", {
+      objectId: S.core,
+      functionDeclaration: "function(){this.diagnostic('unknown.PRIVATE_DETAIL');this.diagnostic('core.event_failed',{message:'PRIVATE_DETAIL'});return JSON.stringify(this.diagnostics())}",
+    });
+    assert.ok(!result.exceptionDetails, "held diagnostic operation threw");
+    const rows = JSON.parse(result.result.value);
+    assert.ok(rows.length <= 32);
+    assert.ok(rows.every(row => Object.keys(row).sort().join() === "code,count" && Number.isInteger(row.count) && row.count > 0 && row.count <= 9999));
+    assert.ok(rows.some(row => row.code === "core.event_failed"));
+    assert.ok(!result.result.value.includes("PRIVATE_DETAIL"));
+    assert.equal(sent.length, before.requests, "recording a callback counter sent a request");
+    assert.equal(w.document.body.innerHTML, before.markup, "recording a callback counter changed the page");
   });
 
   await check("no core or plugin token is in any window property, the document or storage", async () => {

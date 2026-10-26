@@ -176,9 +176,9 @@ test("a current plugin render rejection is contained and reported as a render fa
   });
   e.window.Framey.open("a");
   await new Promise(resolve => setImmediate(resolve));
-  assert.ok(e.document.body.textContent.includes("Module error: render unavailable"));
+  assert.ok(e.document.body.textContent.includes("Module error: render failed."));
   const failure = e.sent("fail").at(-1);
-  assert.deepEqual(failure.arg, { id: "a", what: "render", msg: "render unavailable" });
+  assert.deepEqual(failure.arg, { id: "a", what: "render", msg: "render failed" });
 });
 
 test("a late render rejection from a previous view cannot replace or report against the current view", async t => {
@@ -409,5 +409,165 @@ test("the dead-instance cleanup exception accepts only bounded owner-scoped reso
   assert.equal(e.calls.at(-1).id, 0);
   assert.equal(e.calls.at(-1).t, "tok-a-0000");
   assert.deepEqual(e.calls.at(-1).arg, { revoke: token, pid: "a" });
+  assert.equal(core.pending(), 0);
+});
+
+test("diagnostics accept only fixed primitive codes, saturate, and return detached private snapshots", t => {
+  const e = cleanup(t, fresh()), core = e.window.__S.K;
+  const privateValue = { toString() { throw new Error("must not coerce diagnostic input"); } };
+  for (const invalid of [privateValue, null, undefined, 7, Symbol("private-value"), "core.unknown", "private callback detail"]) {
+    assert.doesNotThrow(() => core.diagnostic(invalid));
+  }
+  assert.deepEqual(plain(core.diagnostics()), []);
+  const beforeCalls = e.calls.length, beforeTimers = e.clock.pending();
+  for (let i = 0; i < 12000; i++) core.diagnostic("core.callback_failed");
+  const snapshot = core.diagnostics();
+  assert.deepEqual(plain(snapshot), [{ code: "core.callback_failed", count: 9999 }]);
+  snapshot[0].code = "private-value"; snapshot[0].count = -1; snapshot.push({ code: "private-value", count: 10 });
+  assert.deepEqual(plain(core.diagnostics()), [{ code: "core.callback_failed", count: 9999 }]);
+  assert.equal(e.calls.length, beforeCalls);
+  assert.equal(e.clock.pending(), beforeTimers);
+  assert.equal(e.document.querySelectorAll('[role="status"],[role="alert"]').length, 0);
+  core.dispose();
+  assert.deepEqual(plain(core.diagnostics()), [{ code: "core.callback_failed", count: 9999 }]);
+});
+
+test("extension failure is counted without inspecting the exception or skipping the next extension", t => {
+  const e = cleanup(t, fresh());
+  let inspected = 0, continued = 0;
+  const failure = { get message() { inspected++; return "private callback detail"; }, toString() { inspected++; return "private callback detail"; } };
+  e.window.Framey.ext.push(() => { throw failure; });
+  e.window.Framey.ext.push(() => { continued++; });
+  const api = e.plugin("a");
+  assert.equal(api.id, "a");
+  assert.equal(continued, 1);
+  assert.equal(inspected, 0);
+  assert.deepEqual(plain(e.window.__S.K.diagnostics()), [{ code: "core.extension_failed", count: 1 }]);
+  assert.equal(e.document.querySelectorAll('[role="status"],[role="alert"]').length, 0);
+});
+
+test("cleanup failures remain isolated and count fixed codes without raw-error popups", t => {
+  const e = cleanup(t, fresh());
+  let inspected = 0, cleaned = 0;
+  const failure = { get message() { inspected++; return "private cleanup detail"; }, toString() { inspected++; return "private cleanup detail"; } };
+  const api = e.window.__bindFramey("a", "tok-a-0000", {}).register({ render() {}, dispose() { throw failure; } });
+  api.cleanup(() => { cleaned++; });
+  api.cleanup(() => { throw failure; });
+  e.window.__S.K.dispose();
+  assert.equal(cleaned, 1);
+  assert.equal(inspected, 0);
+  assert.deepEqual(plain(e.window.__S.K.diagnostics()), [{ code: "core.cleanup_failed", count: 2 }]);
+  assert.equal(e.document.querySelectorAll('[role="status"],[role="alert"]').length, 0);
+});
+
+test("timer diagnostics preserve thrown identity and leave later callbacks and cleanup working", t => {
+  const intervals = new Map();
+  let sequence = 0, cleared = 0, inspected = 0;
+  const e = cleanup(t, fresh({ before(w) {
+    w.setInterval = fn => { intervals.set(++sequence, fn); return sequence; };
+    w.clearInterval = handle => { if (intervals.delete(handle)) cleared++; };
+  } }));
+  const api = e.plugin("a"), failure = { get message() { inspected++; return "private timer detail"; } };
+  api.timeout(() => { throw failure; }, 1);
+  assert.throws(() => e.clock.tick(1), error => error === failure);
+  let completed = 0;
+  api.timeout(() => { completed++; }, 1);
+  e.clock.tick(1);
+  let intervalTicks = 0;
+  const handle = api.interval(() => { if (++intervalTicks === 1) throw failure; completed++; }, 10);
+  assert.throws(() => intervals.get(handle)(), error => error === failure);
+  intervals.get(handle)();
+  assert.equal(completed, 2);
+  assert.equal(inspected, 0);
+  assert.deepEqual(plain(e.window.__S.K.diagnostics()), [{ code: "core.timer_failed", count: 2 }]);
+  e.window.Framey.dispose("a", TOK);
+  assert.equal(cleared, 1);
+  assert.equal(e.clock.pending(), 0);
+});
+
+test("timer diagnostics do not inspect promise-like return values", t => {
+  const e = cleanup(t, fresh()), api = e.plugin("a");
+  let thenReads = 0;
+  api.timeout(() => ({ get then() { thenReads++; throw new Error("must not inspect timer return"); } }), 1);
+  e.clock.tick(1);
+  assert.equal(thenReads, 0);
+  assert.deepEqual(plain(e.window.__S.K.diagnostics()), []);
+});
+
+test("storage failures are counted without exposing exception fields or stopping navigation", t => {
+  const e = cleanup(t, fresh());
+  let inspected = 0;
+  const failure = { get message() { inspected++; return "private storage detail"; } };
+  Object.defineProperty(e.window, "sessionStorage", { configurable: true, get() { throw failure; } });
+  assert.doesNotThrow(() => e.window.Framey.open("#modules"));
+  assert.equal(e.document.querySelector('[role="tab"][aria-selected="true"]').textContent, "Modules");
+  const counters = plain(e.window.__S.K.diagnostics());
+  assert.ok(counters.some(row => row.code === "core.storage_failed" && row.count > 0));
+  assert.equal(inspected, 0);
+  assert.ok(!JSON.stringify(counters).includes("private storage detail"));
+});
+
+test("the diagnostic recorder is initialized before a best-effort binding property failure", t => {
+  let inspected = 0;
+  const failure = { get message() { inspected++; return "private binding detail"; } };
+  const e = cleanup(t, fresh({ before(w) {
+    const define = w.Object.defineProperty;
+    w.Object.defineProperty = (object, name, descriptor) => {
+      if (object === w && name === "fyCall") throw failure;
+      return define(object, name, descriptor);
+    };
+  } }));
+  assert.deepEqual(plain(e.window.__S.K.diagnostics()), [{ code: "core.binding_failed", count: 1 }]);
+  assert.equal(e.plugin("a").id, "a");
+  assert.equal(inspected, 0);
+});
+
+test("captured request serialization and Promise construction survive later page replacements", async t => {
+  const e = cleanup(t, fresh()), core = e.window.__S.K;
+  let stringifyReads = 0, promiseCalls = 0;
+  const originalStringify = e.window.JSON.stringify;
+  e.window.JSON.stringify = (...args) => { stringifyReads++; return originalStringify(...args); };
+  e.window.Promise = function ReplacedPromise() { promiseCalls++; throw new Error("page Promise replacement"); };
+  const pending = core.call("state_get");
+  const request = e.sent("state_get").at(-1);
+  e.answer(request, { order: [], hidden: [] });
+  assert.deepEqual(plain(await pending), { order: [], hidden: [] });
+  assert.equal(stringifyReads, 0);
+  assert.equal(promiseCalls, 0);
+});
+
+test("render containment never inspects a thrown value with a hostile message getter", t => {
+  const e = cleanup(t, fresh());
+  let inspected = 0;
+  const failure = Object.create(null, { message: { get() { inspected++; throw new Error("hostile error getter"); } } });
+  e.window.__bindFramey("a", "tok-a-0000", { name: "a" }).register({ render() { throw failure; } });
+  assert.doesNotThrow(() => e.window.Framey.open("a"));
+  assert.equal(inspected, 0);
+  assert.ok(e.document.body.textContent.includes("Module error: render failed."));
+  assert.deepEqual(e.sent("fail").at(-1).arg, { id: "a", what: "render", msg: "render failed" });
+  assert.ok(plain(e.window.__S.K.diagnostics()).some(row => row.code === "core.callback_failed" && row.count === 1));
+});
+
+test("global teardown closes the real report helper and settles its modal and pending draft", async t => {
+  const e = cleanup(t, fresh({ loadFiles: ["fy-api.js", "fy-report.js"] }));
+  const F = e.window.Framey, core = e.window.__S.K;
+  F.open("#modules");
+  e.answer(e.sent("state_get").at(-1), { order: [], hidden: [] });
+  const pending = core.report({ code: "fixture" });
+  const request = e.sent("report_draft").at(-1);
+  const panel = e.document.querySelector('[role="region"][aria-label="Framey"]');
+  assert.ok(e.document.querySelector('[role="dialog"]'));
+  assert.equal(panel.hasAttribute("inert"), true);
+  core.dispose();
+  assert.deepEqual(plain(await pending), { closed: true });
+  assert.equal(e.document.querySelector('[role="dialog"]'), null);
+  assert.equal(panel.hasAttribute("inert"), false);
+  assert.equal(core.pending(), 0);
+  const count = e.calls.length;
+  e.answer(request, { title: "Late fixture", body: "Late fixture", diagnostics: "" });
+  await new Promise(resolve => setImmediate(resolve));
+  core.dispose();
+  assert.equal(e.document.querySelector('[role="dialog"]'), null);
+  assert.equal(e.calls.length, count);
   assert.equal(core.pending(), 0);
 });

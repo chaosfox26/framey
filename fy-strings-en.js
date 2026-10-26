@@ -7,6 +7,7 @@
     "c.close": "Close",
     "c.retry": "Retry",
     "c.cancel": "Cancel",
+    "c.report": "Report to Framey",
     "c.checking": "Checking...",
     "c.failed": "Failed: {msg}",
     "c.loading": "Loading...",

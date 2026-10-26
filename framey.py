@@ -19,6 +19,7 @@ REQUIRED = {
     "fy_supervisor": ("Supervisor", "BackendError"),
     "fy_updates": ("Updates",),
     "fy_catalog": ("METHODS",),
+    "fy_report": ("METHODS",),
     "fy_iso": ("mode", "Iso", "wanted"),
     "fy_store": ("dirs", "purge", "discard_held", "snapshot_settings", "drop_snapshot", "restore_snapshot", "Log", "read_locale", "clean_tmp"),
     "fy_net": ("hostcall", "sync_disk", "_target", "_resolve", "_connect"),
@@ -48,17 +49,17 @@ PRINCIPAL = "framey-release"
 HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 NOSETUP = "Protected updater not set up: run Install / Update in the Framey App once (it asks for your password a single time)"
 BUSY = {"busy": True, "error": "Busy: another check or update is running"}
-MANIFEST = ("framey.py", "inject.js", "bar.js", "icon.svg", "fy_proto.py", "fy_worker.py", "fy_supervisor.py", "fy_store.py", "fy_sdk.py", "fy_net.py", "fy_files.py", "fy_media.py", "fy_targets.py", "fy_state.py", "fy_pkg.py", "fy_updates.py", "fy_dev.py", "fy_diag.py", "fy_maint.py", "fy_iso.py", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-modules.js", "fy-settings.js", "fy-badge.js", "fy-picker.js", "fy-dev.js", "fy-strings-en.js", "fy_catalog.py", "fy_decky_catalog.py", "fy-catalog.js", "catalog/index.json")
+MANIFEST = ("framey.py", "inject.js", "bar.js", "icon.svg", "fy_proto.py", "fy_worker.py", "fy_supervisor.py", "fy_store.py", "fy_sdk.py", "fy_net.py", "fy_files.py", "fy_media.py", "fy_targets.py", "fy_state.py", "fy_pkg.py", "fy_updates.py", "fy_dev.py", "fy_diag.py", "fy_report.py", "fy_maint.py", "fy_iso.py", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-modules.js", "fy-settings.js", "fy-badge.js", "fy-picker.js", "fy-dev.js", "fy-strings-en.js", "fy-report.js", "fy_catalog.py", "fy_decky_catalog.py", "fy-catalog.js", "catalog/index.json")
 LEGACY = MANIFEST[:4]
 SMOKE = "import importlib.util as u,sys;s=u.spec_from_file_location('framey_smoke',sys.argv[1]);m=u.module_from_spec(s);s.loader.exec_module(m);print('framey-smoke-ok' if callable(getattr(m,'main',None)) and isinstance(getattr(m,'VERSION',None),str) else '')"
-PANEL_JS = ("inject.js", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-modules.js", "fy-catalog.js", "fy-settings.js", "fy-picker.js")
+PANEL_JS = ("inject.js", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-report.js", "fy-modules.js", "fy-catalog.js", "fy-settings.js", "fy-picker.js")
 EVENT = "function(p,n,y,d){return this.event(p,n,y,d)}"
 REPLY = "function(g,i,v){return this.reply(g,i,v)}"
 BIND = "function(i,t,m){return this.bind(i,t,m)}"
 RUN = "function(p){return this(p)}"
 DISPOSE = "function(p){return this.dispose(p)}"
 OWNER = {}
-for _mod, _names in (("fy_state", "state_get mod_order mod_sort mod_hide mod_freeze prefs_set"), ("fy_updates", "ver_list ver_install repair notes batch_plan batch_apply loader_check badge autocheck_status companion_fetch"), ("fy_targets", "target_add target_remove"), ("fy_net", "fetch"), ("fy_files", "files_list"), ("fy_media", "resource"), ("fy_dev", "dev_set dev_status devtools_info"), ("fy_diag", "diag"), ("fy_maint", "maint_get maint_refresh maint_prefs"), ("fy_catalog", "catalog_list catalog_details catalog_install catalog_sources catalog_assess")):
+for _mod, _names in (("fy_state", "state_get mod_order mod_sort mod_hide mod_freeze prefs_set"), ("fy_updates", "ver_list ver_install repair notes batch_plan batch_apply loader_check badge autocheck_status companion_fetch"), ("fy_targets", "target_add target_remove"), ("fy_net", "fetch"), ("fy_files", "files_list"), ("fy_media", "resource"), ("fy_dev", "dev_set dev_status devtools_info"), ("fy_diag", "diag"), ("fy_report", "report_draft report_link report_open"), ("fy_maint", "maint_get maint_refresh maint_prefs"), ("fy_catalog", "catalog_list catalog_details catalog_install catalog_sources catalog_assess")):
     OWNER.update(dict.fromkeys(_names.split(), _mod))
 LOCKED = frozenset(("catalog_install", "catalog_sources", "loader_check", "ver_install", "repair", "batch_apply", "companion_fetch"))
 DEV_OFF = {"dev_status": {"enabled": False, "hot": [], "exposure": {"state": "unknown", "addresses": []}}}
@@ -687,7 +688,7 @@ ICON_DEFAULT = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><cir
 
 def prelude():
     url = "data:image/svg+xml," + urllib.parse.quote(js("icon.svg") or ICON_DEFAULT)
-    rt = {"version": VERSION, "api": API_GENERATION, "platform": PLATFORM, "lang": pref("lang", ""), "trusted_input": trusted_input()}
+    rt = {"version": VERSION, "api": API_GENERATION, "platform": PLATFORM, "lang": pref("lang", ""), "trusted_input": trusted_input(), "report_repository": LOADER}
     return "window.FY_ICON_URL=%s;window.FY_RUNTIME=%s;\n" % (json.dumps(url), json.dumps(rt))
 
 
@@ -703,7 +704,7 @@ def new_tok(pid):
 
 
 def panel_js(parts):
-    return "(function(__fyt){%s\n%s\nreturn __FY&&__FY._k(__fyt);})(%s)" % ("\n".join(parts[:2]), "\n".join("try{%s\n}catch(e){console.error(e)}" % p for p in parts[2:]), json.dumps(CORE_TOK))
+    return "(function(__fyt){%s\n%s\nreturn __FY&&__FY._k(__fyt);})(%s)" % ("\n".join(parts[:2]), "\n".join("try{%s\n}catch(e){console.error('[Framey] Panel module initialization failed')}" % p for p in parts[2:]), json.dumps(CORE_TOK))
 
 
 def plugin_args(m, keep=False):

@@ -912,6 +912,123 @@ test("global teardown from a fullscreen plugin page cannot restart the real Deck
   }
 });
 
+test("replacement cannot resurrect pages after onclose disposes the plugin", () => {
+  const e = make(), api = e.plugin("a");
+  api.pages.register({ id: "replace", mode: "full", render() {}, onclose() { e.FY.dispose("a", TOK); } }).open();
+  const replacement = api.pages.register({ id: "replace", mode: "full", render() {} });
+  eq(replacement, { error: "module disposed" });
+  eq(api.pages.list(), []);
+  assert.strictEqual(e.d.querySelector('[role="dialog"]'), null);
+});
+
+test("replacement preserves an onclose callback's live same-key registration", () => {
+  const e = make(), api = e.plugin("a");
+  let fromClose;
+  api.pages.register({ id: "replace", mode: "full", render() {}, onclose() {
+    fromClose = api.pages.register({ id: "replace", mode: "full", title: "From close", render() {} });
+    fromClose.open();
+  } }).open();
+  const replacement = api.pages.register({ id: "replace", mode: "full", title: "Outer", render() {} });
+  eq(replacement, { error: "page changed during replacement" });
+  assert.strictEqual(api.pages.list()[0].title, "From close");
+  assert.strictEqual(e.d.querySelectorAll('[role="dialog"]').length, 1);
+  assert.strictEqual(fromClose.close(), true);
+  assert.strictEqual(e.d.querySelector('[role="dialog"]'), null);
+});
+
+test("pages wait for extension readiness without leaving a partial initialization guard", () => {
+  const dom = new JSDOM("<body></body>", { runScripts: "outside-only" });
+  const core = {};
+  dom.window.waitingCore = core;
+  const load = () => dom.window.eval("(function(__FY){" + read("fy-pages.js") + "\n})(window.waitingCore)");
+  try {
+    load();
+    assert.strictEqual(core.panelPages, undefined);
+    assert.strictEqual(core.pages, undefined);
+    core.ext = [];
+    core.plugins = [];
+    load();
+    assert.strictEqual(typeof core.panelPages, "function");
+    assert.strictEqual(core.ext.length, 1);
+    load();
+    assert.strictEqual(core.ext.length, 1);
+  } finally { dom.window.close(); }
+});
+
+test("loading pages after plugin binding does not publish unusable partial state", () => {
+  const h = makeDom();
+  try {
+    h.plugin("early");
+    assert.strictEqual(Object.isFrozen(h.window.Framey.ext), true);
+    h.load("fy-pages.js");
+    assert.strictEqual(h.window.Framey.panelPages, undefined);
+    assert.strictEqual(h.window.Framey.pages, undefined);
+  } finally { h.window.close(); }
+});
+
+test("callback isolation reports only fixed cleanup categories for sync and async failures", async () => {
+  const e = make(), api = e.plugin("a"), codes = [];
+  e.FY._k(TOK).diagnostic = code => codes.push(code);
+  const sync = api.pages.register({ id: "sync", mode: "full", render() {}, onclose() { throw new Error("fixture-sensitive-error"); } });
+  const async = api.pages.register({ id: "async", mode: "full", render() {}, async onclose() { throw new Error("fixture-sensitive-error"); } });
+  sync.open();
+  sync.close();
+  async.open();
+  async.close();
+  await new Promise(resolve => setImmediate(resolve));
+  eq(codes, ["page.cleanup_failed", "page.cleanup_failed"]);
+  assert.strictEqual(JSON.stringify(codes).includes("fixture-sensitive-error"), false);
+  assert.strictEqual(e.d.querySelector('[role="dialog"]'), null);
+  assert.strictEqual(async.open(), true);
+});
+
+test("isolated page cleanup reaches the real memory-only diagnostic counter without transport", () => {
+  const e = make(), api = e.plugin("a"), K = e.FY._k(TOK);
+  const before = e.calls.length;
+  const page = api.pages.register({ id: "full", mode: "full", render() {}, onclose() { throw new Error("fixture-sensitive-error"); } });
+  page.open();
+  page.close();
+  eq(K.diagnostics(), [{ code: "page.cleanup_failed", count: 1 }]);
+  assert.strictEqual(e.calls.length, before);
+  assert.strictEqual(JSON.stringify(K.diagnostics()).includes("fixture-sensitive-error"), false);
+});
+
+test("failed redraw callbacks are diagnosed and do not leave the redraw guard stuck", () => {
+  const e = make(), api = e.plugin("a"), codes = [];
+  e.FY._k(TOK).diagnostic = code => codes.push(code);
+  e.FY.redraw = () => { throw new Error("fixture-sensitive-error"); };
+  assert.ok(api.pages.register({ id: "one", render() {} }).open);
+  assert.ok(api.pages.register({ id: "two", render() {} }).open);
+  eq(codes, ["page.navigation_failed", "page.navigation_failed"]);
+  assert.strictEqual(api.pages.list().length, 2);
+});
+
+test("failed focus restoration is contained and diagnosed without exception details", () => {
+  const e = make(), api = e.plugin("a"), codes = [];
+  e.FY._k(TOK).diagnostic = code => codes.push(code);
+  const opener = e.d.createElement("button");
+  e.d.body.append(opener);
+  opener.focus();
+  const page = api.pages.register({ id: "full", mode: "full", render() {} });
+  page.open();
+  opener.focus = () => { throw new Error("fixture-sensitive-error"); };
+  page.close();
+  eq(codes, ["page.focus_failed"]);
+  assert.strictEqual(e.d.querySelector('[role="dialog"]'), null);
+});
+
+test("current page and mount render failures use fixed bounded-diagnostic inputs", async () => {
+  const e = make(), api = e.plugin("a"), codes = [];
+  e.FY._k(TOK).diagnostic = code => codes.push(code);
+  api.pages.register({ id: "failed", mode: "full", render() { throw new Error("fixture-sensitive-error"); } }).open();
+  api.global.mount("failed", { async render() { throw new Error("fixture-sensitive-error"); } });
+  await new Promise(resolve => setImmediate(resolve));
+  eq(codes, ["page.render_failed", "page.render_failed"]);
+  assert.strictEqual(JSON.stringify(codes).includes("fixture-sensitive-error"), false);
+  assert.strictEqual(e.d.querySelector('[role="dialog"]'), null);
+  assert.strictEqual(e.d.querySelector('[data-fy-mount="failed"]'), null);
+});
+
 (async () => {
   let pass = 0;
   for (const [name, fn] of tests) {

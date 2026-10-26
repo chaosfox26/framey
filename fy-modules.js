@@ -8,6 +8,7 @@
   const TITLE = "font-size:28px;font-weight:700;margin-bottom:12px;overflow-wrap:anywhere";
   const DANGER = { css: "flex:1;background:#5a3a3a" };
   const T = (key, vars) => FY.i18n.t("core", key, vars);
+  const recordDiagnostic = code => { if (typeof K.diagnostic === "function") K.diagnostic(code); };
   const obj = r => (r && typeof r === "object" ? r : {});
   const call = (method, arg) => K.call(method, arg).then(obj);
   const tx = (css, text) => FY.el(css, text);
@@ -19,7 +20,7 @@
     tx("font-size:" + (size || 19) + "px;margin-top:6px;white-space:pre-wrap;word-break:break-word;color:" + color + (bold ? ";font-weight:700" : ""), text);
   const row = (...c) => put(tx("display:flex;gap:10px;margin-top:10px;align-items:stretch"), ...c);
   const say = text => {
-    try { sessionStorage.fyMsg = text; } catch (e) {}
+    try { sessionStorage.fyMsg = text; } catch (error) { recordDiagnostic("core.storage_failed"); }
     FY.toast(text);
   };
   const warn = text => FY.toast(text, 4000);
@@ -38,7 +39,10 @@
   const ui = () => {
     if (!U) {
       const api = { id: "core" };
-      (FY.ext || []).forEach(f => { try { f(api, { id: "core", meta: {}, dead: false }, []); } catch (e) {} });
+      (FY.ext || []).forEach(extension => {
+        try { extension(api, { id: "core", meta: {}, dead: false }, []); }
+        catch (error) { recordDiagnostic("core.callback_failed"); }
+      });
       U = api.ui;
     }
     return U;
@@ -50,12 +54,32 @@
     try {
       if (v) sessionStorage.fyRes = JSON.stringify(v);
       else sessionStorage.removeItem("fyRes");
-    } catch (e) {}
+    } catch (error) { recordDiagnostic("core.storage_failed"); }
   };
   const clip = (x, n) => String(x == null ? "" : x).slice(0, n);
+  const reportContext = (plugin, error, code) => {
+    const context = { error: typeof error === "string" ? error.slice(0, 600) : "", code: typeof code === "string" ? code.slice(0, 64) : "management_error" };
+    if (plugin && typeof plugin === "object") {
+      const metadata = {};
+      for (const key of ["name", "version"]) {
+        if (typeof plugin[key] === "string") metadata[key] = plugin[key].slice(0, 120);
+      }
+      if (Object.keys(metadata).length) {
+        metadata.source = ["decky_stable", "decky_testing", "framey", "local"].includes(plugin.source) ? plugin.source : typeof plugin.source === "string" && plugin.source ? "framey" : "local";
+        context.plugin = metadata;
+      }
+    }
+    return context;
+  };
+  const openReport = context => {
+    const unavailable = () => { warn(T("c.report") + ": " + T("c.unavailable")); };
+    if (typeof K.report !== "function") return Promise.resolve(unavailable());
+    try { return Promise.resolve(K.report(context)).catch(() => { recordDiagnostic("core.callback_failed"); return unavailable(); }); }
+    catch (error) { recordDiagnostic("core.callback_failed"); return Promise.resolve(unavailable()); }
+  };
   const rd = () => {
     let v = null;
-    try { v = JSON.parse(sessionStorage.fyRes || "null"); } catch (e) {}
+    try { v = JSON.parse(sessionStorage.fyRes || "null"); } catch (error) { recordDiagnostic("core.storage_failed"); }
     if (!v || typeof v !== "object" || !Array.isArray(v.rows)) {
       if (v !== null) keep(null);
       return null;
@@ -90,7 +114,7 @@
   };
   const paintRes = (k, out, v, done) => {
     const back = k.btn(T("c.back"), done);
-    put(out, col(v.good ? GOOD : WARN, v.text, 21, true), row(back));
+    put(out, col(v.good ? GOOD : WARN, v.text, 21, true), row(back, !v.good && k.reportButton(reportContext(null, v.text, "management_batch_failed"))));
     back.focus();
     v.rows.forEach(x => put(out, col(x[0] === "ok" ? GOOD : x[0] === "failed" ? BAD : GREY, x[1], 18)));
   };
@@ -172,6 +196,7 @@
       if (nav) e.dataset.fyEsc = "1";
       return e;
     };
+    k.reportButton = context => k.btn(T("c.report"), () => openReport(context));
     k.sw = (label, value, fn) => {
       const e = ui().toggle({ label, value, onchange: v => { if (!k.alive()) return; if (held) e.value = !v; else fn(v, e); } });
       return e;
@@ -249,10 +274,11 @@
         }),
       );
     };
-    k.result = (out, r, okText, back) => {
+    k.result = (out, r, okText, back, context) => {
       if (!r.error && okText && ("ok" in r || "staged" in r)) keep(pack(true, okText, []));
       const b = k.btn(T("c.back"), () => { keep(null); back(); });
-      put(out, col(r.error ? BAD : GOOD, r.error ? T("c.failed", { msg: r.error }) : okText, 21, true), r.error && r.stage && col(GREY, T("c.stage", { stage: r.stage })), row(b));
+      const report = r.error && k.reportButton(reportContext(obj(context).plugin, r.error, obj(context).code));
+      put(out, col(r.error ? BAD : GOOD, r.error ? T("c.failed", { msg: r.error }) : okText, 21, true), r.error && r.stage && col(GREY, T("c.stage", { stage: r.stage })), row(b, report));
       b.focus();
       return out;
     };
@@ -260,7 +286,7 @@
       k.show(tx(TITLE, title), row(k.btn(T("c.back"), back)), col(GREY, T("c.loading")));
       return call("notes", { id, tag }).then(k.guard(r => k.show(tx(TITLE, title), row(k.btn(T("c.back"), back)), col(r.error ? BAD : "#fff", r.error || r.notes || T("v.nonotes")))));
     };
-    k.versions = (id, title, back, gate) => {
+    k.versions = (id, title, back, gate, plugin) => {
       let rows = [], more = false, page = 1, info = "", err = "";
       const g = gate || (f => f());
       const eligible = v => v.eligible === true && v.current !== true;
@@ -273,6 +299,7 @@
           row(k.btn(T("c.back"), back)),
           info && col(GREY, info),
           err && col(BAD, err),
+          err && row(k.reportButton(reportContext(plugin || (id !== "_loader" ? { id } : null), err, "version_list_failed"))),
           ui().list({ items: rows.map(v => ({ id: v.tag, label: vlabel(v), sub: vsub(v) })), onselect: tag => detail(rows.find(v => v.tag === tag)), empty: T("v.none") }),
           more && row(k.btn(T("v.more"), () => load(page + 1))),
         );
@@ -299,7 +326,7 @@
             if (r.confirm) return k.ask(T("v.confirm_title", { v: v.version }), r.confirm, [[T("v.goback"), () => install(v, true), DANGER]], () => detail(v));
             if (r.current === true) return k.result(out, {}, T("m.already"), back);
             const result = r.error || r.ok || r.staged ? r : { error: T("c.noanswer") };
-            k.result(out, result, T("v.installed_ok", { v: typeof r.version === "string" && r.version ? r.version : v.version }), back);
+            k.result(out, result, T("v.installed_ok", { v: typeof r.version === "string" && r.version ? r.version : v.version }), back, reportContext(plugin || (id !== "_loader" ? { id } : null), "", "version_install_failed"));
           }),
         );
       };
@@ -363,7 +390,8 @@
       let onHome = false, onResult = false;
       let bad = 0;
       const fall = e => {
-        k.show(tx(TITLE, T("m.title")), col(BAD, T("c.failed", { msg: clip(e && e.message, 200) || T("c.noanswer") })), row(btn(T("c.retry"), () => draw(), { primary: true }), btn(T("c.close"), () => FY.toggle())));
+        const error = clip(e && e.message, 200) || T("c.noanswer");
+        k.show(tx(TITLE, T("m.title")), col(BAD, T("c.failed", { msg: error })), row(btn(T("c.retry"), () => draw(), { primary: true }), btn(T("c.close"), () => FY.toggle())), row(k.reportButton(reportContext(null, error, "management_view_failed"))));
       };
       k.bad = fall;
       const show0 = k.show;
@@ -419,7 +447,7 @@
           const valid = r.ok === true || r.ok === m.id;
           const result = r.error || valid ? r : { error: T("c.noanswer") };
           if (!result.error) delete res[m.id];
-          k.result(out, result, T(r.version ? "m.updated_v" : "m.updated", { name: m.name, v: r.version }), back);
+          k.result(out, result, T(r.version ? "m.updated_v" : "m.updated", { name: m.name, v: r.version }), back, reportContext(m, "", "plugin_update_failed"));
         });
       const updateAsk = m => {
         const s = obj(res[m.id]);
@@ -433,11 +461,11 @@
         );
       };
       const fin = (method, m, title, okKey) =>
-        k.work(title, () => call(method, m.id), (r, out) => k.result(out, r.pending ? { error: T("m.still") } : r, T(okKey, { name: m.name }), back));
+        k.work(title, () => call(method, m.id), (r, out) => k.result(out, r.pending ? { error: T("m.still") } : r, T(okKey, { name: m.name }), back, reportContext(m, "", "plugin_recovery_failed")));
       const repair = (m, reset, confirm) =>
         k.work(T("m.repairing", { name: m.name }), () => call("repair", { id: m.id, reset, confirm }), (r, out) => {
           if (r.confirm) return k.ask(T("m.repair_reset"), r.confirm, [[T("m.repair_reset_ok"), () => repair(m, true, true), DANGER]], back);
-          k.result(out, r, T("m.repaired", { name: m.name }), back);
+          k.result(out, r, T("m.repaired", { name: m.name }), back, reportContext(m, "", "plugin_repair_failed"));
         });
       const repairAsk = m =>
         k.ask(T("m.repair_title", { name: m.name }), T("m.repair_text"), [[T("m.repair_ok"), () => repair(m, false, false), { primary: true }], [T("m.repair_reset"), () => repair(m, true, false), DANGER]], back);
@@ -450,7 +478,7 @@
         );
       const comp = (m, c) =>
         k.work(T("m.comp_dl", { name: c.name }), () => call("companion_fetch", { id: m.id, name: c.name }), (r, out) =>
-          k.result(out, r, [T("m.comp_ok", { name: c.name }), r.digest, r.note].filter(Boolean).join("\n"), back),
+          k.result(out, r, [T("m.comp_ok", { name: c.name }), r.digest, r.note].filter(Boolean).join("\n"), back, reportContext(m, "", "plugin_companion_failed")),
         );
       const check = el => {
         k.hold(true);
@@ -524,6 +552,7 @@
           f.at && col(GREY, new Date(f.at * 1000).toLocaleTimeString(), 16),
           row(btn(T("m.disable"), () => quick("disable", m.id, T("m.disabled_ok", { name: m.name }))), btn(T("m.reload"), () => quick("reload_one", m.id, T("m.reloaded", { name: m.name })), { primary: true })),
           row(btn(T("m.recover"), () => repairAsk(m)), btn(T("m.remove"), () => removeAsk(m, false))),
+          row(k.reportButton(reportContext(m, f.msg, ["load", "render", "backend"].includes(f.what) ? "plugin_" + f.what + "_failed" : "plugin_failed"))),
         );
       };
       const morePanel = (m, i, n) => {
@@ -535,8 +564,9 @@
           row(btn(T("m.reload"), () => quick("reload_one", m.id, T("m.reloaded", { name: m.name }))), btn(T(hid ? "m.show" : "m.hide"), () => quick("mod_hide", { id: m.id, hidden: !hid }))),
           row(btn(T(fz ? "m.unfreeze" : "m.freeze"), () => quick("mod_freeze", { id: m.id, frozen: !fz })), btn(T("m.repair"), () => repairAsk(m))),
           st.sort !== "name" && row(btn(T("m.up"), () => quick("mod_order", { id: m.id, delta: -1 }), { disabled: i === 0 }), btn(T("m.down"), () => quick("mod_order", { id: m.id, delta: 1 }), { disabled: i === n - 1 })),
-          row(btn(T("m.versions"), () => k.versions(m.id, T("m.versions_title", { name: m.name }), back, c => thaw(m, c))), btn(T("m.remove"), () => removeAsk(m, false))),
+          row(btn(T("m.versions"), () => k.versions(m.id, T("m.versions_title", { name: m.name }), back, c => thaw(m, c), m)), btn(T("m.remove"), () => removeAsk(m, false))),
           row(btn(T("m.remove_data"), () => removeAsk(m, true), DANGER)),
+          row(k.reportButton(reportContext(m, "", "plugin_details"))),
           ...cs.map(c => row(btn(T("m.comp_btn", { name: c.name }), () => comp(m, c)))),
         );
       };
@@ -587,6 +617,7 @@
           ev.length > 0 && col(GREY, T("mt.why"), 18, true),
           ...ev.map(x => ln("- " + clip(x, 300), "#fff")),
           row(btn(T("mt.refresh"), () => refresh(m), { primary: true }), btn(T("c.back"), () => home())),
+          row(k.reportButton(reportContext(m, typeof f.reason === "string" ? f.reason : "", f.reason ? "plugin_maintenance_failed" : "plugin_details"))),
           ln(T("mt.info"), GREY),
         );
       };
@@ -678,7 +709,7 @@
       };
       const paint = () => {
         const { list, store, st } = data;
-        if (!Array.isArray(list)) return k.show(tx(TITLE, T("m.title")), col(BAD, obj(list).error || T("c.unavailable")), row(btn(T("c.retry"), () => draw())));
+        if (!Array.isArray(list)) return k.show(tx(TITLE, T("m.title")), col(BAD, obj(list).error || T("c.unavailable")), row(btn(T("c.retry"), () => draw()), k.reportButton(reportContext(null, obj(list).error || T("c.unavailable"), "management_list_failed"))));
         const custom = st.sort !== "name";
         const rank = new Map((st.order || []).map((id, i) => [id, i]));
         const mods = list.slice().sort((a, b) => (rank.has(a.id) ? rank.get(a.id) : 1e9) - (rank.has(b.id) ? rank.get(b.id) : 1e9));
@@ -696,6 +727,7 @@
           row(btn(T(custom ? "m.sort_custom" : "m.sort_name"), () => quick("mod_sort", custom ? "name" : "custom")), btn(T("m.check"), () => check(sum), { primary: true })),
           row(btn(T("m.updall"), plan), btn(T("mt.refresh_all"), () => refreshAll(sum))),
           sum,
+          line && line[1] === BAD && row(k.reportButton(reportContext(null, line[0], "management_check_failed"))),
           data.mp && data.mp["maint.window_days"] > 0 && col(GREY, T("mt.window_line", { days: T("mt.days", { count: data.mp["maint.window_days"] }) }), 16),
           bad > 0 && col(WARN, T("m.dropped", { count: bad }), 18),
           !mods.length && col(GREY, T("m.none"), 20),

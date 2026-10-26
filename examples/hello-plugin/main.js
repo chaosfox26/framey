@@ -7,6 +7,7 @@ const api = Framey.register({
     const current = () => !disposed && version === renderVersion;
     const note = Framey.el("font-size:20px;color:#8a8aa0;margin-top:12px;min-height:28px", "");
     let noteVersion = 0;
+    let levelEdited = false;
     const say = text => {
       if (!current()) return;
       const revision = ++noteVersion;
@@ -17,6 +18,7 @@ const api = Framey.register({
     };
     const slider = api.ui.slider({
       label: "Level", min: 0, max: 100, step: 5, value: 50, format: v => v + "%",
+      oninput: () => { levelEdited = true; },
       onchange: value => api.call("set", { level: value }).then(r => say(r && r.error ? "Could not save: " + r.error : "Saved")),
     });
     box.append(
@@ -27,7 +29,7 @@ const api = Framey.register({
       note,
     );
     api.call("get").then(r => {
-      if (!current()) return;
+      if (!current() || levelEdited) return;
       if (r && r.error) say("Could not load: " + r.error);
       else if (r && Number.isInteger(r.level) && r.level >= 0 && r.level <= 100) slider.value = r.level;
     });

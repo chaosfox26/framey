@@ -800,6 +800,125 @@ t("closing the underlying Framey panel cancels its open picker", async () => {
   await p;
 });
 
+
+const readPickerDiagnostics = FY => () => FY._k(TOK).diagnostics().filter(row => row.code.startsWith("picker."));
+
+t("a missing core context cannot poison later authorized picker initialization", async () => {
+  const { api, FY, w, load } = boot({ lazy: true });
+  const fs = require("fs"), path = require("path");
+  const source = fs.readFileSync(path.join(require("./harness").ROOT, "fy-picker.js"), "utf8");
+  w.eval("(function(__fyt,__FY){" + source + "\n})(\"invalid-core-context\",window.__S.FY)");
+  assert.notEqual(FY.pickerReady, true);
+  assert.equal(api.pickFolder, undefined);
+  load("fy-picker.js");
+  assert.equal(FY.pickerReady, true);
+  assert.equal(typeof api.pickFolder, "function");
+});
+
+t("a failing cleanup callback cannot strand cancellation or prevent focus return", async () => {
+  const { api, FY, d, button, view } = boot();
+  const diagnostics = readPickerDiagnostics(FY);
+  const opener = d.body.appendChild(d.createElement("button"));
+  opener.focus();
+  const originalCleanup = api.cleanup;
+  api.cleanup = () => () => { throw new Error("private-cleanup-fixture-details"); };
+  let result = "pending";
+  const p = api.pickFolder().then(value => { result = value; });
+  await settle();
+  button("Cancel").click();
+  await settle();
+  assert.equal(result, null);
+  assert.equal(view(), null);
+  assert.equal(d.activeElement, opener);
+  assert.deepEqual(diagnostics(), [{ code: "picker.cleanup_failed", count: 1 }]);
+  api.cleanup = originalCleanup;
+  const next = api.pickFolder();
+  await settle();
+  button("Cancel").click();
+  assert.equal(await next, null);
+  await p;
+});
+
+t("focus return failure still settles cancellation and records only a fixed code", async () => {
+  const { api, FY, d, button, view } = boot();
+  const diagnostics = readPickerDiagnostics(FY);
+  const opener = d.body.appendChild(d.createElement("button"));
+  opener.focus();
+  let result = "pending";
+  const p = api.pickFile().then(value => { result = value; });
+  await settle();
+  opener.focus = () => { throw new Error("private-focus-fixture-details"); };
+  button("Cancel").click();
+  await settle();
+  assert.equal(result, null);
+  assert.equal(view(), null);
+  assert.deepEqual(diagnostics(), [{ code: "picker.focus_failed", count: 1 }]);
+  await p;
+});
+
+t("diagnostics are optional and a broken sink cannot break picker cleanup", async () => {
+  const { api, FY, d, button, view } = boot();
+  const opener = d.body.appendChild(d.createElement("button"));
+  opener.focus();
+  FY._k(TOK).diagnostic = () => { throw new Error("diagnostic sink fixture failure"); };
+  let result = "pending";
+  const p = api.pickFolder().then(value => { result = value; });
+  await settle();
+  opener.focus = () => { throw new Error("private-focus-fixture-details"); };
+  button("Cancel").click();
+  await settle();
+  assert.equal(result, null);
+  assert.equal(view(), null);
+  await p;
+});
+
+t("listing failure diagnostics contain no error text or request fields", async () => {
+  const { api, FY, sim, errLine, button } = boot();
+  const diagnostics = readPickerDiagnostics(FY);
+  sim.errors[""] = "private-request-fixture-details";
+  const p = api.pickFolder({ title: "Private title fixture" });
+  await settle();
+  assert.equal(errLine().textContent, "private-request-fixture-details");
+  assert.deepEqual(diagnostics(), [{ code: "picker.request_failed", count: 1 }]);
+  button("Cancel").click();
+  assert.equal(await p, null);
+});
+
+t("expected disposed replies cancel without counting a request failure", async () => {
+  const { api, FY, sim, view } = boot();
+  const diagnostics = readPickerDiagnostics(FY);
+  sim.raw[""] = { error: "module disposed", code: "disposed" };
+  const value = await api.pickFolder();
+  assert.equal(value, null);
+  assert.equal(view(), null);
+  assert.deepEqual(diagnostics(), []);
+});
+
+t("dismissed listing failures do not create diagnostics after cancellation", async () => {
+  const { api, FY, sim, button, view } = boot();
+  const diagnostics = readPickerDiagnostics(FY);
+  let release;
+  sim.delay[""] = new Promise(resolve => { release = resolve; });
+  sim.errors[""] = "private-late-request-fixture-details";
+  const p = api.pickFolder();
+  await settle();
+  button("Cancel").click();
+  assert.equal(await p, null);
+  release();
+  await settle();
+  assert.equal(view(), null);
+  assert.deepEqual(diagnostics(), []);
+});
+
+t("cleanup registration failure settles quietly and is diagnosable without payloads", async () => {
+  const { api, FY, view } = boot();
+  const diagnostics = readPickerDiagnostics(FY);
+  api.cleanup = () => { throw new Error("private-registration-fixture-details"); };
+  assert.equal(await api.pickFolder(), null);
+  assert.equal(view(), null);
+  assert.deepEqual(diagnostics(), [{ code: "picker.cleanup_failed", count: 1 }]);
+});
+
 (async () => {
   let pass = 0, fail = 0;
   for (const [name, fn] of tests) {

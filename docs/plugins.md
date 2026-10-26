@@ -131,6 +131,8 @@ const api = Framey.register({
 | `api.pickFile(opts?)`, `api.pickFolder(opts?)` | File and folder chooser. |
 | `api.log(level, msg)` | Writes to the loader log (`debug`, `info`, `warning`, `error`). At most 5 lines per second. |
 
+Keep diagnostic messages short and specific. Do not log credentials, tokens, full URLs, personal identifiers or private paths; raw exception text and plugin payloads can contain these details. Use a fixed description of the failed operation unless you have explicitly sanitized the data. Logs are not automatically suitable for a public issue. Contain callback failures so other listeners and cleanup can continue, and use bounded diagnostics rather than repeated popups.
+
 ### Backend calls
 
 `api.call(method, arg)` sends `call(method, arg)` to your backend and resolves with what it returns. The result must be JSON and at most 768 KiB. The promise resolves to `{error: "<message>"}` when the backend raised an exception, timed out, crashed, is busy, failed to start, or has no backend. The page waits up to 60 seconds for the reply (`Framey module did not reply in 60 s`); the worker's own limit (`backend.timeout`, 10 s by default) normally answers first. Typical messages: `backend call timed out after 15 s; module not responding`, `module busy; too many pending calls`, `module crashed; try again in 5 s`. After the plugin is disposed it resolves to `{error: "module disposed"}`.
@@ -407,7 +409,7 @@ Developer mode is switched on by the file `~/.config/framey/developer` (a JSON o
 
 - **Hot reload** (per module, Developer page): reloads a module when its files change, watching with inotify where available and polling otherwise. Each switch turns itself off after an hour without changes; at most 8 modules at a time. Files named `.stage-*`, `.old-*`, `.git`, `__pycache__`, `*.swp` and `*~` are ignored.
 - **Debug targets** (Developer page): lists the pages of Steam's Chromium debugger on port 8080. The page reports whether the port listens beyond loopback.
-- **Diagnostics** (Developer page): a JSON snapshot with the loader version, worker states, per-module counters and recent loader log lines. Home paths and tokens are removed. Plugin code cannot call it directly.
+- **Diagnostics** (Developer page): a JSON snapshot with the loader version, worker states, per-module counters and recent loader log lines. Recognized private paths and sensitive values are hidden; review the excerpt before sharing it. Plugin code cannot call it directly.
 - **Plain `http` links** are allowed in `api.fetch` and in backend `fetch`.
 - The developer table `dev.targets` (extra injection targets).
 

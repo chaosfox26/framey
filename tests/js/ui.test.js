@@ -668,6 +668,145 @@ t("group: native input and selection controls retain their editing keys", () => 
   }
 });
 
+const diagnosticCount = (w, code) => {
+  const row = w.__S.K.diagnostics().find(row => row.code === code);
+  return row ? row.count : 0;
+};
+
+t("initialization: style insertion failure leaves the guard clear and retry succeeds", () => {
+  const env = makeDom(), append = env.document.head.append;
+  env.document.head.append = () => { throw new Error("fixture initialization failure"); };
+  assert.throws(() => env.load("fy-ui.js"), /fixture initialization failure/);
+  assert.equal(env.window.Framey.uiReady, undefined);
+  assert.equal(env.window.Framey.ext.length, 0);
+  env.document.head.append = append;
+  env.load("fy-ui.js");
+  assert.equal(env.window.Framey.uiReady, true);
+  assert.equal(env.window.Framey.ext.length, 1);
+  assert.equal(env.document.querySelectorAll("#fy-ui-style").length, 1);
+  assert.equal(typeof env.plugin("ready").ui.button, "function");
+});
+
+t("initialization: failed extension registration removes the partial style before retry", () => {
+  const env = makeDom(), extensions = env.window.Framey.ext, push = extensions.push;
+  extensions.push = () => { throw new Error("fixture extension registration failure"); };
+  assert.throws(() => env.load("fy-ui.js"), /fixture extension registration failure/);
+  assert.equal(env.window.Framey.uiReady, undefined);
+  assert.equal(env.document.querySelectorAll("#fy-ui-style").length, 0);
+  extensions.push = push;
+  env.load("fy-ui.js");
+  assert.equal(env.window.Framey.uiReady, true);
+  assert.equal(extensions.length, 1);
+  assert.equal(env.document.querySelectorAll("#fy-ui-style").length, 1);
+});
+
+t("pointer capture: inactive pointers and already-released capture stay quiet", () => {
+  const { api, mount, w, d } = boot();
+  const s = mount(api.ui.slider({ label: "Level", min: 0, max: 10 }));
+  const rw = s.querySelector(".fy-rw");
+  rw.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  rw.setPointerCapture = () => { throw new w.DOMException("fixture inactive pointer", "NotFoundError"); };
+  let releases = 0;
+  rw.hasPointerCapture = () => false;
+  rw.releasePointerCapture = () => { releases++; throw new Error("unexpected release"); };
+  pointer(w, rw, "pointerdown", 1, 40);
+  pointer(w, rw, "pointerup", 1, 40);
+  assert.equal(s.value, 4);
+  assert.equal(releases, 0);
+  assert.equal(diagnosticCount(w, "ui.pointer_capture_failed"), 0);
+  assert.equal(diagnosticCount(w, "ui.pointer_release_failed"), 0);
+  assert.equal(d.querySelector('[role="status"]'), null);
+});
+
+t("pointer failures: unexpected failures count only fixed codes and preserve commit", () => {
+  const { api, mount, w, d } = boot(), values = [];
+  const s = mount(api.ui.slider({ label: "Level", min: 0, max: 10, onchange: value => values.push(value) }));
+  const rw = s.querySelector(".fy-rw");
+  rw.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  rw.setPointerCapture = () => { throw new Error("fixture sensitive capture detail"); };
+  rw.hasPointerCapture = () => true;
+  rw.releasePointerCapture = () => { throw new Error("fixture sensitive release detail"); };
+  pointer(w, rw, "pointerdown", 1, 60);
+  pointer(w, rw, "pointerup", 1, 60);
+  assert.deepEqual(values, [6]);
+  assert.equal(diagnosticCount(w, "ui.pointer_capture_failed"), 1);
+  assert.equal(diagnosticCount(w, "ui.pointer_release_failed"), 1);
+  const snapshot = JSON.stringify(w.__S.K.diagnostics());
+  assert.ok(!snapshot.includes("fixture") && !snapshot.includes("sensitive") && !snapshot.includes("Level"));
+  assert.equal(d.querySelector('[role="status"]'), null);
+});
+
+t("pointer release: removing a captured control is not reported as a failure", () => {
+  const { api, mount, w } = boot();
+  const s = mount(api.ui.slider({ label: "Level", min: 0, max: 10 }));
+  const rw = s.querySelector(".fy-rw");
+  rw.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  let releases = 0;
+  rw.releasePointerCapture = () => { releases++; throw new Error("fixture detached pointer"); };
+  pointer(w, rw, "pointerdown", 1, 40);
+  s.remove();
+  pointer(w, rw, "lostpointercapture", 1, 40);
+  assert.equal(releases, 0);
+  assert.equal(diagnosticCount(w, "ui.pointer_release_failed"), 0);
+});
+
+t("callback isolation: throwing input preserves commit ordering and later actions", () => {
+  const { api, mount, key, w, d } = boot(), events = [];
+  const s = mount(api.ui.slider({ label: "Level", value: 4, oninput(value) { assert.equal(this.oninput instanceof Function, true); events.push("input " + value); throw new Error("fixture sensitive callback detail"); }, onchange: value => events.push("change " + value) }));
+  key(s, "ArrowRight");
+  s.dispatchEvent(new w.KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true }));
+  key(s, "ArrowLeft");
+  s.dispatchEvent(new w.KeyboardEvent("keyup", { key: "ArrowLeft", bubbles: true }));
+  assert.deepEqual(events, ["input 5", "change 5", "input 4", "change 4"]);
+  assert.equal(diagnosticCount(w, "ui.callback_failed"), 2);
+  assert.equal(d.querySelector('[role="status"]'), null);
+  assert.ok(!JSON.stringify(w.__S.K.diagnostics()).includes("fixture"));
+});
+
+t("callback isolation: toggle and list failures preserve value and stay out of popups", () => {
+  const { api, mount, w, d } = boot();
+  const toggle = mount(api.ui.toggle({ label: "Option", onchange() { throw new Error("fixture toggle failure"); } }));
+  const list = mount(api.ui.list({ items: [{ id: "selected", label: "Choice" }], onselect() { throw new Error("fixture list failure"); } }));
+  toggle.click(); rowsOf(list)[0].click();
+  assert.equal(toggle.value, true);
+  assert.equal(list.selected, "selected");
+  assert.equal(diagnosticCount(w, "ui.callback_failed"), 2);
+  assert.equal(d.querySelector('[role="status"]'), null);
+});
+
+t("callback reentrancy: programmatic input replacement cancels the user commit", () => {
+  const { api, mount, key, w } = boot(), changes = [];
+  let slider;
+  slider = mount(api.ui.slider({ label: "Level", value: 4, oninput() { slider.value = 2; }, onchange: value => changes.push(value) }));
+  key(slider, "ArrowRight");
+  slider.dispatchEvent(new w.KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true }));
+  assert.equal(slider.value, 2);
+  assert.deepEqual(changes, []);
+});
+
+t("callback reentrancy: commit may disable a slider before a new drag begins", () => {
+  const { api, mount, key, w } = boot(), inputs = [];
+  let slider;
+  slider = mount(api.ui.slider({ label: "Level", value: 4, oninput: value => inputs.push(value), onchange() { slider.disabled = true; } }));
+  const rw = slider.querySelector(".fy-rw");
+  rw.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  key(slider, "ArrowRight");
+  pointer(w, rw, "pointerdown", 1, 90);
+  assert.equal(slider.disabled, true);
+  assert.equal(slider.value, 5);
+  assert.deepEqual(inputs, [5]);
+});
+
+t("formatter failure: a numeric fallback keeps the slider usable and records no raw detail", () => {
+  const { api, mount, w, key } = boot();
+  const slider = mount(api.ui.slider({ label: "Level", value: 4, format() { throw new Error("fixture sensitive format detail"); } }));
+  assert.equal(slider.getAttribute("aria-valuetext"), "4");
+  key(slider, "ArrowRight");
+  assert.equal(slider.getAttribute("aria-valuetext"), "5");
+  assert.equal(diagnosticCount(w, "ui.callback_failed"), 2);
+  assert.ok(!JSON.stringify(w.__S.K.diagnostics()).includes("fixture"));
+});
+
 const asyncTest = async (name, fn) => {
   try { await fn(); pass++; console.log("ok   " + name); } catch (e) { fail++; console.log("FAIL " + name + "\n" + (e.stack || e)); }
 };
@@ -709,7 +848,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
     b.click(); await flush();
     const errors = d.querySelector('[role="status"]');
     assert.equal(errors.childElementCount, 1);
-    assert.equal(errors.firstElementChild.textContent, "Module t failed: Could not apply");
+    assert.equal(errors.firstElementChild.textContent, "Action failed. Try again or report the problem to Framey.");
     assert.equal(b.disabled, false);
     b.click(); await flush();
     assert.equal(errors.childElementCount, 2);
@@ -735,6 +874,27 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
     assert.equal(button.disabled, false);
     assert.equal(button.getAttribute("aria-busy"), "false");
     assert.equal(d.querySelector('[role="status"]'), null);
+  });
+  await asyncTest("callback diagnostics: rejected control promises are isolated without popups", async () => {
+    const { api, mount, d, w } = boot();
+    const toggle = mount(api.ui.toggle({ label: "Option", onchange() { return Promise.reject(new Error("fixture sensitive asynchronous detail")); } }));
+    toggle.click(); await flush();
+    assert.equal(toggle.value, true);
+    assert.equal(diagnosticCount(w, "ui.callback_failed"), 1);
+    assert.equal(d.querySelector('[role="status"]'), null);
+    assert.ok(!JSON.stringify(w.__S.K.diagnostics()).includes("fixture"));
+  });
+  await asyncTest("button diagnostics: hostile thrown getters cannot escape or disclose raw details", async () => {
+    const { api, mount, d, w } = boot();
+    const failure = Object.create(null, { name: { get() { throw new Error("fixture sensitive getter detail"); } }, message: { get() { throw new Error("message must not be read"); } } });
+    const button = mount(api.ui.button({ label: "Apply", onclick() { throw failure; } }));
+    button.click(); await flush();
+    assert.equal(button.disabled, false);
+    assert.equal(diagnosticCount(w, "ui.callback_failed"), 1);
+    const visible = d.querySelector('[role="status"]').textContent;
+    assert.equal(visible, "Action failed. Try again or report the problem to Framey.");
+    const snapshot = JSON.stringify(w.__S.K.diagnostics());
+    assert.ok(!snapshot.includes("fixture") && !snapshot.includes("Apply") && !snapshot.includes("sensitive"));
   });
   console.log("\n" + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);

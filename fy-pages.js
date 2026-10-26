@@ -1,6 +1,7 @@
 (() => {
   const FY = __FY;
-  if (!FY || FY.panelPages) return;
+  if (!FY || FY.panelPages || !Array.isArray(FY.ext) || Object.isFrozen(FY.ext)) return;
+  const K = typeof FY._k === "function" ? FY._k(typeof __fyt === "string" ? __fyt : "") : null;
   const MAX = 8;
   const RESERVED = ["core", "modules", "settings", "store", "discover", "developer", "dev"];
   const ID = /^[A-Za-z0-9_.-]{1,40}$/;
@@ -15,12 +16,21 @@
   const zones = {};
   let full = [];
   let redrawing = false;
-  const safe = (fn, a) => { try { return fn(a); } catch (e) {} };
+  const diagnose = code => {
+    if (K && typeof K.diagnostic === "function") K.diagnostic(code);
+  };
+  const isolateCallback = (callback, argument, code = "page.callback_failed") => {
+    try {
+      const result = callback(argument);
+      if (result && typeof result.then === "function") Promise.resolve(result).catch(() => diagnose(code));
+      return result;
+    } catch { diagnose(code); }
+  };
   const changed = e => {
     if (redrawing || !FY.redraw) return;
     redrawing = true;
-    safe(FY.redraw, e.key);
-    redrawing = false;
+    try { isolateCallback(FY.redraw, e.key, "page.navigation_failed"); }
+    finally { redrawing = false; }
   };
   const zone = name => {
     let z = zones[name];
@@ -54,7 +64,7 @@
   const focusFull = (e, preferred) => {
     const items = focusable(e.layer);
     const to = items.includes(preferred) ? preferred : items[0] || e.layer;
-    safe(() => to.focus());
+    isolateCallback(() => to.focus(), undefined, "page.focus_failed");
   };
   const finish = e => {
     if (!e.shown) return;
@@ -70,16 +80,16 @@
     if (modal && top()) {
       if (wasTop || !top().layer.contains(document.activeElement)) focusFull(top(), from);
     } else {
-      if (reopen && FY.open) safe(FY.open);
-      if (from && from.isConnected) safe(() => from.focus());
+      if (reopen && FY.open) isolateCallback(FY.open, undefined, "page.navigation_failed");
+      if (from && from.isConnected) isolateCallback(() => from.focus(), undefined, "page.focus_failed");
     }
     e.from = null;
-    if (e.onclose) safe(e.onclose);
+    if (e.onclose) isolateCallback(e.onclose, undefined, "page.cleanup_failed");
   };
   const leave = e => {
     const was = e.shown;
     finish(e);
-    if (was && e.mode === "panel" && FY.open) safe(FY.open, e.plugin);
+    if (was && e.mode === "panel" && FY.open) isolateCallback(FY.open, e.plugin, "page.navigation_failed");
   };
   const drop = (e, quiet) => {
     finish(e);
@@ -113,7 +123,7 @@
         const items = focusable(layer), first = items[0] || layer, last = items[items.length - 1] || layer;
         if (!items.includes(document.activeElement) || ev.shiftKey && document.activeElement === first || !ev.shiftKey && document.activeElement === last) {
           ev.preventDefault();
-          (ev.shiftKey ? last : first).focus();
+          isolateCallback(() => (ev.shiftKey ? last : first).focus(), undefined, "page.focus_failed");
         }
       }
     });
@@ -126,7 +136,7 @@
     e.shown = true;
     full.push(e);
     syncFull();
-    b.focus();
+    isolateCallback(() => b.focus(), undefined, "page.focus_failed");
     render(e, body);
     return true;
   };
@@ -134,12 +144,13 @@
     const generation = ++e.generation;
     const failed = error => {
       if (pages.get(e.key) !== e || !e.shown || e.generation !== generation) return;
+      diagnose("page.render_failed");
       if (e.mode === "full") leave(e);
       else {
         box.textContent = "Module error: " + String(error && error.message || error);
         finish(e);
       }
-      safe(() => FY.fail(e.plugin, error));
+      isolateCallback(() => FY.fail(e.plugin, error));
     };
     try {
       const result = e.render(box, ctx(e));
@@ -190,6 +201,10 @@
         const old = pages.get(key);
         if (!old && own().length >= MAX) return err("page limit reached (" + MAX + ")");
         if (old) drop(old, true);
+        // onclose can dispose the owner or publish a newer registration for this key.
+        if (p.dead) return err("module disposed");
+        if (pages.has(key)) return err("page changed during replacement");
+        if (own().length >= MAX) return err("page limit reached (" + MAX + ")");
         const e = {
           id: o.id,
           key,
@@ -235,15 +250,17 @@
         zone(name).append(m.el);
         const failed = error => {
           if (mounts.get(id) !== m || p.dead) return;
+          diagnose("page.render_failed");
           unmount(m);
-          safe(() => FY.fail(pid, error));
+          isolateCallback(() => FY.fail(pid, error));
         };
         try {
           const result = o.render(m.el);
           if (result && typeof result.then === "function") Promise.resolve(result).catch(failed);
         } catch (x) {
+          diagnose("page.render_failed");
           unmount(m);
-          safe(() => FY.fail(pid, x));
+          isolateCallback(() => FY.fail(pid, x));
           return err(String(x && x.message || x));
         }
         return { el: m.el, unmount: () => unmount(m) };
@@ -257,7 +274,7 @@
     res.push(() => {
       own().forEach(e => drop(e, true));
       [...mounts.values()].forEach(unmount);
-      if (used) safe(() => io.core("target_remove", { pid }));
+      if (used) isolateCallback(() => io.core("target_remove", { pid }), undefined, "page.cleanup_failed");
     });
   });
 })();

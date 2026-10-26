@@ -567,6 +567,120 @@ t("both downgrade confirmations retain the exact checked release identity", asyn
   assert.deepEqual(c.sent("loader_update").map(x => x.arg), [false, true].map(confirm => ({ confirm, candidate: { tag: "v1.2.0", commit: "abcdef0123456789abcdef0123456789abcdef01" } })));
 });
 
+const captureReports = c => {
+  const reports = [];
+  c.w.__S.K.report = context => {
+    reports.push(JSON.parse(JSON.stringify(context)));
+    return Promise.resolve({ closed: true });
+  };
+  return reports;
+};
+
+t("Settings offers one manual Report to Framey action without opening a draft automatically", async () => {
+  const c = boot();
+  const reports = captureReports(c);
+  await c.open();
+  assert.equal(c.all().filter(node => node.getAttribute("aria-label") === "Report to Framey").length, 1);
+  assert.equal(reports.length, 0);
+  const page = c.text();
+  await c.click("Report to Framey");
+  assert.deepEqual(reports, [{ error: "", code: "settings_support" }]);
+  assert.equal(c.text(), page);
+  assert.equal(c.sent("loader_update").length, 0);
+});
+
+t("a Settings read failure exposes a bounded manual report context beside Retry", async () => {
+  const error = "Read failure " + "x".repeat(500);
+  const c = boot({ state_get: { error } });
+  const reports = captureReports(c);
+  await c.open();
+  assert.ok(c.has("Retry") && c.has("Report to Framey"));
+  assert.equal(reports.length, 0);
+  await c.click("Report to Framey");
+  assert.equal(reports[0].code, "settings_error");
+  assert.equal(reports[0].error, error.slice(0, 300));
+  assert.equal(reports[0].plugin, undefined);
+});
+
+t("a failed loader check has exactly one manual reporting action with the actual error", async () => {
+  const c = boot({ loader_check: { loader: { state: "error", msg: "Release lookup unavailable" } } });
+  const reports = captureReports(c);
+  await c.open();
+  await c.click("Check for updates");
+  assert.equal(reports.length, 0);
+  assert.equal(c.all().filter(node => node.getAttribute("aria-label") === "Report to Framey").length, 1);
+  await c.click("Report to Framey");
+  assert.deepEqual(reports, [{ error: "Release lookup unavailable", code: "loader_check_failed" }]);
+});
+
+t("a failed loader update can be reported manually while keeping Back and the pinned update", async () => {
+  const c = boot({ loader_update: { error: "Framey release changed; check for updates again" } });
+  const reports = captureReports(c);
+  await c.open();
+  await c.click("Update");
+  await c.click("Update now");
+  assert.equal(reports.length, 0);
+  assert.ok(c.has("Back") && c.has("Report to Framey"));
+  await c.click("Report to Framey");
+  assert.deepEqual(reports, [{ error: "Framey release changed; check for updates again", code: "loader_update_failed" }]);
+  assert.deepEqual(c.last("loader_update").arg.candidate, { tag: "v1.2.0", commit: "abcdef0123456789abcdef0123456789abcdef01" });
+  await c.click("Back");
+  assert.ok(c.has("Check for updates"));
+});
+
+t("rollback and backup-removal errors route manual reports through Framey's preview helper", async () => {
+  for (const [method, action] of [["loader_roll", "Roll back"], ["loader_done", "Done"]]) {
+    const c = boot({ loader: { commit: "1234567", kept: true }, [method]: { error: "Recovery operation could not finish" } });
+    const reports = captureReports(c);
+    await c.open();
+    await c.click(action);
+    if (method === "loader_roll") await c.click(action);
+    assert.equal(reports.length, 0);
+    await c.click("Report to Framey");
+    assert.deepEqual(reports, [{ error: "Recovery operation could not finish", code: method + "_failed" }]);
+    assert.ok(c.has("Back"));
+  }
+});
+
+t("the existing Settings support action picks up a later save error without extra report controls", async () => {
+  const c = boot({ prefs_set: { error: "Settings write failed" } });
+  const reports = captureReports(c);
+  await c.open();
+  await c.click("Tell me about module updates");
+  assert.equal(reports.length, 0);
+  assert.equal(c.all().filter(node => node.getAttribute("aria-label") === "Report to Framey").length, 1);
+  await c.click("Report to Framey");
+  assert.deepEqual(reports, [{ error: "Settings write failed", code: "settings_save_failed" }]);
+  assert.equal(c.find("Tell me about module updates").getAttribute("aria-checked"), "false");
+});
+
+t("a failed optional restart-notice cache records a fixed diagnostic and keeps the success screen", async () => {
+  const c = boot({ loader_update: { ok: true } });
+  const diagnostics = [];
+  c.w.__S.K.diagnostic = code => diagnostics.push(code);
+  await c.open();
+  Object.defineProperty(c.w, "sessionStorage", { configurable: true, get() { throw new Error("Storage unavailable"); } });
+  await c.click("Update");
+  await c.click("Update now");
+  assert.ok(c.text().includes("Updated, Framey is restarting"));
+  assert.ok(c.has("Back"));
+  assert.deepEqual(diagnostics, ["core.storage_failed"]);
+});
+
+t("an unavailable or rejecting report helper preserves Settings and shows Unavailable", async () => {
+  for (const mode of ["missing", "rejected"]) {
+    const c = boot();
+    if (mode === "rejected") c.w.__S.K.report = () => Promise.reject(new Error("Preview unavailable"));
+    else delete c.w.__S.K.report;
+    await c.open();
+    const page = c.text();
+    await c.click("Report to Framey");
+    assert.equal(c.text(), page);
+    assert.ok(c.d.body.textContent.includes("Report to Framey: Unavailable"));
+    assert.ok(c.has("Check for updates"));
+  }
+});
+
 (async () => {
   let pass = 0, fail = 0;
   for (const [name, fn] of tests) {

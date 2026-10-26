@@ -427,6 +427,127 @@ t("hot reload persistence warnings remain visible without pretending the choice 
   assert.equal(h.buttons().find(b => b.textContent === "On").disabled, false);
 });
 
+t("Report to Framey is manual and keeps raw diagnostics out of its context", async () => {
+  const h = await open();
+  const contexts = [];
+  h.w.__S.K.report = context => { contexts.push(context); return Promise.resolve({ closed: true }); };
+  assert.ok(h.button("Report to Framey"));
+  assert.equal(contexts.length, 0);
+  assert.ok(h.box.textContent.includes("does not submit an issue automatically"));
+  h.button("Run diagnostics").click();
+  h.answer("diag", { error: "PRIVATE_SAMPLE /home/fixture-user/secret", credentials: "PRIVATE_SAMPLE" });
+  await settle();
+  assert.ok(h.box.querySelector("textarea").value.includes("PRIVATE_SAMPLE"));
+  assert.equal(contexts.length, 0);
+  h.button("Report to Framey").click();
+  await settle();
+  assert.equal(contexts.length, 1);
+  assert.equal(contexts[0].code, "developer_diagnostics_failed");
+  assert.equal(contexts[0].error, "The Developer page could not collect diagnostics.");
+  assert.equal("plugin" in contexts[0], false);
+  assert.equal("diagnostics" in contexts[0], false);
+  assert.ok(!JSON.stringify(contexts[0]).includes("PRIVATE_SAMPLE"));
+  assert.ok(!JSON.stringify(contexts[0]).includes("/home/"));
+  assert.ok(h.box.textContent.includes("Report review closed. Framey did not submit an issue."));
+});
+
+t("report context names the failed developer operation without blaming a plugin", async () => {
+  const h = await open();
+  const contexts = [];
+  h.w.__S.K.report = context => { contexts.push(context); return Promise.resolve({ closed: true }); };
+  h.button("Find debug targets").click();
+  h.answer("devtools_info", { error: "debug target private detail", targets: [] });
+  await settle();
+  h.button("Report to Framey").click();
+  await settle();
+  assert.equal(contexts[0].code, "developer_debug_targets_failed");
+  assert.equal("plugin" in contexts[0], false);
+  assert.ok(!JSON.stringify(contexts[0]).includes("private detail"));
+});
+
+t("a recovered developer failure does not remain in a later report", async () => {
+  const h = await open();
+  const contexts = [];
+  h.w.__S.K.report = context => { contexts.push(context); return Promise.resolve({ closed: true }); };
+  h.button("Run diagnostics").click();
+  h.answer("diag", { error: "first failed" });
+  await settle();
+  h.button("Run diagnostics").click();
+  h.answer("diag", {});
+  await settle();
+  h.button("Report to Framey").click();
+  await settle();
+  assert.equal(contexts[0].code, "developer_diagnostics");
+});
+
+t("reporting without the core helper gives visible recovery instructions", async () => {
+  const h = await open();
+  delete h.w.__S.K.report;
+  h.button("Report to Framey").click();
+  assert.ok(h.box.textContent.includes("Reporting is unavailable. Refresh Framey and try again."));
+  assert.equal(h.button("Report to Framey").disabled, false);
+  assert.equal(h.env.sent("report_prepare").length, 0);
+});
+
+t("a report stays single-flight until close and makes no submission claim", async () => {
+  const h = await open();
+  const contexts = [];
+  let close;
+  h.w.__S.K.report = context => { contexts.push(context); return new Promise(resolve => { close = resolve; }); };
+  const button = h.button("Report to Framey");
+  button.click();
+  button.click();
+  assert.equal(contexts.length, 1);
+  assert.equal(button.disabled, true);
+  assert.equal(button.getAttribute("aria-busy"), "true");
+  close({ closed: true });
+  await settle();
+  assert.equal(button.disabled, false);
+  assert.equal(button.hasAttribute("aria-busy"), false);
+  assert.ok(h.box.textContent.includes("Framey did not submit an issue"));
+  assert.ok(!h.box.textContent.includes("Issue created"));
+});
+
+t("report helper throws and rejections are visible without copying their private messages", async () => {
+  const h = await open();
+  for (const helper of [() => { throw new Error("PRIVATE_REPORT_FAILURE"); }, () => Promise.reject(new Error("PRIVATE_REPORT_FAILURE"))]) {
+    h.w.__S.K.report = helper;
+    h.button("Report to Framey").click();
+    await settle();
+    assert.ok(h.box.textContent.includes("report review could not be confirmed"));
+    assert.ok(!h.box.textContent.includes("PRIVATE_REPORT_FAILURE"));
+    assert.equal(h.button("Report to Framey").disabled, false);
+  }
+});
+
+t("closing an old report cannot repaint a newer developer render", async () => {
+  const h = await open();
+  let close;
+  h.w.__S.K.report = () => new Promise(resolve => { close = resolve; });
+  h.button("Report to Framey").click();
+  h.FY.dev.render(h.box);
+  h.answer("dev_status", STATUS());
+  h.answer("list", LIST);
+  await settle();
+  close({ closed: true });
+  await settle();
+  assert.ok(!h.box.textContent.includes("Report review closed"));
+  assert.equal(h.button("Report to Framey").disabled, false);
+});
+
+t("trusted-input mode blocks synthetic reporting clicks", async () => {
+  const h = boot({ trusted: true });
+  let reports = 0;
+  h.w.__S.K.report = () => { reports++; return Promise.resolve({ closed: true }); };
+  h.FY.dev.render(h.box);
+  h.answer("dev_status", STATUS());
+  h.answer("list", LIST);
+  await settle();
+  h.button("Report to Framey").click();
+  await settle();
+  assert.equal(reports, 0);
+});
+
 (async () => {
   for (const [name, fn] of queue) {
     try { await fn(); pass++; console.log("ok   " + name); } catch (e) { fail++; console.log("FAIL " + name + "\n" + (e.stack || e)); }

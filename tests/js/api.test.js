@@ -174,26 +174,18 @@ t("events after dispose are ignored; subscriptions after dispose are ignored", (
   assert.deepStrictEqual(got, ["new"]);
 });
 
-t("a throwing subscriber is caught, logged, and rate limited to 5 per second", () => {
+t("throwing subscribers are isolated and counted without sending callback details", () => {
   const e = fresh();
   const api = e.plugin("a");
-  let now = 1000;
-  e.window.Date.now = () => now;
   const got = [];
-  api.events.on("e", () => { throw new Error("bad handler"); });
+  api.events.on("e", () => { throw new Error("PRIVATE_CALLBACK_DETAIL"); });
   api.events.on("e", () => got.push(1));
   for (let i = 0; i < 20; i++) e.event("a", "e", i);
   assert.strictEqual(got.length, 20);
-  let logs = e.sent("log");
-  assert.strictEqual(logs.length, 5);
-  assert.strictEqual(logs[0].id, 0);
-  assert.strictEqual(logs[0].plugin, "_core");
-  assert.strictEqual(logs[0].arg.pid, "a");
-  assert.strictEqual(logs[0].arg.level, "error");
-  assert.ok(/bad handler/.test(logs[0].arg.msg));
-  now += 1000;
-  e.event("a", "e", 0);
-  assert.strictEqual(e.sent("log").length, 6);
+  assert.strictEqual(e.sent("log").length, 0);
+  const counters = e.window.__S.K.diagnostics();
+  assert.deepStrictEqual(json(counters), [{ code: "core.event_failed", count: 20 }]);
+  assert.ok(!JSON.stringify(counters).includes("PRIVATE_CALLBACK_DETAIL"));
 });
 
 t("events: subscription cap is 64", () => {
@@ -428,7 +420,8 @@ t("onVisible fires only on change and removes its document listener", () => {
   e.document.dispatchEvent(new e.window.Event("visibilitychange"));
   F._panel(false);
   assert.deepStrictEqual(seen, [true, false, true, false]);
-  assert.ok(e.sent("log").some(c => /subscriber failure/.test(c.arg.msg)));
+  assert.strictEqual(e.sent("log").length, 0);
+  assert.strictEqual(e.window.__S.K.diagnostics().find(row => row.code === "core.visibility_failed").count, 4);
   off1();
   off1();
   assert.deepStrictEqual(removed, []);
@@ -577,6 +570,97 @@ t("only English ships", () => {
   };
   walk(ROOT);
   assert.deepStrictEqual(found, []);
+});
+
+t("API initialization becomes ready only after setup and does not duplicate a failed partial install", () => {
+  let attempts = 0;
+  let normalAdd;
+  const e = makeDom({ loadFiles: [], before(w) {
+    const add = w.addEventListener.bind(w);
+    normalAdd = add;
+    w.addEventListener = (type, ...args) => {
+      if (type === "pagehide") { attempts++; throw new Error("PRIVATE_INIT_DETAIL"); }
+      return add(type, ...args);
+    };
+  } });
+  e.load("fy-api.js");
+  const K = e.window.__S.K;
+  assert.notStrictEqual(e.window.Framey.apiReady, true);
+  assert.strictEqual(K.apiInitialization, "failed");
+  const extensions = e.window.Framey.ext.length;
+  e.load("fy-api.js");
+  assert.strictEqual(attempts, 1);
+  assert.strictEqual(e.window.Framey.ext.length, extensions);
+  assert.strictEqual(e.window.__fyBye, undefined);
+  assert.deepStrictEqual(json(K.diagnostics()), [{ code: "core.extension_failed", count: 1 }]);
+  assert.strictEqual(e.calls.length, 0);
+  assert.ok(!JSON.stringify(K.diagnostics()).includes("PRIVATE_INIT_DETAIL"));
+  e.window.addEventListener = normalAdd;
+  delete e.window.Framey;
+  e.load("inject.js");
+  e.load("fy-api.js");
+  assert.strictEqual(e.window.Framey.apiReady, true);
+  assert.strictEqual(e.window.__S.K.apiInitialization, "ready");
+  assert.notStrictEqual(e.window.__S.K, K);
+  assert.deepStrictEqual(json(e.window.__S.K.diagnostics()), []);
+  e.window.close();
+});
+
+t("missing extension registration capacity fails before mutating API state", () => {
+  const e = makeDom({ loadFiles: [] });
+  Object.freeze(e.window.Framey.ext);
+  e.load("fy-api.js");
+  assert.notStrictEqual(e.window.Framey.apiReady, true);
+  assert.strictEqual(Object.getOwnPropertyDescriptor(e.window.Framey, "panelOpen"), undefined);
+  assert.strictEqual(e.window.__fyBye, undefined);
+  assert.deepStrictEqual(json(e.window.__S.K.diagnostics()), [{ code: "core.extension_failed", count: 1 }]);
+  e.window.close();
+});
+
+t("async callback failures use fixed diagnostics and preserve explicit logging", async () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  api.events.on("tick", async () => { throw new Error("PRIVATE_ASYNC_DETAIL"); });
+  api.cleanup(async () => { throw new Error("PRIVATE_CLEANUP_DETAIL"); });
+  e.window.Promise = { resolve() { throw new Error("PRIVATE_REPLACED_PROMISE_DETAIL"); } };
+  e.event("a", "tick", 1);
+  api.log("info", "Explicit module message");
+  e.window.Framey.dispose("a", TOK);
+  await flush();
+  const counters = json(e.window.__S.K.diagnostics());
+  assert.strictEqual(counters.find(row => row.code === "core.event_failed").count, 1);
+  assert.strictEqual(counters.find(row => row.code === "core.cleanup_failed").count, 1);
+  assert.ok(!JSON.stringify(counters).includes("PRIVATE_"));
+  assert.strictEqual(e.sent("log").length, 1);
+  assert.strictEqual(e.sent("log")[0].arg.msg, "Explicit module message");
+});
+
+t("a broken diagnostic recorder cannot interrupt callback isolation", () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  e.window.__S.K.diagnostic = () => { throw new Error("PRIVATE_RECORDER_DETAIL"); };
+  let reached = false;
+  api.events.on("tick", () => { throw new Error("PRIVATE_EVENT_DETAIL"); });
+  api.events.on("tick", () => { reached = true; });
+  assert.doesNotThrow(() => e.event("a", "tick", 1));
+  assert.strictEqual(reached, true);
+  assert.strictEqual(e.sent("log").length, 0);
+});
+
+t("resource and locale fallbacks count only fixed failure categories", async () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  const locale = api.i18n.load("fr");
+  e.answer(e.sent("locale")[0], { error: "PRIVATE_LOCALE_DETAIL" });
+  assert.strictEqual(await locale, false);
+  const resource = api.resource("data", "image.png");
+  e.answer(e.sent("resource")[0], { error: "PRIVATE_RESOURCE_DETAIL", code: "bad_type" });
+  await assert.rejects(resource, error => error.code === "bad_type");
+  const counters = json(e.window.__S.K.diagnostics());
+  assert.strictEqual(counters.find(row => row.code === "api.locale_failed").count, 1);
+  assert.strictEqual(counters.find(row => row.code === "api.resource_failed").count, 1);
+  assert.ok(!JSON.stringify(counters).includes("PRIVATE_"));
+  assert.strictEqual(e.sent("log").length, 0);
 });
 
 t("runtime: shape, read-only copy, no environment", () => {

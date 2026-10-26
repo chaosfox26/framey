@@ -27,6 +27,14 @@
   const call = (name, arg) => Promise.resolve().then(() => K.call(name, arg)).then(object);
   const problem = v => text(object(v).error, 600) || text(object(v).message, 600) || TEXT.noanswer;
   const jobs = new Map();
+  const recordStorageFailure = () => {
+    try {
+      if (typeof K.diagnostic === "function") K.diagnostic("core.storage_failed");
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
   let active = null;
   const leave = () => {
     if (active) active.dispose();
@@ -42,13 +50,14 @@
       };
       let dead = false, serial = 0, view = "browse", selected = null, filterOpen = false;
       let data = {}, rows = [], listError = "", detailError = "", loading = false, focusName = "";
+      let listCode = "", detailCode = "", sourceCode = "", reportPending = false, reportError = "";
       const allowedSources = deckyPage ? ["decky_stable", "decky_testing"] : ["stable", "testing", "custom"];
       let sources = deckyPage ? [{ id: "decky_stable", label: "Decky Store" }, { id: "decky_testing", label: "Decky Store Testing" }] : [{ id: "stable", label: "Stable" }, { id: "testing", label: "Testing" }, { id: "custom", label: "Custom" }];
       let customURL = "", sourceError = "", sourceBusy = false, reviewed = false, sourceSerial = 0;
       let inspection = { version: "", pending: false, error: "", result: null };
       const inspections = new Map();
       let rememberedSource = "decky_stable";
-      if (deckyPage) { try { if (allowedSources.includes(sessionStorage.fyDeckyCatalogSource)) rememberedSource = sessionStorage.fyDeckyCatalogSource; } catch (e) {} }
+      if (deckyPage) { try { if (allowedSources.includes(sessionStorage.fyDeckyCatalogSource)) rememberedSource = sessionStorage.fyDeckyCatalogSource; } catch (e) { recordStorageFailure(); } }
       let form = { query: "", category: "all", source: deckyPage ? rememberedSource : "stable", sort: "name" };
       const state = {
         dispose() {
@@ -65,6 +74,7 @@
       const fresh = name => {
         view = name;
         serial++;
+        reportError = "";
         return serial;
       };
       const button = (label, fn, options) => {
@@ -85,11 +95,62 @@
         h.setAttribute("aria-level", String(level));
         return h;
       };
+      const deckyDisclosure = () => col(MUTED, "Framey browses the upstream Decky Store independently and is not affiliated with or endorsed by Decky Loader. Compatibility is experimental and varies. Original Decky packages here are only browsed or statically inspected, never installed or run. Report Framey-specific problems to Framey, not Decky or plugin authors.", 17);
       const status = (message, color = MUTED) => {
         const e = col(color, message, 18);
         e.setAttribute("role", "status");
         e.setAttribute("aria-live", "polite");
         return e;
+      };
+      const reportNotice = () => {
+        const notice = status(reportError, BAD);
+        notice.dataset.catalogReportNotice = "true";
+        notice.style.display = reportError ? "" : "none";
+        return notice;
+      };
+      const syncReportControls = () => {
+        if (!alive()) return;
+        box.querySelectorAll('[data-catalog-report="true"]').forEach(control => { control.disabled = reportPending; });
+        box.querySelectorAll('[data-catalog-report-notice="true"]').forEach(notice => {
+          notice.textContent = reportError;
+          notice.style.display = reportError ? "" : "none";
+        });
+      };
+      const report = (item, error, code) => {
+        if (reportPending || !alive()) return;
+        const at = serial;
+        if (typeof K.report !== "function") {
+          reportError = "Reporting is unavailable. Reopen Framey and try again.";
+          syncReportControls();
+          return;
+        }
+        const selectedVersion = item && decky(item) ? versions(item).find(version => version.identity === inspection.version) : null;
+        const source = item ? item._catalogSource : form.source;
+        const context = {
+          plugin: {
+            name: item ? text(item.name, 200) : "",
+            version: item ? text(selectedVersion ? selectedVersion.name : item.version, 200) : "",
+            source: source === "decky_stable" || source === "decky_testing" ? source : "framey",
+          },
+          error: text(error, 600),
+          code: text(code, 80),
+        };
+        reportPending = true;
+        reportError = "";
+        syncReportControls();
+        return Promise.resolve().then(() => K.report(context)).then(() => {
+          reportPending = false;
+          syncReportControls();
+        }, () => {
+          reportPending = false;
+          if (scoped(at)) reportError = "The report preview could not be opened. Try Report to Framey again.";
+          syncReportControls();
+        });
+      };
+      const reportAction = (item, error = "", code = "") => {
+        const control = button("Report to Framey", () => report(item, error, code), { disabled: reportPending });
+        control.dataset.catalogReport = "true";
+        return control;
       };
       const show = (...nodes) => {
         if (!alive()) return;
@@ -218,10 +279,13 @@
         if (!id) return null;
         return Object.assign({}, it, { id, name: text(it.name, 200) || id, _catalogSource: form.source, _catalogURL: form.source === "custom" ? customURL : "" });
       };
-      const snapshot = () => put(tx(""),
+      const snapshot = item => put(tx(""),
         data.origin === "bundled" ? status("Showing the bundled catalog. Refresh to check for current releases.", WARN)
           : data.origin === "cache" || data.stale === true ? status(data.stale === true ? TEXT.offline : TEXT.cached, WARN) : null,
         text(data.warning, 600) && col(WARN, text(data.warning, 600), 17),
+        text(data.fetch_error, 600) && data.fetch_error !== data.warning && col(WARN, text(data.fetch_error, 600), 17),
+        !item && text(data.fetch_error, 600) && row(reportAction(null, data.fetch_error)),
+        text(data.fetch_error, 600) && Number.isFinite(data.retry_after) && data.retry_after > 0 && col(MUTED, "Try again after: " + new Date(data.retry_after * 1000).toLocaleString(), 17),
         Number.isFinite(data.downloaded_at) && data.downloaded_at > 0 && col(MUTED, "Catalog saved: " + new Date(data.downloaded_at * 1000).toLocaleString(), 16),
         Number.isFinite(data.checked_at) && data.checked_at > 0 && col(MUTED, "Last checked: " + new Date(data.checked_at * 1000).toLocaleString(), 16),
       );
@@ -264,7 +328,7 @@
           pending.dataset.catalogSourceSaving = "true";
           out.append(pending);
         }
-        if (sourceError) out.append(status(sourceError, BAD), button("Retry source", configureSource));
+        if (sourceError) out.append(status(sourceError, BAD), button("Retry source", configureSource), reportAction(null, sourceError, sourceCode));
         return out;
       };
       const draw = () => {
@@ -303,7 +367,7 @@
           pending.dataset.catalogLoading = "true";
           list.append(pending);
         }
-        else if (listError) list.append(status(TEXT.failed, BAD), col(BAD, listError, 18), row(button(TEXT.retry, () => load(true), { primary: true })));
+        else if (listError) list.append(status(TEXT.failed, BAD), col(BAD, listError, 18), row(button(TEXT.retry, () => load(true), { primary: true }), reportAction(null, listError, listCode)));
         else if (!rows.length) list.append(col("#fff", filtered ? TEXT.empty : TEXT.none, 21, true), col(MUTED, filtered ? TEXT.emptyHint : TEXT.noneHint, 18), filtered && row(button(TEXT.reset, reset)) || tx(""));
         else {
           list.append(status(rows.length + (Number.isFinite(data.total) && data.total > rows.length ? " of " + data.total : "") + (deckyPage ? rows.length === 1 ? " plugin" : " plugins" : rows.length === 1 ? " module" : " modules")));
@@ -316,19 +380,21 @@
           });
           if (Number.isFinite(data.total) && data.total > rows.length) list.append(row(button("Load more", () => load(false, true))));
         }
-        show(heading(deckyPage ? "Decky Store" : TEXT.title), deckyPage && col(MUTED, "Browse the upstream Decky Store. Framey is not affiliated with the Decky project.", 17), field(TEXT.searchLabel, search), actions, filterOpen && filterPanel(), filtered && row(button(TEXT.reset, reset)), col(MUTED, "Catalog: " + (text(object(data.source).label, 200) || sources.find(s => s.id === form.source)?.label || form.source), 17), snapshot(), list);
+        show(heading(deckyPage ? "Decky Store" : TEXT.title), deckyPage && deckyDisclosure(), reportNotice(), field(TEXT.searchLabel, search), actions, filterOpen && filterPanel(), filtered && row(button(TEXT.reset, reset)), col(MUTED, "Catalog: " + (text(object(data.source).label, 200) || sources.find(s => s.id === form.source)?.label || form.source), 17), snapshot(), list);
       };
       const load = (refresh, more) => {
         const seq = fresh("browse");
         const offset = more ? rows.length : 0;
         loading = true;
         listError = "";
+        listCode = "";
         draw();
         return call("catalog_list", Object.assign({}, form, sourceArgs(), { offset, limit: 50, refresh: !!refresh })).then(r => {
           if (!scoped(seq)) return;
           loading = false;
           data = Object.assign({}, data, r);
           listError = r.error ? problem(r) : "";
+          listCode = r.error ? text(r.code, 80) : "";
           if (!r.error) {
             const incoming = (Array.isArray(r.rows) ? r.rows : []).slice(0, 50).map(normal).filter(Boolean);
             const unique = new Map((more ? rows : []).concat(incoming).map(item => [identity(item), item]));
@@ -339,6 +405,7 @@
           if (!scoped(seq)) return;
           loading = false;
           listError = problem(err);
+          listCode = text(object(err).code, 80);
           draw();
         });
       };
@@ -348,13 +415,14 @@
         inspection = { version: "", pending: false, error: "", result: null };
         reviewed = false;
         detailError = "";
+        detailCode = "";
         show(heading(item.name), row(button(TEXT.back, back)), status(TEXT.detailsLoading));
         return call("catalog_details", Object.assign({ id: item.id }, sourceArgs(item))).then(r => {
           if (!scoped(seq)) return;
-          if (r.error) detailError = problem(r);
+          if (r.error) { detailError = problem(r); detailCode = text(r.code, 80); }
           else {
             const entry = normal(r.entry);
-            if (!entry || entry.id !== item.id) detailError = "Module details were not returned. Retry before installing.";
+            if (!entry || entry.id !== item.id) { detailError = "Module details were not returned. Retry before installing."; detailCode = "invalid_details"; }
             else {
               entry._catalogSource = item._catalogSource;
               entry._catalogURL = item._catalogURL;
@@ -364,12 +432,15 @@
             }
             if (r.stale === true) data.stale = true;
             if (r.origin) data.origin = r.origin;
-            if (r.warning) data.warning = r.warning;
+            if (typeof r.warning === "string") data.warning = r.warning;
+            if (Object.prototype.hasOwnProperty.call(r, "fetch_error")) data.fetch_error = r.fetch_error;
+            if (Object.prototype.hasOwnProperty.call(r, "retry_after")) data.retry_after = r.retry_after;
           }
           details();
         }, err => {
           if (!scoped(seq)) return;
           detailError = problem(err);
+          detailCode = text(object(err).code, 80);
           details();
         });
       };
@@ -378,11 +449,13 @@
         if (!item) return back();
         if (decky(item)) restoreInspection(item);
         const job = jobFor(item);
+        const reportFailure = detailError || inspection.error || job && job.error || text(data.fetch_error, 600);
+        const reportCode = detailError ? detailCode : inspection.error ? inspection.code : job && job.error ? job.code : "";
         const install = !readOnly(item) && button(installLabel(item), review, { primary: true, disabled: blocked(item) || !!detailError || !reviewed });
         const description = col("#fff", text(item.description, 12000) || TEXT.noDescription, 19);
         const permissions = Array.isArray(item.permissions) ? item.permissions.slice(0, 64).map(p => text(p, 300)).filter(Boolean).join("\n") : text(item.permissions, 4000);
         const source = object(item.source);
-        show(heading(item.name), row(button(TEXT.back, back)), snapshot(), col(UP, formatLabel(item), 18), col(MUTED, summary(item), 17), item.author && col(MUTED, "By " + text(item.author, 200), 17), compat(item), detailError && status(detailError, BAD), detailError && row(button(TEXT.retry, () => open(item))), col("#fff", TEXT.description, 21, true), description, Array.isArray(item.tags) && col(MUTED, item.tags.slice(0, 40).map(t => text(t, 100)).filter(Boolean).join(" · "), 17), col("#fff", TEXT.source, 21, true), col(MUTED, [text(object(data.source).label, 200), text(object(data.source).url, 2000), text(source.repository, 2000), text(source.url, 2000), source.commit && "Commit: " + text(source.commit, 200), source.path && "Path: " + text(source.path, 1000), text(item.homepage, 2000)].filter(Boolean).join("\n"), 17), permissions && col("#fff", TEXT.permissions, 21, true), permissions && col(MUTED, permissions, 18),
+        show(heading(item.name), row(button(TEXT.back, back), reportAction(item, reportFailure, reportCode)), reportNotice(), decky(item) && deckyDisclosure(), snapshot(item), col(UP, formatLabel(item), 18), col(MUTED, summary(item), 17), item.author && col(MUTED, "By " + text(item.author, 200), 17), compat(item), detailError && status(detailError, BAD), detailError && row(button(TEXT.retry, () => open(item))), col("#fff", TEXT.description, 21, true), description, Array.isArray(item.tags) && col(MUTED, item.tags.slice(0, 40).map(t => text(t, 100)).filter(Boolean).join(" · "), 17), col("#fff", TEXT.source, 21, true), col(MUTED, [text(object(data.source).label, 200), text(object(data.source).url, 2000), text(source.repository, 2000), text(source.url, 2000), source.commit && "Commit: " + text(source.commit, 200), source.path && "Path: " + text(source.path, 1000), text(item.homepage, 2000)].filter(Boolean).join("\n"), 17), permissions && col("#fff", TEXT.permissions, 21, true), permissions && col(MUTED, permissions, 18),
           readOnly(item) ? deckyDetails(item) : put(tx(""), installHint(item) && status(installHint(item), item.installed === true ? GOOD : WARN), !reviewed && !detailError && col(WARN, "A current catalog identity is required before installing. Refresh the catalog and retry.", 17), row(install), job && progress(job)));
       };
       const versions = item => {
@@ -409,7 +482,7 @@
         text(version.updates, 3000) && col("#fff", text(version.updates, 3000), 18),
       );
       const assessmentView = assessment => {
-        const out = put(tx("margin-top:16px"), subheading("Archive inspection", 3), col(WARN, "Requires a Framey port", 20, true));
+        const out = put(tx("margin-top:16px"), subheading("Archive inspection", 3), deckyDisclosure(), col(WARN, "Requires a Framey port", 20, true));
         if (text(assessment.label, 600)) out.append(col(MUTED, text(assessment.label, 600), 18));
         const architecture = {
           unknown: "ARM64 compatibility remains unverified.",
@@ -505,14 +578,15 @@
         inspections.set(key, current);
         current.pending = true;
         current.error = "";
+        current.code = "";
         current.result = null;
         details();
         const request = Object.assign({ id: item.id, identity: item.identity, version_identity: version.identity, confirm: true }, sourceArgs(item));
         return call("catalog_assess", request).then(r => {
           current.pending = false;
           const result = object(r.assessment);
-          if (r.error) current.error = problem(r);
-          else if (r.id !== item.id || r.format !== "decky" || r.read_only !== true || r.version !== version.name || r.hash !== version.hash || result.not_executed !== true || result.verified_sha256 !== true) current.error = "The inspection result could not be confirmed. Select Inspect compatibility to retry.";
+          if (r.error) { current.error = problem(r); current.code = text(r.code, 80); }
+          else if (r.id !== item.id || r.format !== "decky" || r.read_only !== true || r.version !== version.name || r.hash !== version.hash || result.not_executed !== true || result.verified_sha256 !== true) { current.error = "The inspection result could not be confirmed. Select Inspect compatibility to retry."; current.code = "unconfirmed_assessment"; }
           else {
             current.result = result;
             if (isDefault) item._latestAssessment = { entry_key: identity(item), version_identity: version.identity, hash: version.hash, assessment: result };
@@ -521,6 +595,7 @@
         }, err => {
           current.pending = false;
           current.error = problem(err);
+          current.code = text(object(err).code, 80);
           if (alive() && view === "details" && current === inspection && selected && identity(selected) === identity(item)) details();
         });
       };
@@ -554,11 +629,13 @@
         return call("catalog_install", request).then(r => {
           job.pending = false;
           job.error = r.error ? problem(r) : r.ok !== item.id ? "The installation result could not be confirmed. Refresh the catalog to check its state." : "";
+          job.code = r.error ? text(r.code, 80) : r.ok !== item.id ? "unconfirmed_install" : "";
           job.message = job.error || text(r.message, 600);
           if (active && active.settleJob) active.settleJob(identity(item), item);
         }, err => {
           job.pending = false;
           job.error = problem(err);
+          job.code = text(object(err).code, 80);
           job.message = job.error;
           if (active && active.settleJob) active.settleJob(identity(item), item);
         });
@@ -570,14 +647,16 @@
         rows = [];
         data = {};
         loading = false;
+        sourceCode = "";
         if (deckyPage) {
-          try { sessionStorage.fyDeckyCatalogSource = form.source; } catch (e) {}
+          try { sessionStorage.fyDeckyCatalogSource = form.source; } catch (e) { recordStorageFailure(); }
           sourceError = "";
           return load(false);
         }
         if (form.source === "custom" && !customURL) { sourceError = "Enter a custom catalog URL, then apply the source."; draw(); return; }
         sourceBusy = true;
         sourceError = "";
+        sourceCode = "";
         const seq = sourceSerial;
         const requestedSource = form.source;
         const requestedURL = customURL;
@@ -585,9 +664,9 @@
         return call("catalog_sources", sourceArgs()).then(r => {
           if (!alive() || seq !== sourceSerial || requestedSource !== form.source || requestedURL !== customURL) return;
           sourceBusy = false;
-          if (r.error) { sourceError = problem(r); draw(); }
+          if (r.error) { sourceError = problem(r); sourceCode = text(r.code, 80); draw(); }
           else if (view === "browse") return load(false);
-        }, err => { if (alive() && seq === sourceSerial) { sourceBusy = false; sourceError = problem(err); if (view === "browse") draw(); } });
+        }, err => { if (alive() && seq === sourceSerial) { sourceBusy = false; sourceError = problem(err); sourceCode = text(object(err).code, 80); if (view === "browse") draw(); } });
       };
       state.settleJob = key => {
         if (!alive() || deckyPage) return;
@@ -611,7 +690,7 @@
         if (!deckyPage && sources.some(s => s.id === saved.id)) form.source = saved.id;
         else if (!sources.some(s => s.id === form.source)) form.source = sources[0].id;
         customURL = text(r.custom_url, 2000) || (saved.id === "custom" ? text(saved.url, 2000) : "");
-        if (r.error) sourceError = problem(r);
+        if (r.error) { sourceError = problem(r); sourceCode = text(r.code, 80); }
         load(false);
       }, () => { if (scoped(boot)) load(false); });
       return state.dispose;

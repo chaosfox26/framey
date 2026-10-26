@@ -1,8 +1,16 @@
 (() => {
   const FY = __FY;
   const K = FY && FY._k && FY._k(typeof __fyt === "string" ? __fyt : "");
-  if (!FY || FY.pickerReady) return;
-  FY.pickerReady = true;
+  if (!FY || !K || FY.pickerReady) return;
+  const recordFailure = code => {
+    try {
+      if (typeof K.diagnostic === "function") K.diagnostic(code);
+    } catch { return; }
+  };
+  const isolate = (callback, code) => {
+    try { callback(); return true; } catch { recordFailure(code); return false; }
+  };
+  const focusSafely = callback => isolate(callback, "picker.focus_failed");
   let busy = false;
   const track = (api, fn) => (api.cleanup ? api.cleanup(fn) : api.on({ addEventListener() {}, removeEventListener: fn }, "fy-picker", fn));
   const join = (p, n) => (p ? p + "/" + n : n);
@@ -74,19 +82,21 @@
       done = true;
       ++seq;
       busy = false;
-      if (observer) observer.disconnect();
-      if (typeof unpanel === "function") unpanel();
-      view.remove();
-      if (typeof untrack === "function") untrack();
-      const active = document.activeElement;
-      if (!(active && active !== document.body && focusable(active))) {
-        if (back && focusable(back)) back.focus();
-        else {
-          const panel = document.querySelector('[role="region"][aria-label="Framey"]');
-          const target = panel && [...panel.querySelectorAll('[role="tabpanel"] [tabindex], [role="tabpanel"] button, [role="tabpanel"] input, [role="tabpanel"] select, [role="tabpanel"] textarea, [role="tab"][aria-selected="true"]')].find(focusable);
-          if (target) target.focus();
+      if (observer) isolate(() => observer.disconnect(), "picker.cleanup_failed");
+      if (typeof unpanel === "function") isolate(unpanel, "picker.cleanup_failed");
+      isolate(() => view.remove(), "picker.cleanup_failed");
+      if (typeof untrack === "function") isolate(untrack, "picker.cleanup_failed");
+      focusSafely(() => {
+        const active = document.activeElement;
+        if (!(active && active !== document.body && focusable(active))) {
+          if (back && focusable(back)) back.focus();
+          else {
+            const panel = document.querySelector('[role="region"][aria-label="Framey"]');
+            const target = panel && [...panel.querySelectorAll('[role="tabpanel"] [tabindex], [role="tabpanel"] button, [role="tabpanel"] input, [role="tabpanel"] select, [role="tabpanel"] textarea, [role="tab"][aria-selected="true"]')].find(focusable);
+            if (target) target.focus();
+          }
         }
-      }
+      });
       resolve(v);
     };
     const alive = () => {
@@ -105,15 +115,18 @@
         chosen = n;
         ok.disabled = false;
         const active = document.activeElement;
-        ok.focus();
-        if (active && view.contains(active)) active.focus();
+        focusSafely(() => {
+          ok.focus();
+          if (active && view.contains(active)) active.focus();
+        });
       }
     };
     const settle = () => {
       const a = document.activeElement;
-      if (!view.contains(a) || a.getAttribute("aria-disabled") === "true") ui.focus(body);
+      if (!view.contains(a) || a.getAttribute("aria-disabled") === "true") focusSafely(() => ui.focus(body));
     };
     const failure = message => {
+      recordFailure("picker.request_failed");
       loading = false;
       ready = false;
       chosen = null;
@@ -161,6 +174,7 @@
         .then(res => res, e => ({ error: e && e.message, code: e && e.code }))
         .then(res => {
           if (!alive() || n !== seq) return;
+          if (res && res.code === "disposed") return finish(null);
           loading = false;
           view.setAttribute("aria-busy", "false");
           lst.setAttribute("aria-busy", "false");
@@ -195,11 +209,11 @@
           up.disabled = parent === null;
           ok.disabled = !folder;
           crumb.textContent = [root].concat(path.split("/").filter(Boolean)).join(" / ") + (res.truncated ? "  (list shortened)" : "");
-          if (folder) ok.focus();
-          ui.focus(lst);
+          if (folder) focusSafely(() => ok.focus());
+          focusSafely(() => ui.focus(lst));
           settle();
         }).catch(e => {
-          if (!done && n === seq) failure(e && e.message);
+          if (alive() && n === seq) failure(e && e.message);
         });
     };
     view.addEventListener("keydown", ev => {
@@ -213,26 +227,38 @@
         const first = targets[0], last = targets[targets.length - 1], active = document.activeElement;
         if (!first || (ev.shiftKey ? active === first || !targets.includes(active) : active === last || !targets.includes(active))) {
           ev.preventDefault();
-          if (first) (ev.shiftKey ? last : first).focus();
-          else ui.focus(body);
+          focusSafely(() => {
+            if (first) (ev.shiftKey ? last : first).focus();
+            else ui.focus(body);
+          });
         }
       }
     });
     let armed = false, early = false;
-    try { untrack = track(api, () => (armed ? finish(null) : (early = true))); } catch (e) { return resolve(null); }
+    try {
+      untrack = track(api, () => (armed ? finish(null) : (early = true)));
+    } catch {
+      recordFailure("picker.cleanup_failed");
+      return resolve(null);
+    }
     if (early) return resolve(null);
     armed = true;
     busy = true;
     if (!alive()) return;
     if (origin && typeof MutationObserver === "function") {
-      observer = new MutationObserver(() => { alive(); });
-      for (let at = origin; at; at = at.parentElement) {
-        observer.observe(at, { childList: true, attributes: true, attributeFilter: ["hidden", "aria-hidden", "style", "class"] });
-      }
+      const observed = isolate(() => {
+        observer = new MutationObserver(() => { alive(); });
+        for (let at = origin; at; at = at.parentElement) {
+          observer.observe(at, { childList: true, attributes: true, attributeFilter: ["hidden", "aria-hidden", "style", "class"] });
+        }
+      }, "picker.cleanup_failed");
+      if (!observed) return finish(null);
     }
-    if (typeof FY.onPanel === "function") unpanel = FY.onPanel(open => { if (!open) finish(null); });
+    if (typeof FY.onPanel === "function") {
+      if (!isolate(() => { unpanel = FY.onPanel(open => { if (!open) finish(null); }); }, "picker.cleanup_failed")) return finish(null);
+    }
     document.body.append(view);
-    ui.focus(body);
+    focusSafely(() => ui.focus(body));
     load(undefined, "");
   });
 
@@ -242,4 +268,5 @@
   };
   FY.plugins.forEach(p => { const a = K && K.apiOf(p); if (a) attach(a); });
   if (Object.isExtensible(FY.ext)) FY.ext.push(attach);
+  FY.pickerReady = true;
 })();
