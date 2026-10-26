@@ -830,6 +830,8 @@ def fetch(url, headers=None, hosts=None, limit=5_000_000, progress=None):
         total = int(total) if total and total.isdigit() else None
         sock = getattr(getattr(r.fp, "raw", None), "_sock", None)
         while (left := end - time.monotonic()) > 0:
+            if r.isclosed():
+                break
             if sock:
                 sock.settimeout(left)
             try:
@@ -846,6 +848,8 @@ def fetch(url, headers=None, hosts=None, limit=5_000_000, progress=None):
                 progress(n, total)
         else:
             raise TimeoutError("download too slow")
+        if r.length:
+            raise ValueError("download incomplete: the connection closed early")
     return b"".join(parts)
 
 
