@@ -218,7 +218,7 @@
         if (alive()) { view.busy = false; syncControls(); }
       }
     };
-    const prepare = async () => {
+    const prepare = async (initial = false) => {
       if (!alive() || view.busy) return;
       view.loading = true;
       view.ready = false;
@@ -254,7 +254,7 @@
       }
       view.loading = false;
       syncControls();
-      title.focus();
+      if (initial) dialog.scrollTop = 0;
     };
     const perform = async kind => {
       if (!alive() || view.busy || view.loading || !view.ready || kind === "open" && !view.repository) return;
@@ -321,8 +321,9 @@
     view.observer.observe(document.body, { childList: true });
     window.addEventListener("pagehide", close);
     syncControls();
-    back.focus();
-    prepare();
+    closeButton.focus({ preventScroll: true });
+    dialog.scrollTop = 0;
+    prepare(true);
     return view.promise;
   };
   report.close = report.dispose = close;

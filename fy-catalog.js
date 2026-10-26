@@ -95,7 +95,7 @@
         h.setAttribute("aria-level", String(level));
         return h;
       };
-      const deckyDisclosure = () => col(MUTED, "Framey browses the upstream Decky Store independently and is not affiliated with or endorsed by Decky Loader. Compatibility is experimental and varies. Original Decky packages here are only browsed or statically inspected, never installed or run. Report Framey-specific problems to Framey, not Decky or plugin authors.", 17);
+      const deckyDisclosure = () => col(MUTED, "Experimental compatibility; results vary. Framey is independent and is not affiliated with or endorsed by Decky Loader. This tab only browses and inspects original packages; it cannot install or run them. Report Framey issues to Framey, not Decky or plugin authors.", 17);
       const status = (message, color = MUTED) => {
         const e = col(color, message, 18);
         e.setAttribute("role", "status");

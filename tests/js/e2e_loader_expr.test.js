@@ -273,9 +273,10 @@ const check = async (name, fn) => {
     tileNamed(w, "Decky Store").click();
     await sleep(60);
     assert.ok(body(w).includes("Example Decky plugin"), "Decky community entry missing");
-    assert.ok(body(w).includes("not affiliated with or endorsed by Decky Loader"), "community ownership notice missing");
-    assert.ok(body(w).includes("Compatibility is experimental and varies"), "experimental compatibility notice missing");
-    assert.ok(body(w).includes("Report Framey-specific problems to Framey"), "Framey-owned support guidance missing");
+    assert.ok(body(w).includes("Framey is independent") && body(w).includes("not affiliated with or endorsed by Decky Loader"), "community ownership notice missing");
+    assert.ok(body(w).includes("Experimental compatibility; results vary"), "experimental compatibility notice missing");
+    assert.ok(body(w).includes("only browses and inspects original packages; it cannot install or run them"), "browse-only capability notice missing");
+    assert.ok(body(w).includes("Report Framey issues to Framey, not Decky or plugin authors"), "Framey-owned support guidance missing");
     assert.ok(body(w).includes("Not compatible") && body(w).includes("needs a Framey version before it can run here"), "port requirement missing");
     assert.ok(body(w).includes("ARM64: Not checked"), "unverified architecture was not stated");
     assert.ok(sent.some(m => m.plugin === "_core" && m.method === "catalog_list" && isDecky(m.arg)), "Decky source was not requested");

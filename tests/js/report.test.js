@@ -99,6 +99,44 @@ test("draft context is allowlisted and fixed dotted session counters reach backe
   assert.ok(h.field("Diagnostics (editable)").value.includes("Session-wide"));
 });
 
+test("initial preview keeps focus on the header without scrolling or focusing an editor", async t => {
+  const pending = deferred();
+  const h = boot(t, { handlers: { report_draft: () => pending.promise } });
+  const focus = h.window.HTMLElement.prototype.focus;
+  const calls = [];
+  h.window.HTMLElement.prototype.focus = function (options) {
+    calls.push({ tag: this.tagName, text: this.textContent, options });
+    focus.call(this, options);
+    const dialog = h.dialog();
+    if (dialog && !(options && options.preventScroll)) dialog.scrollTop = 500;
+  };
+  h.core.report({});
+  const dialog = h.dialog();
+  assert.equal(h.document.activeElement, h.button("Close"));
+  assert.deepEqual(plain(calls[0].options), { preventScroll: true });
+  assert.equal(dialog.scrollTop, 0);
+  dialog.scrollTop = 300;
+  pending.resolve(draft());
+  await settle();
+  assert.equal(dialog.scrollTop, 0);
+  assert.equal(h.document.activeElement, h.button("Close"));
+  assert.ok(!calls.some(call => call.tag === "INPUT" || call.tag === "TEXTAREA"));
+});
+
+test("retry completion preserves the user's focus and scroll choice", async t => {
+  const h = boot(t, { handlers: { report_draft: () => null } });
+  await h.open();
+  const pending = deferred();
+  h.handlers.report_draft = () => pending.promise;
+  h.button("Retry draft").click();
+  h.button("Close").focus({ preventScroll: true });
+  h.dialog().scrollTop = 180;
+  pending.resolve(draft());
+  await settle();
+  assert.equal(h.document.activeElement, h.button("Close"));
+  assert.equal(h.dialog().scrollTop, 180);
+});
+
 test("edited fields are re-sanitized before copy and merged diagnostics never replace the editor", async t => {
   const h = boot(t);
   await h.open();

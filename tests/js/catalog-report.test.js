@@ -103,9 +103,9 @@ const disclosure = c => {
   assert.ok(!notice.closest("[hidden]"));
   const text = notice.textContent;
   assert.match(text, /not affiliated with or endorsed by Decky Loader/i);
-  assert.match(text, /compatibility.{0,35}experimental.{0,35}varies/i);
-  assert.match(text, /original Decky packages.{0,35}only browsed or statically inspected.{0,35}never installed or run/i);
-  assert.match(text, /report Framey-specific problems to Framey, not Decky or plugin authors/i);
+  assert.match(text, /Experimental compatibility; results vary/i);
+  assert.match(text, /This tab only browses and inspects original packages; it cannot install or run them/i);
+  assert.match(text, /Report Framey issues to Framey, not Decky or plugin authors/i);
   assert.ok(text.split(/\s+/).length <= 90, "the headset notice should remain concise");
 };
 const noAutomaticReport = c => {

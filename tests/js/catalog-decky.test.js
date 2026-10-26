@@ -97,7 +97,7 @@ test("the separate Decky Store page identifies the upstream catalog and offers o
   assert.equal(c.last("catalog_list").arg.source, "decky_stable");
   assert.ok(c.has("Details: Palette helper"));
   assert.equal(c.box.querySelector('[role="heading"]').textContent, "Decky Store");
-  assert.match(c.text(), /upstream|deckbrew|Decky plugin catalog/i);
+  assert.match(c.text(), /Framey is independent and is not affiliated with or endorsed by Decky Loader/i);
   await c.click("Filters");
   const choices = [...c.find("Source").options].map(option => [option.value, option.textContent]);
   assert.deepEqual(choices, SOURCES.filter(source => source.id.startsWith("decky_")).map(source => [source.id, source.label]));
