@@ -23,7 +23,7 @@ class PanelShape(unittest.TestCase):
             self.assertEqual(expr.count("const __FY = "), 1)
             self.assertNotIn("(function(){", expr)
             self.assertIn(L.fy.CORE_TOK, expr)
-            self.assertLess(expr.index("const __FY = "), expr.index("const FY = __FY;"))
+            self.assertLess(expr.index("const __FY = "), expr.index("const framey = __FY;"))
         finally:
             asyncio.run(L.close())
 

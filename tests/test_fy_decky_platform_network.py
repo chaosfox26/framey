@@ -1,5 +1,3 @@
-"""Controlled Decky transport checks; no public network or plugin execution."""
-
 import asyncio
 import hashlib
 import io

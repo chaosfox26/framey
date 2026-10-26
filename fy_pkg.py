@@ -14,6 +14,7 @@ import urllib.parse
 import zlib
 from pathlib import Path
 
+
 def _constant(name):
     raise ValueError(name)
 
@@ -37,24 +38,37 @@ MACHINE = {"amd64": "x86_64", "arm64": "aarch64"}
 PLATFORM_ALIASES = {"linux-arm64": "linux-aarch64", "linux-amd64": "linux-x86_64"}
 PLATFORM = "linux-" + MACHINE.get(_platform.machine().lower(), _platform.machine().lower())
 ID = re.compile(r"[a-z0-9_-]{1,32}")
-RESERVED_PLUGIN_IDS = frozenset(("_core", "core", "modules", "settings", "store", "discover", "developer", "dev", "decky-store"))
+RESERVED_PLUGIN_IDS = frozenset(
+    ("_core", "core", "modules", "settings", "store", "discover", "developer", "dev", "decky-store")
+)
 PLAT = re.compile(r"linux-[a-z0-9_]{1,24}")
 LOCALE = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?")
-VER = re.compile(r"v?([0-9]{1,9}(?:\.[0-9]{1,9}){0,3})(?:-([0-9A-Za-z-]{1,32}(?:\.[0-9A-Za-z-]{1,32}){0,7}))?(?:\+[0-9A-Za-z.-]{1,32})?")
+VER = re.compile(
+    r"v?([0-9]{1,9}(?:\.[0-9]{1,9}){0,3})(?:-([0-9A-Za-z-]{1,32}(?:\.[0-9A-Za-z-]{1,32}){0,7}))?(?:\+[0-9A-Za-z.-]{1,32})?"
+)
 COMMIT = re.compile(r"[0-9a-f]{7,64}")
 HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 DIGEST = re.compile(r"(?:sha256:)?([0-9a-fA-F]{64})")
 ASSET = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 BADCHAR = re.compile(r"[\x00-\x1f\x7f:*?\"<>|]")
 KINDS = ("release", "commit", "branch", "url", "local")
-NEEDS = {"release": ("source", "tag", "commit"), "commit": ("source", "commit"), "branch": ("source", "tag"), "url": ("url",), "local": ()}
+NEEDS = {
+    "release": ("source", "tag", "commit"),
+    "commit": ("source", "commit"),
+    "branch": ("source", "tag"),
+    "url": ("url",),
+    "local": (),
+}
 FIELDS = ("source", "tag", "commit", "digest", "url")
 
 
 def replace_guard(dest):
     d = Path(dest)
     if d.is_symlink() and (Path(os.path.realpath(d)) / ".git").exists():
-        raise PkgError("this linked folder is a git checkout; it is never replaced or deleted. Remove the link first", "linked_tree")
+        raise PkgError(
+            "this linked folder is a git checkout; it is never replaced or deleted. Remove the link first",
+            "linked_tree",
+        )
 
 
 class PkgError(Exception):
@@ -84,7 +98,11 @@ def parse_version(s):
         return None
     release = tuple(int(x) for x in m[1].split("."))
     release += (0,) * (4 - len(release))
-    pre = tuple((0, int(x)) if x.isdecimal() and x.isascii() else (1, x) for x in m[2].split(".")) if m[2] else ()
+    pre = (
+        tuple((0, int(x)) if x.isdecimal() and x.isascii() else (1, x) for x in m[2].split("."))
+        if m[2]
+        else ()
+    )
     return Version(s[1:] if s[0] == "v" else s, release, pre)
 
 
@@ -125,7 +143,11 @@ def _constraints(m):
                 errs.append("framey.min is above framey.max")
     pl = m.get("platform")
     if pl is not None:
-        if not isinstance(pl, list) or len(pl) > 8 or not all(isinstance(x, str) and PLAT.fullmatch(x) for x in pl):
+        if (
+            not isinstance(pl, list)
+            or len(pl) > 8
+            or not all(isinstance(x, str) and PLAT.fullmatch(x) for x in pl)
+        ):
             errs.append("platform must be a list of up to 8 names like linux-aarch64")
         elif pl:
             out["platform"] = list(dict.fromkeys(_platform_id(x) for x in pl))
@@ -141,24 +163,48 @@ def _over(lv, hi):
 def decide(m, loader_version, platform, api=API_GENERATION):
     platform = _platform_id(platform)
     if not isinstance(m, dict):
-        return {"state": "incompatible", "badge": "unknown", "msg": "plugin.json is not valid", "reasons": ["plugin.json is not valid"]}
+        return {
+            "state": "incompatible",
+            "badge": "unknown",
+            "msg": "plugin.json is not valid",
+            "reasons": ["plugin.json is not valid"],
+        }
     c, errs = _constraints(m)
     if errs:
-        return {"state": "incompatible", "badge": "unknown", "msg": "plugin.json compatibility fields are not valid", "reasons": errs}
+        return {
+            "state": "incompatible",
+            "badge": "unknown",
+            "msg": "plugin.json compatibility fields are not valid",
+            "reasons": errs,
+        }
     if not any(c.values()):
-        return {"state": "unknown", "badge": "unknown", "msg": "Compatibility not declared", "reasons": []}
+        return {
+            "state": "unknown",
+            "badge": "unknown",
+            "msg": "Compatibility not declared",
+            "reasons": [],
+        }
     lv = parse_version(loader_version)
     found = []
     if (c["min"] or c["max"]) and lv is None:
         found.append(("unknown", "the Framey version could not be read"))
     if c["min"] and lv is not None and lv < c["min"]:
-        found.append(("newer", "needs Framey %s or newer; you have %s" % (c["min"], loader_version)))
+        found.append(
+            ("newer", "needs Framey %s or newer; you have %s" % (c["min"], loader_version))
+        )
     if c["max"] and lv is not None and _over(lv, c["max"]):
-        found.append(("older", "supports Framey up to %s; you have %s" % (c["max"], loader_version)))
+        found.append(
+            ("older", "supports Framey up to %s; you have %s" % (c["max"], loader_version))
+        )
     if c["api"] and c["api"] > api:
         found.append(("api", "needs API generation %d; this Framey provides %d" % (c["api"], api)))
     if c["platform"] and platform not in c["platform"]:
-        found.append(("platform", "built for %s; this headset is %s" % (" or ".join(c["platform"]), platform)))
+        found.append(
+            (
+                "platform",
+                "built for %s; this headset is %s" % (" or ".join(c["platform"]), platform),
+            )
+        )
     if not found:
         return {"state": "ok", "badge": "ok", "msg": "", "reasons": []}
     reasons = [r for _, r in found]
@@ -169,7 +215,12 @@ def decide(m, loader_version, platform, api=API_GENERATION):
 def _companion(raw):
     if not isinstance(raw, dict):
         return None, "companion must be an object"
-    name, ver, plat, asset = raw.get("name"), parse_version(raw.get("version")), raw.get("platform"), raw.get("asset")
+    name, ver, plat, asset = (
+        raw.get("name"),
+        parse_version(raw.get("version")),
+        raw.get("platform"),
+        raw.get("asset"),
+    )
     sha, size, run = raw.get("sha256"), raw.get("size"), raw.get("exec", [])
     if not (isinstance(name, str) and ID.fullmatch(name)):
         return None, "companion name must match [a-z0-9_-]{1,32}"
@@ -177,7 +228,11 @@ def _companion(raw):
         return None, "companion %s has no valid version" % name
     if not (isinstance(plat, str) and PLAT.fullmatch(plat)):
         return None, "companion %s has no valid platform" % name
-    if not (isinstance(asset, str) and ASSET.fullmatch(asset) and asset.endswith((".tar.gz", ".tgz", ".zip"))):
+    if not (
+        isinstance(asset, str)
+        and ASSET.fullmatch(asset)
+        and asset.endswith((".tar.gz", ".tgz", ".zip"))
+    ):
         return None, "companion %s asset must be a .tar.gz, .tgz or .zip file name" % name
     if not (isinstance(sha, str) and HEX64.fullmatch(sha)):
         return None, "companion %s sha256 must be 64 hex digits" % name
@@ -196,7 +251,15 @@ def _companion(raw):
         rel = "/".join(parts)
         if rel not in names:
             names.append(rel)
-    return {"name": name, "version": ver.text, "platform": _platform_id(plat), "asset": asset, "sha256": sha.lower(), "size": size, "exec": names}, ""
+    return {
+        "name": name,
+        "version": ver.text,
+        "platform": _platform_id(plat),
+        "asset": asset,
+        "sha256": sha.lower(),
+        "size": size,
+        "exec": names,
+    }, ""
 
 
 def companions(m, platform_id=None):
@@ -217,7 +280,11 @@ def _normalize(m):
     if isinstance(pid, str) and ID.fullmatch(pid) and pid not in RESERVED_PLUGIN_IDS:
         v["id"] = pid
     else:
-        errs.append("id is reserved for Framey" if isinstance(pid, str) and pid in RESERVED_PLUGIN_IDS else "id must match [a-z0-9_-]{1,32}")
+        errs.append(
+            "id is reserved for Framey"
+            if isinstance(pid, str) and pid in RESERVED_PLUGIN_IDS
+            else "id must match [a-z0-9_-]{1,32}"
+        )
         v["id"] = ""
     for key, cap in (("name", 80), ("version", 40), ("short", 200), ("source", 300)):
         x = m.get(key)
@@ -231,7 +298,10 @@ def _normalize(m):
     c, cerrs = _constraints(m)
     errs += cerrs
     v["api"] = c["api"]
-    v["framey"] = {"min": c["min"].text if c["min"] else None, "max": c["max"].text if c["max"] else None}
+    v["framey"] = {
+        "min": c["min"].text if c["min"] else None,
+        "max": c["max"].text if c["max"] else None,
+    }
     v["platform"] = c["platform"]
     b = m.get("backend")
     if b is not None and not isinstance(b, dict):
@@ -242,7 +312,11 @@ def _normalize(m):
         x = src.get(key)
         if x is None:
             return default
-        if isinstance(x, bool) or not isinstance(x, int if integer else (int, float)) or (isinstance(x, float) and not math.isfinite(x)):
+        if (
+            isinstance(x, bool)
+            or not isinstance(x, int if integer else (int, float))
+            or (isinstance(x, float) and not math.isfinite(x))
+        ):
             errs.append("%s must be a %s" % (label, "whole number" if integer else "number"))
             return default
         return min(max(x, lo), hi)
@@ -298,7 +372,10 @@ def _normalize(m):
     pv = m.get("privileged")
     v["privileged"] = None
     if pv is not None:
-        ok = isinstance(pv, dict) and all(isinstance(x, str) and len(x) <= 300 and x.startswith("/") and x.isprintable() for x in pv.values())
+        ok = isinstance(pv, dict) and all(
+            isinstance(x, str) and len(x) <= 300 and x.startswith("/") and x.isprintable()
+            for x in pv.values()
+        )
         if ok:
             v["privileged"] = {k: x for k, x in pv.items() if k in ("installed", "helper")}
         else:
@@ -316,7 +393,12 @@ def normalize_manifest(m):
 
 
 def _text_field(x, n, pattern=None):
-    if not (isinstance(x, str) and 0 < len(x) <= n and x.isprintable() and not any(c.isspace() for c in x)):
+    if not (
+        isinstance(x, str)
+        and 0 < len(x) <= n
+        and x.isprintable()
+        and not any(c.isspace() for c in x)
+    ):
         return None
     return x if pattern is None or pattern.fullmatch(x) else None
 
@@ -386,18 +468,28 @@ def write_identity(stage_dir, ident):
                 os.unlink(tmp)
             except OSError:
                 pass
-        raise PkgError("could not write identity: " + (e.strerror or "i/o error"), "write_failed") from None
+        raise PkgError(
+            "could not write identity: " + (e.strerror or "i/o error"), "write_failed"
+        ) from None
 
 
 def _parts(name, tar=False):
-    if not isinstance(name, str) or not name or len(name) > 1024 or "\\" in name or name.startswith("/"):
+    if (
+        not isinstance(name, str)
+        or not name
+        or len(name) > 1024
+        or "\\" in name
+        or name.startswith("/")
+    ):
         raise PkgError("archive has an unsafe path", "unsafe_path")
     parts = name.split("/")
     while tar and parts and parts[0] == ".":
         parts.pop(0)
     if parts and parts[-1] == "":
         parts.pop()
-    if len(parts) > DEPTH or any(p in ("", ".", "..") or len(p) > 255 or BADCHAR.search(p) or p[-1] in ". " for p in parts):
+    if len(parts) > DEPTH or any(
+        p in ("", ".", "..") or len(p) > 255 or BADCHAR.search(p) or p[-1] in ". " for p in parts
+    ):
         raise PkgError("archive has an unsafe or too deep path", "unsafe_path")
     return parts
 
@@ -498,7 +590,10 @@ class _Cap:
 def _open_tar(data):
     import gzip
     import tarfile
-    return tarfile.open(fileobj=_Cap(gzip.GzipFile(fileobj=io.BytesIO(data)), TOTAL_MAX + 2_000_000), mode="r|")
+
+    return tarfile.open(
+        fileobj=_Cap(gzip.GzipFile(fileobj=io.BytesIO(data)), TOTAL_MAX + 2_000_000), mode="r|"
+    )
 
 
 def _need_bytes(data):
@@ -508,6 +603,7 @@ def _need_bytes(data):
 
 def safe_extract_tar(data, dest, *, top=None, strip=0, exec_names=()):
     import tarfile
+
     _need_bytes(data)
     run_names = {x for x in exec_names if isinstance(x, str)}
     try:
@@ -518,7 +614,11 @@ def safe_extract_tar(data, dest, *, top=None, strip=0, exec_names=()):
                 if not (m.isdir() or (m.isreg() and not m.issparse())):
                     raise PkgError("archive has a link, device or special entry", "unsafe_type")
                 items.append((_parts(m.name, True), m.isdir(), m.size, i))
-        plan = {ref: (parts, size) for parts, is_dir, size, ref in _layout(items, strip, top) if not is_dir}
+        plan = {
+            ref: (parts, size)
+            for parts, is_dir, size, ref in _layout(items, strip, top)
+            if not is_dir
+        }
         Path(dest).mkdir(parents=True, exist_ok=True)
         run, written = [0], []
         with _open_tar(bytes(data)) as tf:
@@ -536,12 +636,16 @@ def _zip_end_ok(data):
     i = data.rfind(b"PK\x05\x06", max(0, len(data) - 65557))
     if i < 0 or len(data) < i + 22:
         raise PkgError("not a zip archive", "bad_archive")
-    if int.from_bytes(data[i + 10:i + 12], "little") > ENTRIES or int.from_bytes(data[i + 12:i + 16], "little") > 1_500_000:
+    if (
+        int.from_bytes(data[i + 10 : i + 12], "little") > ENTRIES
+        or int.from_bytes(data[i + 12 : i + 16], "little") > 1_500_000
+    ):
         raise PkgError("archive has more than %d entries" % ENTRIES, "too_many")
 
 
 def safe_extract_zip(data, dest, *, strip="auto", exec_names=(), preserve_exec=False):
     import zipfile
+
     _need_bytes(data)
     _zip_end_ok(bytes(data))
     run_names = {x for x in exec_names if isinstance(x, str)}
@@ -553,21 +657,40 @@ def safe_extract_zip(data, dest, *, strip="auto", exec_names=(), preserve_exec=F
                     raise PkgError("archive has an ambiguous path", "unsafe_path")
                 budget.add(info.file_size)
                 kind = stat.S_IFMT(info.external_attr >> 16) if info.create_system == 3 else 0
-                if info.flag_bits & 1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                if info.flag_bits & 1 or info.compress_type not in (
+                    zipfile.ZIP_STORED,
+                    zipfile.ZIP_DEFLATED,
+                ):
                     raise PkgError("archive has an encrypted or unsupported entry", "unsafe_type")
-                if kind not in (0, stat.S_IFREG, stat.S_IFDIR) or (kind == stat.S_IFDIR and not info.is_dir()) or (kind == stat.S_IFREG and info.is_dir()):
+                if (
+                    kind not in (0, stat.S_IFREG, stat.S_IFDIR)
+                    or (kind == stat.S_IFDIR and not info.is_dir())
+                    or (kind == stat.S_IFREG and info.is_dir())
+                ):
                     raise PkgError("archive has a link, device or special entry", "unsafe_type")
                 items.append((_parts(info.filename), info.is_dir(), info.file_size, info))
             Path(dest).mkdir(parents=True, exist_ok=True)
             run, written = [0], []
             for parts, is_dir, size, info in _layout(items, strip, None):
                 if not is_dir:
-                    if preserve_exec is True and info.create_system == 3 and (info.external_attr >> 16) & stat.S_IXUSR:
+                    if (
+                        preserve_exec is True
+                        and info.create_system == 3
+                        and (info.external_attr >> 16) & stat.S_IXUSR
+                    ):
                         run_names.add("/".join(parts))
                     with z.open(info) as src:
                         _save(dest, parts, src, size, run, run_names)
                     written.append("/".join(parts))
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, OSError, zlib.error, ValueError, NotImplementedError):
+    except (
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        EOFError,
+        OSError,
+        zlib.error,
+        ValueError,
+        NotImplementedError,
+    ):
         raise PkgError("archive is damaged or could not be unpacked", "bad_archive") from None
     return sorted(written)
 
@@ -593,7 +716,13 @@ def verify_file(path, sha256, size=None):
 def url_allowed(url):
     try:
         u = urllib.parse.urlsplit(url)
-        return u.scheme == "https" and u.hostname in HOSTS and u.port in (None, 443) and not u.username and not u.password
+        return (
+            u.scheme == "https"
+            and u.hostname in HOSTS
+            and u.port in (None, 443)
+            and not u.username
+            and not u.password
+        )
     except (ValueError, AttributeError):
         return False
 
@@ -601,7 +730,11 @@ def url_allowed(url):
 def digest_agrees(sha256, api_digest):
     if not api_digest:
         return True
-    m = DIGEST.fullmatch(api_digest) if isinstance(api_digest, str) and api_digest.startswith("sha256:") else None
+    m = (
+        DIGEST.fullmatch(api_digest)
+        if isinstance(api_digest, str) and api_digest.startswith("sha256:")
+        else None
+    )
     return bool(m) and isinstance(sha256, str) and hmac.compare_digest(m[1].lower(), sha256.lower())
 
 
@@ -611,7 +744,11 @@ def install_companion(archive_bytes, spec, dest_dir, *, platform_id=None):
         raise PkgError(why, "bad_spec")
     platform_id = _platform_id(platform_id or PLATFORM)
     if d["platform"] != platform_id:
-        raise PkgError("companion %s is built for %s; this headset is %s" % (d["name"], d["platform"], platform_id), "platform")
+        raise PkgError(
+            "companion %s is built for %s; this headset is %s"
+            % (d["name"], d["platform"], platform_id),
+            "platform",
+        )
     _need_bytes(archive_bytes)
     if len(archive_bytes) != d["size"]:
         raise PkgError("companion %s has the wrong size" % d["name"], "size")
@@ -625,10 +762,12 @@ def install_companion(archive_bytes, spec, dest_dir, *, platform_id=None):
         extract = safe_extract_zip if d["asset"].endswith(".zip") else safe_extract_tar
         files = extract(archive_bytes, stage, strip="auto", exec_names=d["exec"])
         if any(e not in files for e in d["exec"]):
-            raise PkgError("companion %s does not contain a declared executable" % d["name"], "missing_exec")
+            raise PkgError(
+                "companion %s does not contain a declared executable" % d["name"], "missing_exec"
+            )
         old = None
         if os.path.lexists(final):
-            old = root / (".old-" + stage.name[len(".stage-"):])
+            old = root / (".old-" + stage.name[len(".stage-") :])
             os.replace(final, old)
         try:
             os.replace(stage, final)

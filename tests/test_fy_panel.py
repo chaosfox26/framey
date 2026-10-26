@@ -1,5 +1,3 @@
-"""Panel controller behavior with in-memory adapters; no native or browser I/O."""
-
 import asyncio
 import copy
 import sys

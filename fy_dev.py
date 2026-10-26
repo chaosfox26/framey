@@ -109,7 +109,19 @@ def dev_prefs(host):
 
 
 class HotReload:
-    def __init__(self, host, reload_one, *, debounce=0.4, ttl=3600, inotify=True, max_dirs=32, max_files=200, interval=2.0, libc=None):
+    def __init__(
+        self,
+        host,
+        reload_one,
+        *,
+        debounce=0.4,
+        ttl=3600,
+        inotify=True,
+        max_dirs=32,
+        max_files=200,
+        interval=2.0,
+        libc=None,
+    ):
         self.host = host
         self.reload_one = reload_one
         self.debounce = debounce
@@ -130,7 +142,16 @@ class HotReload:
 
     def status(self):
         now = self.host.mono()
-        return [{"id": p, "mode": w["mode"], "truncated": w["cut"], "remaining_s": max(0, int(w["until"] - now)), **({"reload_error": w["reload_error"]} if w["reload_error"] else {})} for p, w in sorted(self._w.items())]
+        return [
+            {
+                "id": p,
+                "mode": w["mode"],
+                "truncated": w["cut"],
+                "remaining_s": max(0, int(w["until"] - now)),
+                **({"reload_error": w["reload_error"]} if w["reload_error"] else {}),
+            }
+            for p, w in sorted(self._w.items())
+        ]
 
     def enable(self, pid, ttl=None):
         if not isinstance(pid, str) or not PID.match(pid):
@@ -143,7 +164,19 @@ class HotReload:
         self._drop(pid)
         if len(self._w) >= MAX_ACTIVE:
             raise DevError("too_many", "Hot reload is limited to %d modules at once" % MAX_ACTIVE)
-        w = {"root": str(root), "mode": "", "cut": False, "wds": [], "ttl": None, "bounce": None, "tick": None, "task": None, "snap": None, "until": 0.0, "reload_error": None}
+        w = {
+            "root": str(root),
+            "mode": "",
+            "cut": False,
+            "wds": [],
+            "ttl": None,
+            "bounce": None,
+            "tick": None,
+            "task": None,
+            "snap": None,
+            "until": 0.0,
+            "reload_error": None,
+        }
         self._w[pid] = w
         if not (self._want_inotify and self._watch(pid, w)):
             self._poll(pid, w)
@@ -164,7 +197,13 @@ class HotReload:
         dev = dev_prefs(self.host)
         until = dev.get("hot_until")
         hot = dev.get("hot")
-        if dev.get("enabled") is not True or not isinstance(hot, list) or isinstance(until, bool) or not isinstance(until, (int, float)) or not -float("inf") < until < float("inf"):
+        if (
+            dev.get("enabled") is not True
+            or not isinstance(hot, list)
+            or isinstance(until, bool)
+            or not isinstance(until, (int, float))
+            or not -float("inf") < until < float("inf")
+        ):
             return []
         left = until - self.host.now()
         if left <= 0:
@@ -183,11 +222,17 @@ class HotReload:
             s = self.host.settings()
             dev = s.setdefault("prefs", {}).setdefault("dev", {})
             dev["hot"] = sorted(self._w)
-            dev["hot_until"] = int(self.host.now() + max(w["until"] for w in self._w.values()) - self.host.mono()) if self._w else 0
+            dev["hot_until"] = (
+                int(self.host.now() + max(w["until"] for w in self._w.values()) - self.host.mono())
+                if self._w
+                else 0
+            )
             self.host.save(s)
             self.warning = None
         except Exception as e:
-            self.warning = "Hot-reload choices could not be saved. They may revert after Framey restarts."
+            self.warning = (
+                "Hot-reload choices could not be saved. They may revert after Framey restarts."
+            )
             self.host.log("hot reload", "could not save state:", e)
 
     def _arm_ttl(self, pid, w, ttl=None):
@@ -290,7 +335,7 @@ class HotReload:
         off, hit = 0, set()
         while off + HEADER.size <= len(buf):
             wd, mask, _, n = HEADER.unpack_from(buf, off)
-            raw = buf[off + HEADER.size:off + HEADER.size + n]
+            raw = buf[off + HEADER.size : off + HEADER.size + n]
             off += HEADER.size + n
             if mask & IN_Q_OVERFLOW:
                 hit.update(self._w)
@@ -408,7 +453,7 @@ def decode_address(text):
     if len(raw) == 4:
         return ipaddress.IPv4Address(raw[::-1])
     if len(raw) == 16:
-        return ipaddress.IPv6Address(b"".join(raw[i:i + 4][::-1] for i in range(0, 16, 4)))
+        return ipaddress.IPv6Address(b"".join(raw[i : i + 4][::-1] for i in range(0, 16, 4)))
     raise ValueError("address length")
 
 
@@ -434,7 +479,9 @@ def listeners(text, port):
 
 def remote_exposure(text_tcp, text_tcp6, port=CDP_PORT):
     found = listeners(text_tcp, port) + listeners(text_tcp6, port)
-    names = sorted({"[%s]:%d" % (ip, port) if ip.version == 6 else "%s:%d" % (ip, port) for ip in found})
+    names = sorted(
+        {"[%s]:%d" % (ip, port) if ip.version == 6 else "%s:%d" % (ip, port) for ip in found}
+    )
     if not found:
         state = "closed"
     elif all(is_loopback(ip) for ip in found):
@@ -467,7 +514,11 @@ def exposure_now(base="/proc/net", port=CDP_PORT):
 async def fetch_json(port):
     r, w = await asyncio.open_connection("127.0.0.1", port)
     try:
-        w.write(("GET /json HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n" % port).encode())
+        w.write(
+            (
+                "GET /json HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n" % port
+            ).encode()
+        )
         await w.drain()
         raw = b""
         while len(raw) <= JSON_MAX:
@@ -479,7 +530,13 @@ async def fetch_json(port):
         w.close()
     head, sep, body = raw.partition(b"\r\n\r\n")
     first = head.split(b"\r\n", 1)[0].split()
-    if not sep or len(raw) > JSON_MAX or len(first) < 2 or first[0] not in (b"HTTP/1.0", b"HTTP/1.1") or first[1] != b"200":
+    if (
+        not sep
+        or len(raw) > JSON_MAX
+        or len(first) < 2
+        or first[0] not in (b"HTTP/1.0", b"HTTP/1.1")
+        or first[1] != b"200"
+    ):
         raise ValueError("reply")
     try:
         items = json.loads(body.decode("utf-8"), parse_constant=_nan)
@@ -509,17 +566,26 @@ def list_targets(items, port, table):
             continue
         url = t.get("url") if isinstance(t.get("url"), str) else ""
         title = t.get("title") if isinstance(t.get("title"), str) else ""
-        out.append({
-            "name": target_name(url, table),
-            "title": title[:120],
-            "url": url[:300],
-            "inspector": "http://127.0.0.1:%d/devtools/inspector.html?ws=127.0.0.1:%d/devtools/page/%s" % (port, port, tid),
-        })
+        out.append(
+            {
+                "name": target_name(url, table),
+                "title": title[:120],
+                "url": url[:300],
+                "inspector": "http://127.0.0.1:%d/devtools/inspector.html?ws=127.0.0.1:%d/devtools/page/%s"
+                % (port, port, tid),
+            }
+        )
     return out
 
 
 async def devtools_info(host, arg=None, *, port=CDP_PORT):
-    out = {"available": False, "port": port, "targets": [], "error": None, "hint": HINT.format(port=port)}
+    out = {
+        "available": False,
+        "port": port,
+        "targets": [],
+        "error": None,
+        "hint": HINT.format(port=port),
+    }
     table = dev_prefs(host).get("targets")
     try:
         items = await asyncio.wait_for(fetch_json(port), TIMEOUT)
@@ -528,11 +594,16 @@ async def devtools_info(host, arg=None, *, port=CDP_PORT):
     except asyncio.TimeoutError:
         out["error"] = "Port %d did not answer within %g s." % (port, TIMEOUT)
     except ConnectionRefusedError:
-        out["error"] = "Nothing is listening on port %d. Steam's debugger is closed or Steam is not running." % port
+        out["error"] = (
+            "Nothing is listening on port %d. Steam's debugger is closed or Steam is not running."
+            % port
+        )
     except ValueError:
         out["error"] = "Port %d answered, but not with a list of debug targets." % port
     except OSError as e:
-        out["error"] = ("Could not reach port %d: %s" % (port, e.strerror or type(e).__name__))[:300]
+        out["error"] = ("Could not reach port %d: %s" % (port, e.strerror or type(e).__name__))[
+            :300
+        ]
     return out
 
 
@@ -542,7 +613,19 @@ def status(host):
         "enabled": dev_prefs(host).get("enabled") is True,
         "hot": hot.status() if hot is not None else [],
         "exposure": exposure_now(),
-        "warning": (hot.warning or next(("Hot reload failed for " + p + ". " + w["reload_error"] for p, w in sorted(hot._w.items()) if w["reload_error"]), None)) if hot is not None else None,
+        "warning": (
+            hot.warning
+            or next(
+                (
+                    "Hot reload failed for " + p + ". " + w["reload_error"]
+                    for p, w in sorted(hot._w.items())
+                    if w["reload_error"]
+                ),
+                None,
+            )
+        )
+        if hot is not None
+        else None,
     }
 
 
@@ -553,7 +636,11 @@ async def dev_status(host, arg=None):
 async def dev_set(host, arg):
     a = arg if isinstance(arg, dict) else {}
     pid, on = a.get("id"), a.get("hot")
-    if not isinstance(on, bool) or not (pid is None or isinstance(pid, str)) or (on and pid is None):
+    if (
+        not isinstance(on, bool)
+        or not (pid is None or isinstance(pid, str))
+        or (on and pid is None)
+    ):
         return {"error": "Expected {id, hot: true|false}", "code": "bad_arg"}
     try:
         if on:

@@ -1,5 +1,3 @@
-"""Panel/main session integration with fixture debugger pages only."""
-
 import asyncio
 import json
 import sys

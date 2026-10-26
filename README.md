@@ -46,6 +46,9 @@ Copy [Hello](examples/hello-plugin) for a small settings and backend example, or
 
 Local Python and simulated browser tests provide development evidence. They do not verify a new service revision on Steam Frame; consult [verification status](docs/using.md#verification-status) before relying on headset behavior.
 
+Loader contributors can use the [development guide](docs/development.md) for
+module responsibilities, code standards, pinned tools, and source quality checks.
+
 ## Inspiration and acknowledgments
 
 Framey was inspired by [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader). Its plugin-loader concept, and the way it made Steam Deck customization accessible through plugins, shaped Framey's idea of a small loader with plugins, a Settings page and a Store page. Thank you to the Decky Loader maintainers and contributors for the work and the example. Framey's aim is to bring that kind of convenience to the Steam Frame while respecting the work that inspired it.

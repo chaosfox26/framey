@@ -4,6 +4,16 @@ Run these commands from the repository root on Linux as an ordinary user. The
 Python tests use `unittest` and the standard library. Browser tests use Node.js
 and jsdom; there is no application build step or Python package installation.
 
+## Source quality checks
+
+[Development](development.md) describes the pinned development tools, formatting
+policy, and current type-checking scope. The separate Source quality job checks
+Ruff, Mypy, Pyright, ESLint, Prettier, public TypeScript declarations, and the
+currently checked JavaScript implementation. It also runs the isolated Playwright
+panel fixtures in Chromium. These tools
+are not installed on the headset or included in the runtime manifest. The fixture
+jobs below remain the behavior checks on x64 and ARM64.
+
 ## Reproduce the CI environment
 
 The fixture workflow pins Python 3.14.8, Node.js 26.12.1 and jsdom 30.1.2. Its npm

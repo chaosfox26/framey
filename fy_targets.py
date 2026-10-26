@@ -29,21 +29,21 @@ CSS_DEL = (
 )
 JS_ADD = (
     '(function(o,k,c,d,g){var T=window.__framey_targets||(window.__framey_targets=Object.create(null)),b=o+"|"+k,i=(g?g+"|":"")+b,e;'
-    'if(g&&b in T){e=T[b];delete T[b];try{(0,eval)(e)}catch(x){}}'
+    "if(g&&b in T){e=T[b];delete T[b];try{(0,eval)(e)}catch(x){}}"
     "if(i in T){e=T[i];delete T[i];try{(0,eval)(e)}catch(x){}}T[i]=d;(0,eval)(c)})"
 )
 JS_DEL = (
     '(function(o,k,g){var T=window.__framey_targets,b=o+"|"+k,i=(g?g+"|":"")+b,e;'
-    'if(T&&g&&b in T){e=T[b];delete T[b];try{(0,eval)(e)}catch(x){}}'
+    "if(T&&g&&b in T){e=T[b];delete T[b];try{(0,eval)(e)}catch(x){}}"
     "if(T&&i in T){e=T[i];delete T[i];try{(0,eval)(e)}catch(x){}}})"
 )
 RECONCILE = (
     '(function(g,c,j,C,J){var n=document.querySelectorAll("style[data-fy-target=css]"),T=window.__framey_targets,i,s,k,e;'
     'for(i=0;i<n.length;i++){s=n[i].dataset.fyScope||"";k=n[i].dataset.fyOwner+"|"+n[i].dataset.fyKey;'
-    'if(s===g&&c.indexOf(k)<0||!s&&C.indexOf(k)<0)n[i].remove()}'
+    "if(s===g&&c.indexOf(k)<0||!s&&C.indexOf(k)<0)n[i].remove()}"
     'if(T)Object.keys(T).forEach(function(k){var p=k.split("|");'
     'if(p.length===3&&p[0]===g&&j.indexOf(p[1]+"|"+p[2])<0||p.length===2&&J.indexOf(k)<0){'
-    'e=T[k];delete T[k];try{(0,eval)(e)}catch(x){}}})})'
+    "e=T[k];delete T[k];try{(0,eval)(e)}catch(x){}}})})"
 )
 
 
@@ -90,8 +90,15 @@ class Targets:
             return {}
         out = {}
         for name, part in islice(table.items(), MAX_ITEMS):
-            if (isinstance(name, str) and NAME.match(name) and name not in KNOWN and name != "panel"
-                    and isinstance(part, str) and 1 <= len(part) <= 120 and part.isprintable()):
+            if (
+                isinstance(name, str)
+                and NAME.match(name)
+                and name not in KNOWN
+                and name != "panel"
+                and isinstance(part, str)
+                and 1 <= len(part) <= 120
+                and part.isprintable()
+            ):
                 out[name] = part
         return out
 
@@ -113,7 +120,9 @@ class Targets:
         if kind not in ("css", "js"):
             raise TargetError("bad_kind", "kind must be css or js")
         if not isinstance(key, str) or not KEY.match(key):
-            raise TargetError("bad_key", "key must be 1-40 characters of letters, digits, dot, dash or underscore")
+            raise TargetError(
+                "bad_key", "key must be 1-40 characters of letters, digits, dot, dash or underscore"
+            )
         if not isinstance(code, str):
             raise TargetError("bad_code", "code must be a string")
         if kind == "css" or teardown is None:
@@ -130,7 +139,9 @@ class Targets:
         if len(mine) + 1 > MAX_ITEMS:
             raise TargetError("too_many", "At most %d injected items per plugin" % MAX_ITEMS)
         if sum(self.items[k][2] for k in mine) + total > MAX_PLUGIN:
-            raise TargetError("too_large", "Injected items of one plugin are limited to %d bytes" % MAX_PLUGIN)
+            raise TargetError(
+                "too_large", "Injected items of one plugin are limited to %d bytes" % MAX_PLUGIN
+            )
         pids = {k[0] for k in self.items}
         if pid not in pids and len(pids) >= MAX_PLUGINS:
             raise TargetError("too_many", "Too many plugins with injected items")
@@ -148,10 +159,6 @@ class Targets:
     async def add_js(self, pid, target, key, code, teardown=None):
         await self.add(pid, target, "js", key, code, teardown)
 
-    async def push(self, target, *expressions):
-        async with self._sending:
-            await self._push(target, *expressions)
-
     async def _push(self, target, *expressions):
         try:
             if not self.host.attached(target):
@@ -167,9 +174,17 @@ class Targets:
         if target is not None and (not isinstance(target, str) or not NAME.match(target)):
             raise TargetError("unknown_target", "Unknown target: " + str(target)[:40])
         if key is not None and (not isinstance(key, str) or not KEY.match(key)):
-            raise TargetError("bad_key", "key must be 1-40 characters of letters, digits, dot, dash or underscore")
+            raise TargetError(
+                "bad_key", "key must be 1-40 characters of letters, digits, dot, dash or underscore"
+            )
         async with self._sending:
-            gone = [k for k in self.items if k[0] == pid and (target is None or k[1] == target) and (key is None or k[3] == key)]
+            gone = [
+                k
+                for k in self.items
+                if k[0] == pid
+                and (target is None or k[1] == target)
+                and (key is None or k[3] == key)
+            ]
             return await self._remove(gone)
 
     async def _remove(self, gone):
@@ -200,14 +215,28 @@ class Targets:
         if target not in names:
             return ""
         active = [k for k in self.items if k[1] in names]
+
         def keys(kind, scope=None):
-            return sorted({k[0] + "|" + k[3] for k in active if k[2] == kind and (scope is None or k[1] == scope)})
-        return call(RECONCILE, target, keys("css", target), keys("js", target), keys("css"), keys("js"))
+            return sorted(
+                {
+                    k[0] + "|" + k[3]
+                    for k in active
+                    if k[2] == kind and (scope is None or k[1] == scope)
+                }
+            )
+
+        return call(
+            RECONCILE, target, keys("css", target), keys("js", target), keys("css"), keys("js")
+        )
 
     def replay(self, target):
         if target not in self.names():
             return []
-        return [(add_expr(k[2], k[0], k[3], v[0], v[1], target), k[0]) for k, v in self.items.items() if k[1] == target]
+        return [
+            (add_expr(k[2], k[0], k[3], v[0], v[1], target), k[0])
+            for k, v in self.items.items()
+            if k[1] == target
+        ]
 
 
 def get(host):
@@ -220,7 +249,14 @@ def get(host):
 async def target_add(host, arg):
     a = arg if isinstance(arg, dict) else {}
     try:
-        await get(host).add(a.get("pid"), a.get("target"), a.get("kind"), a.get("key"), a.get("code"), a.get("teardown"))
+        await get(host).add(
+            a.get("pid"),
+            a.get("target"),
+            a.get("kind"),
+            a.get("key"),
+            a.get("code"),
+            a.get("teardown"),
+        )
     except TargetError as e:
         return {"error": e.message, "code": e.code}
     return {"ok": True}

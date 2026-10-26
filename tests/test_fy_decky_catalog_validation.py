@@ -1,5 +1,3 @@
-"""Untrusted Decky feed and ZIP inspection boundaries; no external downloads."""
-
 import hashlib
 import copy
 import io

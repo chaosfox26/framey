@@ -10,6 +10,7 @@ import socket
 import urllib.error
 import urllib.parse
 
+
 def _constant(name):
     raise ValueError(name)
 
@@ -26,12 +27,22 @@ HEX64 = re.compile(r"[0-9a-f]{64}")
 HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 STAGES = ("check", "download", "verify", "unpack", "swap", "reload")
 COMPANION_STAGES = ("check", "download", "verify", "unpack")
-LABELS = {"check": "Checking", "download": "Downloading", "verify": "Verifying", "unpack": "Unpacking", "swap": "Installing", "reload": "Reloading", "protected": "Protected update"}
+LABELS = {
+    "check": "Checking",
+    "download": "Downloading",
+    "verify": "Verifying",
+    "unpack": "Unpacking",
+    "swap": "Installing",
+    "reload": "Reloading",
+    "protected": "Protected update",
+}
 CHANNELS = ("stable", "prerelease")
 NOTES_MAX, PAGE, BATCH_MAX, CYCLE_MAX, CACHE_MAX = 8000, 10, 32, 20, 16
 DAY, FLOOR, TTL, COMPANION_MAX = 86400, 21600, 300, 20_000_000
 CONFIRM = "Going back to %s removes nothing from your data, but data migrations are not undone and the module may not read newer data. The current copy is kept until you choose Keep this version."
-FORWARD_ONLY = "Protected components only move forward; use Restore previous version after an update"
+FORWARD_ONLY = (
+    "Protected components only move forward; use Restore previous version after an update"
+)
 PROTECTED_UPDATE = "Protected components update through their own Update action"
 INTEGRITY = "integrity check, not a signature"
 
@@ -58,9 +69,17 @@ def is_pre(s):
 
 def why(e):
     if isinstance(e, urllib.error.HTTPError):
-        if e.code == 429 or (e.code == 403 and e.headers is not None and e.headers.get("X-RateLimit-Remaining") == "0"):
+        if e.code == 429 or (
+            e.code == 403
+            and e.headers is not None
+            and e.headers.get("X-RateLimit-Remaining") == "0"
+        ):
             return "GitHub rate limit reached, try again later"
-        return "not found on GitHub (no release yet, private, or renamed)" if e.code == 404 else "GitHub answered HTTP %d" % e.code
+        return (
+            "not found on GitHub (no release yet, private, or renamed)"
+            if e.code == 404
+            else "GitHub answered HTTP %d" % e.code
+        )
     if isinstance(e, urllib.error.URLError):
         return "network error: %s" % e.reason
     if isinstance(e, (TimeoutError, socket.timeout)):
@@ -70,6 +89,7 @@ def why(e):
 
 def check_digest(data, digest):
     import hashlib
+
     if not digest:
         return "absent"
     algo, _, want = str(digest).partition(":")
@@ -104,7 +124,9 @@ def _linked(p):
 
 def _priv(m):
     p = m.get("privileged") if isinstance(m, dict) else None
-    return isinstance(p, dict) and all(isinstance(p.get(k), str) and posixpath.isabs(p[k]) for k in ("installed", "helper"))
+    return isinstance(p, dict) and all(
+        isinstance(p.get(k), str) and posixpath.isabs(p[k]) for k in ("installed", "helper")
+    )
 
 
 def _prefs(s):
@@ -137,9 +159,15 @@ def _norm(u):
         "last": _num(u.get("last")),
         "next_ok": _num(u.get("next_ok")),
         "fails": int(_num(u.get("fails"))),
-        "loader": {"tag": loader.get("tag") if isinstance(loader.get("tag"), str) else "", "state": loader.get("state") if isinstance(loader.get("state"), str) else ""},
+        "loader": {
+            "tag": loader.get("tag") if isinstance(loader.get("tag"), str) else "",
+            "state": loader.get("state") if isinstance(loader.get("state"), str) else "",
+        },
         "plugins": {k: v for k, v in plugins.items() if _ok(k) and isinstance(v, dict)},
-        "seen": {"loader": seen.get("loader") if isinstance(seen.get("loader"), str) else "", "plugins": {k: v for k, v in sp.items() if _ok(k) and isinstance(v, str)}},
+        "seen": {
+            "loader": seen.get("loader") if isinstance(seen.get("loader"), str) else "",
+            "plugins": {k: v for k, v in sp.items() if _ok(k) and isinstance(v, str)},
+        },
     }
 
 
@@ -152,15 +180,24 @@ def _rel(j):
     url, commit = j.get("html_url"), j.get("target_commitish")
     assets = {}
     for a in (j.get("assets") if isinstance(j.get("assets"), list) else [])[:100]:
-        if isinstance(a, dict) and isinstance(a.get("name"), str) and isinstance(a.get("browser_download_url"), str):
-            assets[a["name"]] = (a["browser_download_url"], a["digest"] if isinstance(a.get("digest"), str) else "")
+        if (
+            isinstance(a, dict)
+            and isinstance(a.get("name"), str)
+            and isinstance(a.get("browser_download_url"), str)
+        ):
+            assets[a["name"]] = (
+                a["browser_download_url"],
+                a["digest"] if isinstance(a.get("digest"), str) else "",
+            )
     return {
         "tag": tag,
         "version": tag[1:] if tag[:1] == "v" else tag,
         "prerelease": bool(j.get("prerelease")) or is_pre(tag),
         "published": _text(j.get("published_at"), 40),
         "body": _text(j.get("body"), NOTES_MAX),
-        "url": url if isinstance(url, str) and url.startswith("https://github.com/") and len(url) <= 300 else "",
+        "url": url
+        if isinstance(url, str) and url.startswith("https://github.com/") and len(url) <= 300
+        else "",
         "commit": commit if isinstance(commit, str) and SHA.fullmatch(commit) else "",
         "assets": assets,
     }
@@ -191,7 +228,17 @@ class Job:
         return None
 
     async def emit(self, stage, state, error=None, measured=None):
-        ev = {"job": self.n, "id": self.pid, "stage": stage, "index": self.names.index(stage) + 1, "total": len(self.names), "label": LABELS[stage], "state": state, "measured": measured, "error": error}
+        ev = {
+            "job": self.n,
+            "id": self.pid,
+            "stage": stage,
+            "index": self.names.index(stage) + 1,
+            "total": len(self.names),
+            "label": LABELS[stage],
+            "state": state,
+            "measured": measured,
+            "error": error,
+        }
         try:
             await self.host.progress(self.n, ev)
         except Exception as e:
@@ -209,7 +256,9 @@ class Job:
         if self.total and now - self.last >= 0.5:
             self.last = now
             try:
-                asyncio.run_coroutine_threadsafe(self.emit("download", "running", None, self.measured()), self.loop).result(5)
+                asyncio.run_coroutine_threadsafe(
+                    self.emit("download", "running", None, self.measured()), self.loop
+                ).result(5)
             except Exception:
                 pass
 
@@ -244,8 +293,12 @@ class Updates:
         self._running = False
         table = {
             "ver_list": lambda a: self.versions(a.get("id"), a.get("page", 1)),
-            "ver_install": lambda a: self.install_version(a.get("id"), a.get("tag"), a.get("confirm") is True),
-            "repair": lambda a: self.repair(a.get("id"), a.get("reset") is True, a.get("confirm") is True),
+            "ver_install": lambda a: self.install_version(
+                a.get("id"), a.get("tag"), a.get("confirm") is True
+            ),
+            "repair": lambda a: self.repair(
+                a.get("id"), a.get("reset") is True, a.get("confirm") is True
+            ),
             "notes": lambda a: self.notes(a.get("id"), a.get("tag")),
             "batch_plan": lambda a: self.batch_plan(a.get("ids")),
             "batch_apply": lambda a: self.batch_apply(a.get("ids")),
@@ -304,7 +357,10 @@ class Updates:
             raise UpdateError("unknown_plugin", "unknown plugin")
         dest = host.real(pid)
         if not dest:
-            raise UpdateError("bad_link", "the link must point to a real folder inside your home, outside the loader folder")
+            raise UpdateError(
+                "bad_link",
+                "the link must point to a real folder inside your home, outside the loader folder",
+            )
         g, msg = host.source(m)
         if not g:
             raise UpdateError("no_source", msg or "no update source recorded")
@@ -349,7 +405,9 @@ class Updates:
         hit = self._cache.get(key)
         if hit and now - hit[0] < TTL:
             return hit[1], hit[2]
-        raw = await asyncio.to_thread(self.host.api_json, "%s/%s/releases?per_page=%d&page=%d" % (g[0], g[1], PAGE, page))
+        raw = await asyncio.to_thread(
+            self.host.api_json, "%s/%s/releases?per_page=%d&page=%d" % (g[0], g[1], PAGE, page)
+        )
         if not isinstance(raw, list):
             raise ValueError("unexpected reply from GitHub")
         rows = [r for r in map(_rel, raw[:PAGE]) if r]
@@ -362,14 +420,16 @@ class Updates:
     def _source_of(self, pid):
         if pid == "_loader":
             return None, LOADER, self.host.VERSION
-        m, dest, g = self._plugin(pid)
+        m, _, g = self._plugin(pid)
         return m, g, m.get("version", "")
 
     @_safe
     async def versions(self, pid, page=1):
         host = self.host
         m, g, curver = self._source_of(pid)
-        page = page if isinstance(page, int) and not isinstance(page, bool) and 1 <= page <= 100 else 1
+        page = (
+            page if isinstance(page, int) and not isinstance(page, bool) and 1 <= page <= 100 else 1
+        )
         prot = _priv(m)
         frozen = pid in _frozen(host.settings())
         linked = pid != "_loader" and _linked(host.plugin_dir(pid))
@@ -385,9 +445,35 @@ class Updates:
             missing = True
         if missing:
             sha = await asyncio.to_thread(host.latest, g[0], g[1], g[2] if len(g) > 2 else "HEAD")
-            reason = PROTECTED_UPDATE if prot else "Installed" if sha == installed else "This module is frozen: unfreeze it first" if frozen else LINKED if linked else ""
-            row = {"tag": sha, "version": sha[:7], "commit": sha, "prerelease": False, "published": "", "label": "", "current": sha == installed, "compat": {"badge": "unknown", "msg": ""}, "downgrade": False, "eligible": not reason and pid != "_loader", "reason": reason}
-            return {"versions": [row], "more": False, "note": "No releases are published: showing the latest commit only; version history is unavailable"}
+            reason = (
+                PROTECTED_UPDATE
+                if prot
+                else "Installed"
+                if sha == installed
+                else "This module is frozen: unfreeze it first"
+                if frozen
+                else LINKED
+                if linked
+                else ""
+            )
+            row = {
+                "tag": sha,
+                "version": sha[:7],
+                "commit": sha,
+                "prerelease": False,
+                "published": "",
+                "label": "",
+                "current": sha == installed,
+                "compat": {"badge": "unknown", "msg": ""},
+                "downgrade": False,
+                "eligible": not reason and pid != "_loader",
+                "reason": reason,
+            }
+            return {
+                "versions": [row],
+                "more": False,
+                "note": "No releases are published: showing the latest commit only; version history is unavailable",
+            }
         out = []
         for r in rows:
             v = parse_version(r["tag"])
@@ -410,21 +496,39 @@ class Updates:
             if now_ and m is not None:
                 bad = host.gate(m)
                 compat = {"badge": "unknown" if bad else "ok", "msg": bad}
-            out.append({"tag": r["tag"], "version": r["version"], "commit": r["commit"], "prerelease": r["prerelease"], "published": r["published"], "label": self._label(r["prerelease"]), "current": now_, "compat": compat, "downgrade": down, "eligible": not reason, "reason": reason})
+            out.append(
+                {
+                    "tag": r["tag"],
+                    "version": r["version"],
+                    "commit": r["commit"],
+                    "prerelease": r["prerelease"],
+                    "published": r["published"],
+                    "label": self._label(r["prerelease"]),
+                    "current": now_,
+                    "compat": compat,
+                    "downgrade": down,
+                    "eligible": not reason,
+                    "reason": reason,
+                }
+            )
         return {"versions": out, "more": more}
 
     @_safe
     async def notes(self, pid, tag):
         if not (isinstance(tag, str) and TAG.fullmatch(tag)):
             raise UpdateError("bad_tag", "unrecognised version tag")
-        m, g, curver = self._source_of(pid)
+        _, g, _ = self._source_of(pid)
         for (o, r, _), (_, rows, _) in list(self._cache.items()):
             if (o, r) == (g[0], g[1]):
                 for x in rows:
                     if x["tag"] == tag:
                         return {"notes": x["body"], "url": x["url"]}
         try:
-            r = _rel(await asyncio.to_thread(self.host.api_json, "%s/%s/releases/tags/%s" % (g[0], g[1], tag)))
+            r = _rel(
+                await asyncio.to_thread(
+                    self.host.api_json, "%s/%s/releases/tags/%s" % (g[0], g[1], tag)
+                )
+            )
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 raise
@@ -433,15 +537,21 @@ class Updates:
 
     async def _remote_meta(self, g, sha):
         try:
-            j = await asyncio.to_thread(self.host.api_json, "%s/%s/contents/plugin.json?ref=%s" % (g[0], g[1], sha))
+            j = await asyncio.to_thread(
+                self.host.api_json, "%s/%s/contents/plugin.json?ref=%s" % (g[0], g[1], sha)
+            )
             meta = _loads(base64.b64decode(j["content"]).decode("utf-8"))
-            return meta if isinstance(meta, dict) and isinstance(meta.get("version", ""), str) else None
+            return (
+                meta
+                if isinstance(meta, dict) and isinstance(meta.get("version", ""), str)
+                else None
+            )
         except Exception:
             return None
 
     def _skip(self, m, dest, s):
         pid = m["id"]
-        g, msg = self.host.source(m)
+        g, _ = self.host.source(m)
         if not g or not dest:
             return "no source"
         if _priv(m):
@@ -471,9 +581,25 @@ class Updates:
         for pid in order:
             m = ms.get(pid)
             if not m:
-                rows.append({"id": pid, "name": pid, "from": "", "to": "", "eligible": False, "reason": "not installed"})
+                rows.append(
+                    {
+                        "id": pid,
+                        "name": pid,
+                        "from": "",
+                        "to": "",
+                        "eligible": False,
+                        "reason": "not installed",
+                    }
+                )
                 continue
-            row = {"id": pid, "name": m.get("name", pid), "from": m.get("version", ""), "to": "", "eligible": False, "reason": ""}
+            row = {
+                "id": pid,
+                "name": m.get("name", pid),
+                "from": m.get("version", ""),
+                "to": "",
+                "eligible": False,
+                "reason": "",
+            }
             rows.append(row)
             row["reason"] = self._skip(m, host.real(pid), s)
             if row["reason"]:
@@ -510,7 +636,9 @@ class Updates:
         elif meta and new and cur and new < cur:
             row["reason"] = "the newest commit holds an older version than the installed one"
         elif meta and (new is None) != (cur is None):
-            row["reason"] = "the newest commit changes the version format: choose a version explicitly"
+            row["reason"] = (
+                "the newest commit changes the version format: choose a version explicitly"
+            )
         else:
             row["eligible"] = True
 
@@ -518,13 +646,21 @@ class Updates:
     async def batch_apply(self, ids):
         host = self.host
         if not (isinstance(ids, list) and 0 < len(ids) <= BATCH_MAX and all(_ok(x) for x in ids)):
-            raise UpdateError("bad_batch", "between 1 and %d valid module ids per batch" % BATCH_MAX)
+            raise UpdateError(
+                "bad_batch", "between 1 and %d valid module ids per batch" % BATCH_MAX
+            )
         s = host.settings()
         ms = {m["id"]: m for m in host.manifests()}
         results = []
         for pid in dict.fromkeys(ids):
             m = ms.get(pid)
-            row = {"id": pid, "name": m.get("name", pid) if m else pid, "state": "failed", "from": m.get("version", "") if m else "", "to": ""}
+            row = {
+                "id": pid,
+                "name": m.get("name", pid) if m else pid,
+                "state": "failed",
+                "from": m.get("version", "") if m else "",
+                "to": "",
+            }
             results.append(row)
             if not m:
                 row.update(state="skipped", reason="not installed")
@@ -543,7 +679,11 @@ class Updates:
             except Exception as e:
                 row.update(state="failed", error=why(e))
         await self._after(host.settings())
-        return {"results": results, "ok": sum(r["state"] == "ok" for r in results), "failed": sum(r["state"] == "failed" for r in results)}
+        return {
+            "results": results,
+            "ok": sum(r["state"] == "ok" for r in results),
+            "failed": sum(r["state"] == "failed" for r in results),
+        }
 
     async def _update_one(self, m):
         host = self.host
@@ -555,7 +695,10 @@ class Updates:
             return {"state": "current", "to": m.get("version", "")}
         r = await self._replace(job, pid, m, dest, g, sha, kind="commit", confirm=False)
         if "confirm" in r:
-            return {"state": "skipped", "reason": "the newest commit holds an older version than the installed one"}
+            return {
+                "state": "skipped",
+                "reason": "the newest commit holds an older version than the installed one",
+            }
         return {"state": "ok", "to": r["version"]}
 
     @staticmethod
@@ -574,19 +717,40 @@ class Updates:
         want = parse_version(tag)
         if _priv(m):
             cur = parse_version(m.get("version", ""))
-            raise UpdateError("protected", FORWARD_ONLY if want and cur and want < cur else PROTECTED_UPDATE)
+            raise UpdateError(
+                "protected", FORWARD_ONLY if want and cur and want < cur else PROTECTED_UPDATE
+            )
         if pid in _frozen(host.settings()):
-            raise UpdateError("frozen", "This module is frozen at %s: unfreeze it first" % (m.get("version") or "its current version"))
+            raise UpdateError(
+                "frozen",
+                "This module is frozen at %s: unfreeze it first"
+                % (m.get("version") or "its current version"),
+            )
         if not SHA.fullmatch(tag) and want is None:
             raise UpdateError("bad_tag", "unrecognised version tag")
         if is_pre(tag) and self._channel() != "prerelease":
-            raise UpdateError("prerelease", "Prerelease versions need the Prerelease channel (Settings)")
+            raise UpdateError(
+                "prerelease", "Prerelease versions need the Prerelease channel (Settings)"
+            )
         job = self._job(pid, STAGES)
         sha = await self._run(job, "check", self._resolve, g, tag)
         if sha == self._sha(pid):
             return {"current": True}
         have = parse_version(m.get("version", ""))
-        return await self._pushed(self._replace(job, pid, m, dest, g, sha, kind="commit" if SHA.fullmatch(tag) else "release", tag="" if SHA.fullmatch(tag) else tag, confirm=confirm, lower=bool(want and have and want < have)))
+        return await self._pushed(
+            self._replace(
+                job,
+                pid,
+                m,
+                dest,
+                g,
+                sha,
+                kind="commit" if SHA.fullmatch(tag) else "release",
+                tag="" if SHA.fullmatch(tag) else tag,
+                confirm=confirm,
+                lower=bool(want and have and want < have),
+            )
+        )
 
     def _resolve(self, g, tag):
         return tag if SHA.fullmatch(tag) else self.host.latest(g[0], g[1], tag)
@@ -600,8 +764,18 @@ class Updates:
             except ValueError:
                 j = None
             if isinstance(j, dict):
-                if j.get("kind") in ("commit", "release") and isinstance(j.get("commit"), str) and SHA.fullmatch(j["commit"]):
-                    return {"kind": j["kind"], "commit": j["commit"], "tag": j["tag"] if isinstance(j.get("tag"), str) and TAG.fullmatch(j["tag"]) else ""}
+                if (
+                    j.get("kind") in ("commit", "release")
+                    and isinstance(j.get("commit"), str)
+                    and SHA.fullmatch(j["commit"])
+                ):
+                    return {
+                        "kind": j["kind"],
+                        "commit": j["commit"],
+                        "tag": j["tag"]
+                        if isinstance(j.get("tag"), str) and TAG.fullmatch(j["tag"])
+                        else "",
+                    }
                 raise UpdateError("no_identity", "cannot repair: no immutable source recorded")
         v = self._sha(pid)
         if v:
@@ -612,13 +786,32 @@ class Updates:
     async def repair(self, pid, reset=False, confirm=False):
         m, dest, g = self._plugin(pid)
         if _priv(m):
-            raise UpdateError("protected", "Protected components cannot be repaired here: run Install / Update in the Framey App")
+            raise UpdateError(
+                "protected",
+                "Protected components cannot be repaired here: run Install / Update in the Framey App",
+            )
         ident = self._identity(pid)
         if reset and not confirm:
-            return {"confirm": "Reset also deletes this module's saved settings and cannot be undone. Everything else is kept."}
+            return {
+                "confirm": "Reset also deletes this module's saved settings and cannot be undone. Everything else is kept."
+            }
         job = self._job(pid, STAGES)
         await self._run(job, "check", self._nothing)
-        return await self._pushed(self._replace(job, pid, m, dest, g, ident["commit"], kind=ident["kind"], tag=ident["tag"], confirm=True, reset=reset, repairing=True))
+        return await self._pushed(
+            self._replace(
+                job,
+                pid,
+                m,
+                dest,
+                g,
+                ident["commit"],
+                kind=ident["kind"],
+                tag=ident["tag"],
+                confirm=True,
+                reset=reset,
+                repairing=True,
+            )
+        )
 
     def _archive(self, g, sha, job):
         fn = self.host.archive
@@ -634,24 +827,51 @@ class Updates:
             raise UpdateError("bad_package", v.get("error") or "the package is not valid")
         z, infos, base, vid, meta = v
         if vid != pid:
-            raise UpdateError("wrong_plugin", "rejected: the package is plugin %s, not %s" % (vid, pid))
+            raise UpdateError(
+                "wrong_plugin", "rejected: the package is plugin %s, not %s" % (vid, pid)
+            )
         bad = self.host.gate(meta)
         if bad:
             raise UpdateError("incompatible", bad)
         return z, infos, base, meta
 
-    async def _replace(self, job, pid, m, dest, g, sha, *, kind, tag="", confirm=False, reset=False, lower=False, repairing=False):
+    async def _replace(
+        self,
+        job,
+        pid,
+        m,
+        dest,
+        g,
+        sha,
+        *,
+        kind,
+        tag="",
+        confirm=False,
+        reset=False,
+        lower=False,
+        repairing=False,
+    ):
         host = self.host
         if _linked(host.plugin_dir(pid)):
             raise UpdateError("bad_link", LINKED)
-        data =await self._run(job, "download", self._archive, g, sha, job)
+        data = await self._run(job, "download", self._archive, g, sha, job)
         z, infos, base, meta = await self._run(job, "verify", self._vet, data, pid)
         new, cur = parse_version(meta.get("version", "")), parse_version(m.get("version", ""))
-        if new and new.prerelease and self._channel() != "prerelease" and not (repairing and new == cur):
-            raise UpdateError("prerelease", "Prerelease versions need the Prerelease channel (Settings)", "verify")
+        if (
+            new
+            and new.prerelease
+            and self._channel() != "prerelease"
+            and not (repairing and new == cur)
+        ):
+            raise UpdateError(
+                "prerelease", "Prerelease versions need the Prerelease channel (Settings)", "verify"
+            )
         down = lower or bool(new and cur and new < cur) or (new is None) != (cur is None)
         if down and not confirm:
-            return {"confirm": CONFIRM % (meta.get("version") or "the older version"), "downgrade": True}
+            return {
+                "confirm": CONFIRM % (meta.get("version") or "the older version"),
+                "downgrade": True,
+            }
         d = host.plugin_dir(pid)
         src = _read(d / ".source")
         ident = {"kind": kind, "source": "%s/%s" % (g[0], g[1]), "commit": sha}
@@ -694,7 +914,14 @@ class Updates:
                     except Exception as e:
                         host.log("restore after failed reload:", e)
                     if err.code == "start_failed":
-                        err.message = (err.message + ("; the previous version was restored" if back else "; restoring the previous version failed"))[:300]
+                        err.message = (
+                            err.message
+                            + (
+                                "; the previous version was restored"
+                                if back
+                                else "; restoring the previous version failed"
+                            )
+                        )[:300]
                     raise
             finally:
                 if hold.is_dir():
@@ -715,7 +942,9 @@ class Updates:
         sha = await self._run(job, "check", self.host.latest, *g)
         if sha == self._sha(pid):
             return {"current": True}
-        return await self._pushed(self._replace(job, pid, m, dest, g, sha, kind="commit", confirm=True))
+        return await self._pushed(
+            self._replace(job, pid, m, dest, g, sha, kind="commit", confirm=True)
+        )
 
     async def _reload(self, pid, reset):
         c = self.host.HOME / ".config" / "framey" / "plugins" / pid
@@ -725,7 +954,9 @@ class Updates:
         if reset:
             shutil.rmtree(c, ignore_errors=True)
             if c.exists() or c.is_symlink():
-                raise UpdateError("reset_failed", "The module settings could not be removed: reset did not finish")
+                raise UpdateError(
+                    "reset_failed", "The module settings could not be removed: reset did not finish"
+                )
         check = getattr(self.host, "backend_check", None)
         bad = await check(pid) if check else ""
         if bad:
@@ -738,20 +969,33 @@ class Updates:
             if ch == "stable":
                 r = _rel(await asyncio.to_thread(host.api_json, "%s/%s/releases/latest" % LOADER))
             else:
-                raw = await asyncio.to_thread(host.api_json, "%s/%s/releases?per_page=%d" % (LOADER + (PAGE,)))
+                raw = await asyncio.to_thread(
+                    host.api_json, "%s/%s/releases?per_page=%d" % (LOADER + (PAGE,))
+                )
                 r = next((x for x in map(_rel, raw if isinstance(raw, list) else []) if x), None)
             if not r:
                 raise ValueError("unexpected reply from GitHub")
             sha = await asyncio.to_thread(host.latest, LOADER[0], LOADER[1], r["tag"])
         except Exception as e:
             return {"error": why(e), "channel": ch}
-        return {"tag": r["tag"], "commit": sha, "prerelease": r["prerelease"], "published": r["published"], "label": self._label(r["prerelease"]), "channel": ch, "notes": r["body"][:600]}
+        return {
+            "tag": r["tag"],
+            "commit": sha,
+            "prerelease": r["prerelease"],
+            "published": r["published"],
+            "label": self._label(r["prerelease"]),
+            "channel": ch,
+            "notes": r["body"][:600],
+        }
 
     def loader_allowed(self, cand, confirm=False):
         if not isinstance(cand, dict) or not cand.get("tag"):
             return {"error": "no loader version selected", "code": "no_candidate"}
         if cand.get("prerelease") and self._channel() != "prerelease":
-            return {"error": "Prerelease versions need the Prerelease channel (Settings)", "code": "prerelease"}
+            return {
+                "error": "Prerelease versions need the Prerelease channel (Settings)",
+                "code": "prerelease",
+            }
         new, cur = parse_version(cand["tag"]), parse_version(self.host.VERSION)
         if (new is None or (cur and new < cur)) and not confirm:
             return {"confirm": CONFIRM % cand["tag"]}
@@ -781,8 +1025,22 @@ class Updates:
         new, old = parse_version(cand["tag"]), parse_version(self.host.VERSION)
         down = not same and bool(new and old and new < old)
         state = "current" if same else "update"
-        installed = {"version": self.host.VERSION, "commit": cur[:7], "tag": cand["tag"] if same else ""}
-        loader = {"state": state, "latest": cand["tag"], "installed": cand["tag"] if same else cur[:7], "candidate": {k: cand[k] for k in ("tag", "commit", "prerelease", "published", "label", "channel")}, "downgrade": down, "channel_fallback": self._pref("channel") == "prerelease" and self._channel() != "prerelease"}
+        installed = {
+            "version": self.host.VERSION,
+            "commit": cur[:7],
+            "tag": cand["tag"] if same else "",
+        }
+        loader = {
+            "state": state,
+            "latest": cand["tag"],
+            "installed": cand["tag"] if same else cur[:7],
+            "candidate": {
+                k: cand[k] for k in ("tag", "commit", "prerelease", "published", "label", "channel")
+            },
+            "downgrade": down,
+            "channel_fallback": self._pref("channel") == "prerelease"
+            and self._channel() != "prerelease",
+        }
         if state == "update":
             loader["notes"] = cand["notes"]
         stored = "current" if same else ("downgrade" if down else "update")
@@ -800,14 +1058,23 @@ class Updates:
         u = _norm(s.get("updates"))
         off, frozen = _off(s), _frozen(s)
         ids = {m["id"] for m in host.manifests()}
-        n = sum(1 for pid, r in u["plugins"].items() if pid in ids and pid not in off and pid not in frozen and r.get("state") == "update")
+        n = sum(
+            1
+            for pid, r in u["plugins"].items()
+            if pid in ids and pid not in off and pid not in frozen and r.get("state") == "update"
+        )
         loader = u["loader"]["state"] == "update"
         return {"n": n + int(loader), "loader": loader}
 
     def autocheck_status(self):
         s = self.host.settings()
         u = _norm(s.get("updates"))
-        return {"enabled": _prefs(s).get("autocheck") is True, "last": u["last"], "next_ok": u["next_ok"], "fails": u["fails"]}
+        return {
+            "enabled": _prefs(s).get("autocheck") is True,
+            "last": u["last"],
+            "next_ok": u["next_ok"],
+            "fails": u["fails"],
+        }
 
     def due(self, now, floor=DAY, state=None):
         s = state if isinstance(state, dict) else self.host.settings()
@@ -865,7 +1132,11 @@ class Updates:
             good += 1
             cur = self._loader_sha()
             new, old = parse_version(cand["tag"]), parse_version(host.VERSION)
-            loader = "current" if cand["commit"] == cur else ("downgrade" if new and old and new < old else "update")
+            loader = (
+                "current"
+                if cand["commit"] == cur
+                else ("downgrade" if new and old and new < old else "update")
+            )
         first = True
         for m in ms[:CYCLE_MAX]:
             if limited:
@@ -922,7 +1193,14 @@ class Updates:
         return {"state": "current" if sha == self._sha(m["id"]) else "update", "latest": sha[:7]}
 
     async def record_checked(self, checked):
-        recs = {k: {"latest": v.get("latest", ""), "state": v["state"]} for k, v in (checked or {}).items() if _ok(k) and isinstance(v, dict) and v.get("state") in ("update", "current") and isinstance(v.get("latest", ""), str)}
+        recs = {
+            k: {"latest": v.get("latest", ""), "state": v["state"]}
+            for k, v in (checked or {}).items()
+            if _ok(k)
+            and isinstance(v, dict)
+            and v.get("state") in ("update", "current")
+            and isinstance(v.get("latest", ""), str)
+        }
         s = self._store(lambda u: u["plugins"].update(recs))
         await self._notify(s)
         await self._after(s)
@@ -948,22 +1226,58 @@ class Updates:
         ms = {m["id"]: m for m in host.manifests()}
         sent = {}
         tag = u["loader"]["tag"]
-        if prefs.get("notify_loader") is True and u["loader"]["state"] == "update" and tag and tag != u["seen"]["loader"]:
+        if (
+            prefs.get("notify_loader") is True
+            and u["loader"]["state"] == "update"
+            and tag
+            and tag != u["seen"]["loader"]
+        ):
             try:
-                await host.notify_page("_core", "notice", {"title": "Framey update available", "body": _text("Framey %s is ready. Open Settings to review and update." % tag, 400), "actions": [{"id": "open:settings", "label": "Open Settings"}]})
+                await host.notify_page(
+                    "_core",
+                    "notice",
+                    {
+                        "title": "Framey update available",
+                        "body": _text(
+                            "Framey %s is ready. Open Settings to review and update." % tag, 400
+                        ),
+                        "actions": [{"id": "open:settings", "label": "Open Settings"}],
+                    },
+                )
                 sent["loader"] = tag
             except Exception as e:
                 host.log("notice failed:", e)
         if prefs.get("notify_plugins") is True:
-            fresh = [(pid, r["latest"]) for pid, r in sorted(u["plugins"].items()) if pid in ms and pid not in off and pid not in frozen and r.get("state") == "update" and isinstance(r.get("latest"), str) and r["latest"] and u["seen"]["plugins"].get(pid) != r["latest"]]
+            fresh = [
+                (pid, r["latest"])
+                for pid, r in sorted(u["plugins"].items())
+                if pid in ms
+                and pid not in off
+                and pid not in frozen
+                and r.get("state") == "update"
+                and isinstance(r.get("latest"), str)
+                and r["latest"]
+                and u["seen"]["plugins"].get(pid) != r["latest"]
+            ]
             if fresh:
-                names = ", ".join(ms[p].get("name", p) for p, _ in fresh[:5]) + (" and more" if len(fresh) > 5 else "")
+                names = ", ".join(ms[p].get("name", p) for p, _ in fresh[:5]) + (
+                    " and more" if len(fresh) > 5 else ""
+                )
                 try:
-                    await host.notify_page("_core", "notice", {"title": _text("Module updates available (%d)" % len(fresh), 80), "body": _text("Updates are ready for: " + names, 400), "actions": [{"id": "open:modules", "label": "Open Modules"}]})
+                    await host.notify_page(
+                        "_core",
+                        "notice",
+                        {
+                            "title": _text("Module updates available (%d)" % len(fresh), 80),
+                            "body": _text("Updates are ready for: " + names, 400),
+                            "actions": [{"id": "open:modules", "label": "Open Modules"}],
+                        },
+                    )
                     sent["plugins"] = dict(fresh)
                 except Exception as e:
                     host.log("notice failed:", e)
         if sent:
+
             def mark(x):
                 if "loader" in sent:
                     x["seen"]["loader"] = sent["loader"]
@@ -977,13 +1291,20 @@ class Updates:
         host = self.host
         if _linked(host.plugin_dir(pid)):
             raise UpdateError("bad_link", LINKED)
-        m, dest, g = self._plugin(pid)
+        m, _, g = self._plugin(pid)
         pkg = self._pkg()
         if pkg is None:
             raise UpdateError("unavailable", "Companion support is not available")
-        spec = next((c for c in pkg.companions(m) if c.get("name") == name), None) if isinstance(name, str) else None
+        spec = (
+            next((c for c in pkg.companions(m) if c.get("name") == name), None)
+            if isinstance(name, str)
+            else None
+        )
         if not spec:
-            raise UpdateError("unknown_companion", "this module declares no companion with that name for this headset")
+            raise UpdateError(
+                "unknown_companion",
+                "this module declares no companion with that name for this headset",
+            )
         job = self._job(pid, COMPANION_STAGES)
         asset = await self._run(job, "check", self._find_asset, g, m, spec)
         data = await self._run(job, "download", self._download, asset[0], job)
@@ -993,7 +1314,12 @@ class Updates:
         folder = out / ("%s-%s" % (spec["name"], spec.get("version", "")))
         ex = (res or {}).get("exec") or []
         path = folder / ex[0] if ex else folder
-        return {"ok": name, "path": str(path), "digest": state if state == "verified" else "no digest published", "note": INTEGRITY}
+        return {
+            "ok": name,
+            "path": str(path),
+            "digest": state if state == "verified" else "no digest published",
+            "note": INTEGRITY,
+        }
 
     def _find_asset(self, g, m, spec):
         host = self.host
@@ -1016,10 +1342,19 @@ class Updates:
             hit = r["assets"].get(spec["asset"]) if r else None
             if hit:
                 parts = urllib.parse.urlsplit(hit[0])
-                if parts.scheme == "https" and parts.hostname == "github.com" and parts.path.startswith("/%s/%s/releases/download/" % (g[0], g[1])):
+                if (
+                    parts.scheme == "https"
+                    and parts.hostname == "github.com"
+                    and parts.path.startswith("/%s/%s/releases/download/" % (g[0], g[1]))
+                ):
                     return hit
-                raise UpdateError("bad_asset", "the companion asset is not hosted by this module's own GitHub repository")
-        raise UpdateError("no_asset", "the release has no companion file named " + str(spec["asset"]))
+                raise UpdateError(
+                    "bad_asset",
+                    "the companion asset is not hosted by this module's own GitHub repository",
+                )
+        raise UpdateError(
+            "no_asset", "the release has no companion file named " + str(spec["asset"])
+        )
 
     def _download(self, url, job):
         fn = self.host.fetch
@@ -1027,7 +1362,11 @@ class Updates:
             takes = "progress" in inspect.signature(fn).parameters
         except (TypeError, ValueError):
             takes = False
-        data = fn(url, {"User-Agent": "Framey"}, HOSTS, COMPANION_MAX, progress=job.progress) if takes else fn(url, {"User-Agent": "Framey"}, HOSTS, COMPANION_MAX)
+        data = (
+            fn(url, {"User-Agent": "Framey"}, HOSTS, COMPANION_MAX, progress=job.progress)
+            if takes
+            else fn(url, {"User-Agent": "Framey"}, HOSTS, COMPANION_MAX)
+        )
         if len(data) > COMPANION_MAX:
             raise UpdateError("too_large", "the companion download is over 20 MB")
         return data
@@ -1035,8 +1374,17 @@ class Updates:
     def _verify_asset(self, data, digest, spec):
         state = check_digest(data, digest)
         if state == "mismatch":
-            raise UpdateError("digest_mismatch", "the download does not match the digest GitHub published for it")
+            raise UpdateError(
+                "digest_mismatch", "the download does not match the digest GitHub published for it"
+            )
         want = str(digest).partition(":")[2].lower()
-        if state == "verified" and isinstance(spec.get("sha256"), str) and spec["sha256"].lower() != want:
-            raise UpdateError("digest_mismatch", "the digest GitHub published differs from the one the module declares")
+        if (
+            state == "verified"
+            and isinstance(spec.get("sha256"), str)
+            and spec["sha256"].lower() != want
+        ):
+            raise UpdateError(
+                "digest_mismatch",
+                "the digest GitHub published differs from the one the module declares",
+            )
         return state

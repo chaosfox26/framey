@@ -24,8 +24,31 @@ PID = re.compile(r"[a-z0-9_-]{1,32}")
 BAD_URL = re.compile(r"[\x00-\x20\x7f\\]")
 BAD_VALUE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 TEXTY = re.compile(r"text/|json|xml|javascript|x-www-form-urlencoded", re.I)
-DROP = frozenset(("host", "content-length", "connection", "transfer-encoding", "accept-encoding", "expect", "upgrade", "te", "keep-alive", "trailer"))
-CROSS_HOST_KEEP = frozenset(("accept", "accept-language", "content-type", "user-agent", "range", "if-none-match", "if-modified-since"))
+DROP = frozenset(
+    (
+        "host",
+        "content-length",
+        "connection",
+        "transfer-encoding",
+        "accept-encoding",
+        "expect",
+        "upgrade",
+        "te",
+        "keep-alive",
+        "trailer",
+    )
+)
+CROSS_HOST_KEEP = frozenset(
+    (
+        "accept",
+        "accept-language",
+        "content-type",
+        "user-agent",
+        "range",
+        "if-none-match",
+        "if-modified-since",
+    )
+)
 KEEP = ("content-type", "content-length", "etag", "last-modified", "retry-after")
 REDIRECTS = frozenset((301, 302, 303, 307, 308))
 CGNAT = ipaddress.ip_network("100.64.0.0/10")
@@ -58,11 +81,18 @@ class NetError(Exception):
         self.code = code
         self.message = message[:300]
         self.status = status if type(status) is int and 100 <= status <= 599 else None
-        self.retry_after = min(RETRY_AFTER_MAX, max(0, retry_after)) if type(retry_after) is int else None
+        self.retry_after = (
+            min(RETRY_AFTER_MAX, max(0, retry_after)) if type(retry_after) is int else None
+        )
 
 
 def retry_after_seconds(value, now=None):
-    if not isinstance(value, str) or len(value) > 256 or not value.isascii() or BAD_VALUE.search(value):
+    if (
+        not isinstance(value, str)
+        or len(value) > 256
+        or not value.isascii()
+        or BAD_VALUE.search(value)
+    ):
         return 0
     value = value.strip(" \t")
     if value.isdecimal():
@@ -128,7 +158,16 @@ def is_public(ip):
             v4 = ipaddress.IPv4Address(int(a) & 0xFFFFFFFF)
         if v4 is not None:
             return is_public(str(v4))
-    if (a.version == 6 and a.is_site_local) or a.is_multicast or a.is_reserved or a.is_loopback or a.is_link_local or a.is_private or a.is_unspecified or a in CGNAT:
+    if (
+        (a.version == 6 and a.is_site_local)
+        or a.is_multicast
+        or a.is_reserved
+        or a.is_loopback
+        or a.is_link_local
+        or a.is_private
+        or a.is_unspecified
+        or a in CGNAT
+    ):
         return False
     return a.is_global
 
@@ -138,6 +177,7 @@ def _executor():
     with _lock:
         if _pool is None:
             from concurrent.futures import ThreadPoolExecutor
+
             _pool = ThreadPoolExecutor(max_workers=TOTAL, thread_name_prefix="fy-net")
     return _pool
 
@@ -147,6 +187,7 @@ def _resolver():
     with _lock:
         if _dns is None:
             from concurrent.futures import ThreadPoolExecutor
+
             _dns = ThreadPoolExecutor(max_workers=TOTAL, thread_name_prefix="fy-dns")
     return _dns
 
@@ -186,7 +227,13 @@ def _target(url, allow_http):
     if scheme != "https" and not (allow_http and scheme == "http"):
         raise NetError("scheme", "Only https links are allowed")
     host = p.hostname
-    if not host or "@" in p.netloc or not HOST.fullmatch(host) or port == 0 or p.netloc.endswith(":"):
+    if (
+        not host
+        or "@" in p.netloc
+        or not HOST.fullmatch(host)
+        or port == 0
+        or p.netloc.endswith(":")
+    ):
         raise NetError("bad_url", "That link is not valid")
     if ":" in host or p.netloc.startswith("["):
         try:
@@ -194,7 +241,10 @@ def _target(url, allow_http):
                 raise ValueError()
         except ValueError:
             raise NetError("bad_url", "That link is not valid")
-    elif not all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in (host[:-1] if host.endswith(".") else host).split(".")):
+    elif not all(
+        re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+        for label in (host[:-1] if host.endswith(".") else host).split(".")
+    ):
         raise NetError("bad_url", "That link is not valid")
     path = (p.path or "/") + ("?" + p.query if p.query else "")
     return scheme, host, port if port is not None else (443 if scheme == "https" else 80), path
@@ -205,7 +255,11 @@ def _gai(host, port):
 
 
 def _lookup(host, port, resolver, deadline):
-    deadline = min(deadline, time.monotonic() + DNS_MAX) if deadline is not None else time.monotonic() + DNS_MAX
+    deadline = (
+        min(deadline, time.monotonic() + DNS_MAX)
+        if deadline is not None
+        else time.monotonic() + DNS_MAX
+    )
     if not _dns_slots.acquire(timeout=_left(deadline)):
         raise NetError("timeout", "The server took too long")
 
@@ -255,7 +309,9 @@ def _open(scheme, host, ip, port, timeout, track=None):
         track(s)
     if scheme == "https":
         try:
-            s = ssl.create_default_context().wrap_socket(s, server_hostname=host, do_handshake_on_connect=False)
+            s = ssl.create_default_context().wrap_socket(
+                s, server_hostname=host, do_handshake_on_connect=False
+            )
             if track:
                 track(s)
             s.do_handshake()
@@ -281,7 +337,11 @@ def _connect(scheme, host, port, ips, deadline, opener, socks):
     for ip in ips:
         _check(socks)
         try:
-            s = opener(scheme, host, ip, port, _left(deadline)) if opener else _open(scheme, host, ip, port, _left(deadline), socks.append)
+            s = (
+                opener(scheme, host, ip, port, _left(deadline))
+                if opener
+                else _open(scheme, host, ip, port, _left(deadline), socks.append)
+            )
             if opener:
                 socks.append(s)
             _left(deadline)
@@ -371,8 +431,7 @@ def _used(base, skip, deadline=None, socks=None):
     return total
 
 
-def _save(r, sock, method, deadline, dest, socks=None):
-    final = dest[0]
+def _save(r, sock, method, deadline, final, socks=None):
     key = str(final.parent.resolve())
     with _save_condition:
         while key in _saving:
@@ -441,11 +500,33 @@ def _shape(r, data, n, cut, path):
         v = r.getheader(k)
         if v:
             headers[k] = v[:256]
-    return {"status": r.status, "headers": headers, "text": text, "b64": b64, "bytes": n, "truncated": cut, "path": path}
+    return {
+        "status": r.status,
+        "headers": headers,
+        "text": text,
+        "b64": b64,
+        "bytes": n,
+        "truncated": cut,
+        "path": path,
+    }
 
 
-def _run(url, method, headers, body, deadline, limit, dest, allow_http, resolver, opener, socks, binary=False):
+def _run(
+    url,
+    method,
+    headers,
+    body,
+    deadline,
+    limit,
+    dest,
+    allow_http,
+    resolver,
+    opener,
+    socks,
+    binary=False,
+):
     import http.client
+
     first = None
     hops = 0
     while True:
@@ -456,13 +537,17 @@ def _run(url, method, headers, body, deadline, limit, dest, allow_http, resolver
         first = first or key
         if key != first:
             headers = {k: v for k, v in headers.items() if k.lower() in CROSS_HOST_KEEP}
-        sock = _connect(scheme, host, port, _resolve(host, port, resolver, deadline), deadline, opener, socks)
+        sock = _connect(
+            scheme, host, port, _resolve(host, port, resolver, deadline), deadline, opener, socks
+        )
         conn = http.client.HTTPConnection(host, port)
         conn.sock = sock
         r = None
         try:
             sock.settimeout(_left(deadline))
-            hostline = ("[%s]" % host if ":" in host else host) + ("" if port == (443 if scheme == "https" else 80) else ":%d" % port)
+            hostline = ("[%s]" % host if ":" in host else host) + (
+                "" if port == (443 if scheme == "https" else 80) else ":%d" % port
+            )
             conn.request(method, path, body=body, headers=dict(headers, Host=hostline))
             r = conn.getresponse()
             loc = r.getheader("location")
@@ -489,15 +574,23 @@ def _run(url, method, headers, body, deadline, limit, dest, allow_http, resolver
                 continue
             if dest:
                 n = _save(r, sock, method, deadline, dest, socks)
-                return _shape(r, b"", n, False, str(dest[0]))
+                return _shape(r, b"", n, False, str(dest))
             if binary and r.status != 200:
                 if r.status in (401, 403):
                     code, message = "access_denied", "The server denied access to the download"
                 elif r.status == 429:
-                    code, message = "rate_limited", "The server asked Framey to wait before downloading"
+                    code, message = (
+                        "rate_limited",
+                        "The server asked Framey to wait before downloading",
+                    )
                 else:
                     code, message = "network", "The server did not return a complete download"
-                raise NetError(code, message, status=r.status, retry_after=retry_after_seconds(r.getheader("retry-after")))
+                raise NetError(
+                    code,
+                    message,
+                    status=r.status,
+                    retry_after=retry_after_seconds(r.getheader("retry-after")),
+                )
             data, n, cut = _read(r, sock, method, limit, deadline, None)
             if binary:
                 if cut:
@@ -530,7 +623,7 @@ def _dest(dirs, dest):
         base.mkdir(parents=True, exist_ok=True, mode=0o700)
     except (OSError, TypeError, ValueError):
         raise NetError("bad_dest", "That download location is not allowed")
-    return final, base / (m[2] + ".part")
+    return final
 
 
 def _headers(headers):
@@ -540,7 +633,14 @@ def _headers(headers):
         raise NetError("bad_request", "Too many or invalid headers")
     out = {}
     for k, v in headers.items():
-        if not isinstance(k, str) or not HEADER_NAME.fullmatch(k) or not isinstance(v, str) or len(v) > 1024 or not v.isascii() or BAD_VALUE.search(v):
+        if (
+            not isinstance(k, str)
+            or not HEADER_NAME.fullmatch(k)
+            or not isinstance(v, str)
+            or len(v) > 1024
+            or not v.isascii()
+            or BAD_VALUE.search(v)
+        ):
             raise NetError("bad_request", "A header is not valid")
         if k.lower() not in DROP:
             out[k] = v
@@ -562,7 +662,21 @@ def _body(body):
     return bytes(body)
 
 
-async def fetch_plugin(pid, url, *, method="GET", headers=None, body=None, timeout=15, max_bytes=INLINE_MAX, dest=None, dirs=None, allow_http=False, resolver=None, opener_factory=None):
+async def fetch_plugin(
+    pid,
+    url,
+    *,
+    method="GET",
+    headers=None,
+    body=None,
+    timeout=15,
+    max_bytes=INLINE_MAX,
+    dest=None,
+    dirs=None,
+    allow_http=False,
+    resolver=None,
+    opener_factory=None,
+):
     if not isinstance(pid, str) or not PID.fullmatch(pid):
         raise NetError("bad_request", "Unknown module")
     method = method.upper() if isinstance(method, str) else ""
@@ -571,8 +685,27 @@ async def fetch_plugin(pid, url, *, method="GET", headers=None, body=None, timeo
     _target(url, allow_http)
     headers = _headers(headers)
     body = _body(body)
-    limit = max_bytes if isinstance(max_bytes, int) and not isinstance(max_bytes, bool) and 1 <= max_bytes <= INLINE_MAX else INLINE_MAX
-    return await _perform(pid, url, method, headers, body, timeout, limit, dest, dirs, allow_http, resolver, opener_factory)
+    limit = (
+        max_bytes
+        if isinstance(max_bytes, int)
+        and not isinstance(max_bytes, bool)
+        and 1 <= max_bytes <= INLINE_MAX
+        else INLINE_MAX
+    )
+    return await _perform(
+        pid,
+        url,
+        method,
+        headers,
+        body,
+        timeout,
+        limit,
+        dest,
+        dirs,
+        allow_http,
+        resolver,
+        opener_factory,
+    )
 
 
 async def fetch_bytes(pid, url, *, headers=None, timeout=30, max_bytes=5_000_000):
@@ -581,10 +714,38 @@ async def fetch_bytes(pid, url, *, headers=None, timeout=30, max_bytes=5_000_000
     _target(url, False)
     if type(max_bytes) is not int or not 1 <= max_bytes <= DEST_MAX:
         raise NetError("bad_request", "The download size limit is not valid")
-    return await _perform(pid, url, "GET", _headers(headers), None, timeout, max_bytes, None, None, False, None, None, binary=True)
+    return await _perform(
+        pid,
+        url,
+        "GET",
+        _headers(headers),
+        None,
+        timeout,
+        max_bytes,
+        None,
+        None,
+        False,
+        None,
+        None,
+        binary=True,
+    )
 
 
-async def _perform(pid, url, method, headers, body, timeout, limit, dest, dirs, allow_http, resolver, opener_factory, binary=False):
+async def _perform(
+    pid,
+    url,
+    method,
+    headers,
+    body,
+    timeout,
+    limit,
+    dest,
+    dirs,
+    allow_http,
+    resolver,
+    opener_factory,
+    binary=False,
+):
     try:
         timeout = float(timeout)
     except (TypeError, ValueError, OverflowError):
@@ -598,7 +759,20 @@ async def _perform(pid, url, method, headers, body, timeout, limit, dest, dirs, 
         socks.check()
         _left(deadline)
         dst = _dest(dirs, dest) if dest is not None else None
-        return _run(url, method, headers, body, deadline, limit, dst, allow_http, resolver, opener_factory, socks, binary=binary)
+        return _run(
+            url,
+            method,
+            headers,
+            body,
+            deadline,
+            limit,
+            dst,
+            allow_http,
+            resolver,
+            opener_factory,
+            socks,
+            binary=binary,
+        )
 
     try:
         future = _executor().submit(work)

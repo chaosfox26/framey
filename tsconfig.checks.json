@@ -1,0 +1,6 @@
+{
+  "extends": "./jsconfig.json",
+  "compilerOptions": { "checkJs": true, "strict": true },
+  "files": ["fy-badge.js", "types/framey-development.d.ts"],
+  "include": []
+}

@@ -1,4 +1,3 @@
-"""Offline media/privacy boundaries for Decky catalog browsing and assessment."""
 import hashlib
 import io
 import json

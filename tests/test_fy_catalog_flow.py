@@ -207,6 +207,50 @@ class CatalogFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details["source"]["id"], "stable")
         self.assertEqual(len(self.fetcher.calls), 1)
 
+    async def test_details_find_entries_past_the_first_hundred_with_the_same_status(self):
+        self.fetcher.data = catalog_data([
+            plugin("module-%03d" % i, "Module %03d" % i, "Catalog module", "tools", [], "2026-04-02")
+            for i in range(120)
+        ])
+        page = await self.catalog.list({"offset": 100, "limit": 100})
+        details = await self.catalog.details({"id": "module-119", "query": "absent", "offset": -1})
+        self.assertEqual(details["entry"], page["rows"][-1])
+        self.assertEqual(set(details), {"entry", "source", "origin", "stale", "checked_at", "downloaded_at", "error", "fetch_error", "warning"})
+        self.assertEqual(details["source"], page["source"])
+        self.assertEqual(len(self.fetcher.calls), 1)
+
+    async def test_details_apply_native_visibility_and_developer_gating(self):
+        for pid in ("testflight", "preview"):
+            with self.subTest(pid=pid):
+                for source in ("stable", "custom"):
+                    arg = {"id": pid, "source": source}
+                    if source == "custom":
+                        arg["url"] = CUSTOM_URL
+                    hidden = await self.catalog.details(arg)
+                    self.assertEqual(hidden, {"error": "Module is not in this catalog", "code": "not_found"})
+                denied = await self.catalog.details({"id": pid, "source": "testing"})
+                self.assertEqual(denied["code"], "dev_off")
+        self.host.state["prefs"]["dev"]["enabled"] = True
+        for pid in ("testflight", "preview"):
+            details = await self.catalog.details({"id": pid, "source": "testing"})
+            self.assertEqual(details["entry"]["id"], pid)
+            self.assertEqual(details["source"]["id"], "testing")
+
+    async def test_details_preserve_refresh_failure_status_and_error_shapes(self):
+        await self.catalog.list()
+        self.fetcher.failure = OSError("offline")
+        self.host.clock += fy_catalog.TTL + 1
+        details = await self.catalog.details({"id": "alpha", "refresh": True})
+        self.assertTrue(details["stale"])
+        self.assertEqual(details["origin"], "cache")
+        self.assertIsNone(details["error"])
+        self.assertTrue(details["fetch_error"])
+        self.assertEqual(details["warning"], "Saved catalog; refresh failed")
+        invalid = await self.catalog.details({"id": "not valid"})
+        self.assertEqual(invalid, {"error": "Choose a catalog module", "code": "bad_arg"})
+        missing = await self.catalog.details({"id": "absent"})
+        self.assertEqual(missing, {"error": "Module is not in this catalog", "code": "not_found"})
+
     async def test_fresh_cache_survives_a_new_catalog_instance_without_fetching(self):
         downloaded = await self.catalog.list()
         self.fetcher.failure = OSError("offline")

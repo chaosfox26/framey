@@ -64,7 +64,11 @@ def _right_pose(pose, width):
             if abs(dot - (1 if a == b else 0)) > 0.02:
                 raise _Failure("Steam panel pose is invalid")
     a, b, d = rotation
-    det = a[0] * (b[1] * d[2] - b[2] * d[1]) - a[1] * (b[0] * d[2] - b[2] * d[0]) + a[2] * (b[0] * d[1] - b[1] * d[0])
+    det = (
+        a[0] * (b[1] * d[2] - b[2] * d[1])
+        - a[1] * (b[0] * d[2] - b[2] * d[0])
+        + a[2] * (b[0] * d[1] - b[1] * d[0])
+    )
     if abs(det - 1) > 0.02:
         raise _Failure("Steam panel pose is invalid")
     world_width = width * scale
@@ -74,7 +78,11 @@ def _right_pose(pose, width):
     for r in range(3):
         for k in range(4):
             out.m[r][k] = values[r][3] + offset * rotation[r][0] if k == 3 else rotation[r][k]
-    if not math.isfinite(own_width) or own_width <= 0 or not all(math.isfinite(v) for row in out.m for v in row):
+    if (
+        not math.isfinite(own_width)
+        or own_width <= 0
+        or not all(math.isfinite(v) for row in out.m for v in row)
+    ):
         raise _Failure("Steam panel pose is invalid")
     return own_width, out
 
@@ -83,7 +91,9 @@ class NativeOverlay:
     def __init__(self, enabled=False):
         self.enabled = enabled is True
         self.available = False
-        self.error = "Native panel is disabled" if not self.enabled else "Native panel has not been checked"
+        self.error = (
+            "Native panel is disabled" if not self.enabled else "Native panel has not been checked"
+        )
         self._closed = False
         self._initialized = False
         self._lib = None
@@ -126,7 +136,12 @@ class NativeOverlay:
                 return {"available": True, "error": None}
             else:
                 try:
-                    if sys.platform != "linux" or c.sizeof(c.c_void_p) != 8 or c.sizeof(Matrix34) != 48 or c.sizeof(Vector2) != 8:
+                    if (
+                        sys.platform != "linux"
+                        or c.sizeof(c.c_void_p) != 8
+                        or c.sizeof(Matrix34) != 48
+                        or c.sizeof(Vector2) != 8
+                    ):
                         raise _Failure("Native panel ABI is unavailable")
                     if _OWNER is not None and _OWNER is not self:
                         raise _Failure("Native panel connection is already in use")
@@ -184,8 +199,14 @@ class NativeOverlay:
 
     def _find(self, key):
         handle = _H(0)
-        if self._api["find"](key, c.byref(handle)) or not handle.value or not self._key_is(handle.value, key):
-            raise _Failure("Framey panel is unavailable" if key == OWN_KEY else "Steam panel is unavailable")
+        if (
+            self._api["find"](key, c.byref(handle))
+            or not handle.value
+            or not self._key_is(handle.value, key)
+        ):
+            raise _Failure(
+                "Framey panel is unavailable" if key == OWN_KEY else "Steam panel is unavailable"
+            )
         return handle.value
 
     def _lookup(self, key):
@@ -242,6 +263,7 @@ class NativeOverlay:
             self._own(own)
             if self._api["transform"](own, STANDING, c.byref(positioned)):
                 raise _Failure("Framey panel position could not be set")
+
         return self._result(operation)
 
     def _action(self, name, *args):
@@ -250,6 +272,7 @@ class NativeOverlay:
             self._own(own)
             if self._api[name](own, *args):
                 raise _Failure("Framey panel operation was refused")
+
         return self._result(operation)
 
     def show_own(self):
@@ -267,7 +290,9 @@ class NativeOverlay:
         with _SESSION:
             try:
                 self._ready()
-                visible = bool(self._api["visible"](self._find(OWN_KEY)) if own else self._api["dashboard"]())
+                visible = bool(
+                    self._api["visible"](self._find(OWN_KEY)) if own else self._api["dashboard"]()
+                )
                 self.error = None
                 return visible
             except _Failure as e:

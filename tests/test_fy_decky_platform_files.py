@@ -1,5 +1,3 @@
-"""Static package inspection must keep hostile files bounded and inert."""
-
 import hashlib
 import io
 import json

@@ -1,0 +1,21 @@
+{
+  "include": [
+    "fy_files.py",
+    "fy_iso.py",
+    "fy_overlay.py",
+    "fy_overlay_browser.py",
+    "fy_panel.py",
+    "fy_proto.py",
+    "fy_report.py",
+    "fy_sdk.py",
+    "fy_state.py",
+    "fy_supervisor.py",
+    "fy_targets.py",
+    "types"
+  ],
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Linux",
+  "typeCheckingMode": "standard",
+  "venvPath": ".",
+  "venv": ".venv"
+}

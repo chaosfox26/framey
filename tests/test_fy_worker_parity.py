@@ -1,5 +1,3 @@
-"""Regressions for worker lifecycle and ownership of in-flight requests."""
-
 import asyncio
 import gc
 import shutil

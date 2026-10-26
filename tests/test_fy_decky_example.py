@@ -1,5 +1,3 @@
-"""Exercise the source-port example with real SDK storage and worker dispatch."""
-
 import importlib.util
 import io
 import json
@@ -34,7 +32,6 @@ RUNTIME_FILES = ("plugin.json", "main.js", "backend.py")
 
 
 def runtime_package():
-    """Build a fixture from owned runtime files, never an external Decky release."""
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w", zipfile.ZIP_DEFLATED) as archive:
         for name in RUNTIME_FILES:

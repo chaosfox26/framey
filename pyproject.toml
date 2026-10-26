@@ -1,0 +1,16 @@
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+extend-exclude = ["tests", "graphify-out"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "RUF059", "PLR1711", "RET501", "SIM102"]
+
+[tool.ruff.format]
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["fy_proto.py"]
+strict = true
+cache_dir = ".mypy_cache"

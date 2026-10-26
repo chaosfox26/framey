@@ -1,5 +1,3 @@
-"""Report routing/packaging integration; no browser, network or worker launch."""
-
 import asyncio
 import copy
 import json

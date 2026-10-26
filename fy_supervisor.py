@@ -32,9 +32,17 @@ BACKOFF = (1.0, 5.0, 30.0)
 ERR_MAX = 65536
 EVENT_QUEUE = 64
 EVENT_RATE = 50
-LIMITS = {"timeout": (10, 1, 60), "idle": (120, 10, 3600), "concurrency": (1, 1, 8), "memory_mb": (32, 16, 64), "startup_timeout": (10, 1, 60)}
+LIMITS = {
+    "timeout": (10, 1, 60),
+    "idle": (120, 10, 3600),
+    "concurrency": (1, 1, 8),
+    "memory_mb": (32, 16, 64),
+    "startup_timeout": (10, 1, 60),
+}
 MEMORY_SUM = 100
-ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "XDG_RUNTIME_DIR") + (("SYSTEMROOT", "SYSTEMDRIVE", "TEMP", "TMP") if os.name == "nt" else ())
+ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "XDG_RUNTIME_DIR") + (
+    ("SYSTEMROOT", "SYSTEMDRIVE", "TEMP", "TMP") if os.name == "nt" else ()
+)
 HOST_OPS = ("fetch", "resource", "files", "log")
 REASONS = frozenset(("reload", "disable", "update", "idle", "lru", "shutdown", "uninstall"))
 META_KEYS = ("id", "name", "version", "api", "data_version")
@@ -87,12 +95,21 @@ class EventHub:
     def take(self, limit=10):
         out = []
         while len(out) < limit and self._size:
-            pid = min((p for p, q in self._queues.items() if q), key=lambda p: self._queues[p][0][0])
+            pid = min(
+                (p for p, q in self._queues.items() if q), key=lambda p: self._queues[p][0][0]
+            )
             _, name, payload = self._queues[pid].popleft()
             self._size -= 1
             if not self._queues[pid]:
                 del self._queues[pid]
-            out.append({"plugin": pid, "name": name, "payload": payload, "dropped": self._dropped.pop(pid, 0)})
+            out.append(
+                {
+                    "plugin": pid,
+                    "name": name,
+                    "payload": payload,
+                    "dropped": self._dropped.pop(pid, 0),
+                }
+            )
         return out
 
     def clear(self, pid=None):
@@ -115,7 +132,7 @@ class _W:
         self.pid = pid
         self.dir = self.meta = self.lim = None
         self.state = "stopped"
-        self.proc = self.os_pid = self.exited = self.timer = self.health = self.stopper = None
+        self.proc = self.os_pid = self.exited = self.timer = self.stopper = None
         self.ids = itertools.count(1)
         self.pending, self.waiters = {}, collections.deque()
         self.host_tasks = set()
@@ -126,7 +143,9 @@ class _W:
         self.boot = None
         self.crashes = collections.deque()
         self.crash_total = self.calls = self.used = 0
-        self.last_error = self.last_used = self.limits_applied = self.limits_reason = self.why = None
+        self.last_error = self.last_used = self.limits_applied = self.limits_reason = self.why = (
+            None
+        )
 
 
 def _number(value, key):
@@ -193,7 +212,11 @@ class Supervisor:
         w.meta.setdefault("id", pid)
         backend = meta.get("backend")
         declared = backend.get("memory_mb") if isinstance(backend, dict) else None
-        if isinstance(declared, (int, float)) and not isinstance(declared, bool) and declared > LIMITS["memory_mb"][2]:
+        if (
+            isinstance(declared, (int, float))
+            and not isinstance(declared, bool)
+            and declared > LIMITS["memory_mb"][2]
+        ):
             self.host.log("[%s] memory_mb %s clamped to %d" % (pid, declared, w.lim["memory_mb"]))
 
     def forget(self, pid):
@@ -223,7 +246,9 @@ class Supervisor:
                 "last_error": dict(w.last_error) if w.last_error else None,
                 "last_used": w.last_used,
                 "limits_applied": w.limits_applied,
-                "limits_warning": "memory cap not applied: %s" % (w.limits_reason or "unknown") if w.limits_applied is False else None,
+                "limits_warning": "memory cap not applied: %s" % (w.limits_reason or "unknown")
+                if w.limits_applied is False
+                else None,
             }
         return out
 
@@ -238,7 +263,9 @@ class Supervisor:
         except fy_proto.ProtocolError:
             raise BackendError("bad_arg", "argument is not JSON")
         if size > fy_proto.PAYLOAD_MAX:
-            raise BackendError("too_large", "argument is %d bytes; limit is %d" % (size, fy_proto.PAYLOAD_MAX))
+            raise BackendError(
+                "too_large", "argument is %d bytes; limit is %d" % (size, fy_proto.PAYLOAD_MAX)
+            )
         await self._acquire(w)
         w.calls += 1
         try:
@@ -288,7 +315,9 @@ class Supervisor:
                     error = e.message
                 else:
                     try:
-                        rep = await self._request(w, {"op": "uninstall", "purge": bool(purge)}, UNINSTALL_WAIT)
+                        rep = await self._request(
+                            w, {"op": "uninstall", "purge": bool(purge)}, UNINSTALL_WAIT
+                        )
                         if rep.get("ok"):
                             hook = "ran" if (rep.get("result") or {}).get("ran") else "none"
                         else:
@@ -325,7 +354,9 @@ class Supervisor:
             self._cancel_timer(w)
             self._fail_waiters(w, BackendError("shutdown", "loader is shutting down"))
         self._wake()
-        booting = [w.boot for w in every if w.boot is not None and not w.boot.done() and w.proc is None]
+        booting = [
+            w.boot for w in every if w.boot is not None and not w.boot.done() and w.proc is None
+        ]
         if booting:
             await asyncio.wait(booting, timeout=total)
         live = [w for w in every if w.proc is not None]
@@ -370,17 +401,28 @@ class Supervisor:
         if not xdg:
             if not self._runtime_warned:
                 self._runtime_warned = True
-                self.host.log("XDG_RUNTIME_DIR is not set and /run/user/<uid> is not a private directory; backends will not start")
+                self.host.log(
+                    "XDG_RUNTIME_DIR is not set and /run/user/<uid> is not a private directory; backends will not start"
+                )
             raise BackendError("runtime", "XDG_RUNTIME_DIR is not set")
         runtime = Path(xdg) / "framey" / pid
-        return Dirs(home / ".config" / "framey" / "plugins" / pid, home / ".local" / "share" / "framey" / pid, runtime, home / ".local" / "state" / "framey" / pid)
+        return Dirs(
+            home / ".config" / "framey" / "plugins" / pid,
+            home / ".local" / "share" / "framey" / pid,
+            runtime,
+            home / ".local" / "state" / "framey" / pid,
+        )
 
     def _cap(self):
         try:
             value = self.host.settings()["prefs"]["workers_max"]
         except (KeyError, TypeError, AttributeError):
             return DEFAULT_WORKERS
-        return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_WORKERS else DEFAULT_WORKERS
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_WORKERS
+            else DEFAULT_WORKERS
+        )
 
     def _prune(self, w, now):
         while w.crashes and now - w.crashes[0] > CRASH_WINDOW:
@@ -397,7 +439,9 @@ class Supervisor:
     def _gate(self, w):
         if w.state == "failed":
             e = w.last_error or {}
-            raise BackendError("failed", e.get("message") or "module failed; reload it", stage=e.get("stage"))
+            raise BackendError(
+                "failed", e.get("message") or "module failed; reload it", stage=e.get("stage")
+            )
         now = self.host.mono()
         self._prune(w, now)
         if w.state == "crashed" and w.crashes:
@@ -506,7 +550,11 @@ class Supervisor:
         self._pump(w)
 
     def _running(self):
-        return [x for x in list(self._ws.values()) + list(self._old) if x.proc is not None or x.state in ("starting", "ready", "hung", "stopping")]
+        return [
+            x
+            for x in list(self._ws.values()) + list(self._old)
+            if x.proc is not None or x.state in ("starting", "ready", "hung", "stopping")
+        ]
 
     def _live(self):
         return len(self._running())
@@ -515,7 +563,11 @@ class Supervisor:
         return sum(x.lim["memory_mb"] for x in self._running())
 
     def _victim(self, w):
-        idle = [x for x in self._ws.values() if x is not w and x.state == "ready" and x.inflight == 0 and not x.waiters]
+        idle = [
+            x
+            for x in self._ws.values()
+            if x is not w and x.state == "ready" and x.inflight == 0 and not x.waiters
+        ]
         pool = [x for x in idle if not x.lim["keepalive"]] or idle
         return min(pool, key=lambda x: x.used) if pool else None
 
@@ -530,7 +582,11 @@ class Supervisor:
                 await self._join(self._stopper(victim, "lru"))
                 continue
             if self._memory() + w.lim["memory_mb"] > MEMORY_SUM:
-                raise BackendError("memory", "memory limit reached: running modules use %d MB of %d MB" % (self._memory(), MEMORY_SUM))
+                raise BackendError(
+                    "memory",
+                    "memory limit reached: running modules use %d MB of %d MB"
+                    % (self._memory(), MEMORY_SUM),
+                )
             left = end - loop.time()
             fut = loop.create_future()
             self._freed.append(fut)
@@ -573,10 +629,17 @@ class Supervisor:
         dirs.data.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self._spawn is not None:
             return await _aw(self._spawn(argv, env, str(dirs.data)))
-        options = dict(stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env, cwd=str(dirs.data), close_fds=True, limit=fy_proto.LINE_MAX + 2)
-        if os.name != "nt":
-            options["start_new_session"] = True
-        return await asyncio.create_subprocess_exec(*argv, **options)
+        return await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            cwd=str(dirs.data),
+            close_fds=True,
+            limit=fy_proto.LINE_MAX + 2,
+            start_new_session=os.name != "nt",
+        )
 
     def _init_message(self, w, dirs):
         return {
@@ -584,8 +647,18 @@ class Supervisor:
             "file": str(w.dir / "backend.py"),
             "dirs": {k: str(v) if v is not None else None for k, v in dirs._asdict().items()},
             "meta": dict(w.meta),
-            "runtime": {"framey": self.host.VERSION, "api": self.host.API_GENERATION, "platform": self.host.PLATFORM, "python": "%d.%d.%d" % sys.version_info[:3]},
-            "limits": {"startup_timeout": w.lim["startup_timeout"], "timeout": w.lim["timeout"], "concurrency": w.lim["concurrency"], "memory_mb": w.lim["memory_mb"]},
+            "runtime": {
+                "framey": self.host.VERSION,
+                "api": self.host.API_GENERATION,
+                "platform": self.host.PLATFORM,
+                "python": "%d.%d.%d" % sys.version_info[:3],
+            },
+            "limits": {
+                "startup_timeout": w.lim["startup_timeout"],
+                "timeout": w.lim["timeout"],
+                "concurrency": w.lim["concurrency"],
+                "memory_mb": w.lim["memory_mb"],
+            },
         }
 
     async def _abort(self, w, proc=None):
@@ -655,12 +728,28 @@ class Supervisor:
             except Exception as e:
                 raise BackendError("stage", "could not back up settings: %s" % e, stage="migrate")
             w.snap = True
-            await self._hook(w, dict(base, op="migrate", from_version=rec.get("ver"), to_version=ver, data_from=rec.get("data_v"), data_to=data_v), "migrate")
+            await self._hook(
+                w,
+                dict(
+                    base,
+                    op="migrate",
+                    from_version=rec.get("ver"),
+                    to_version=ver,
+                    data_from=rec.get("data_v"),
+                    data_to=data_v,
+                ),
+                "migrate",
+            )
         result = await self._hook(w, dict(base, op="startup"), "startup")
-        w.limits_applied, w.limits_reason = result.get("limits_applied"), result.get("limits_reason")
+        w.limits_applied, w.limits_reason = (
+            result.get("limits_applied"),
+            result.get("limits_reason"),
+        )
         if due or (ver and not rec.get("ver")):
             try:
-                host.set_module_state(w.pid, dict(rec, ver=ver, data_v=data_v, ok_at=int(host.now()), fails=0))
+                host.set_module_state(
+                    w.pid, dict(rec, ver=ver, data_v=data_v, ok_at=int(host.now()), fails=0)
+                )
             except Exception as e:
                 host.log("[%s] could not save module state: %s" % (w.pid, e))
         if due and getattr(host, "drop_snapshot", None):
@@ -683,10 +772,17 @@ class Supervisor:
         try:
             rep = await self._request(w, msg, limit + HOOK_GRACE)
         except asyncio.TimeoutError:
-            raise BackendError("timeout", "%s hook timed out after %g s" % (stage, limit), stage=stage)
+            raise BackendError(
+                "timeout", "%s hook timed out after %g s" % (stage, limit), stage=stage
+            )
         if not rep.get("ok"):
             e = rep.get("error") if isinstance(rep.get("error"), dict) else {}
-            raise BackendError(str(e.get("code") or "stage"), e.get("message") or "%s failed" % stage, stage=e.get("stage") or stage, trace=e.get("trace"))
+            raise BackendError(
+                str(e.get("code") or "stage"),
+                e.get("message") or "%s failed" % stage,
+                stage=e.get("stage") or stage,
+                trace=e.get("trace"),
+            )
         return rep.get("result") if isinstance(rep.get("result"), dict) else {}
 
     async def _request(self, w, msg, timeout):
@@ -729,11 +825,18 @@ class Supervisor:
             raise
         except asyncio.TimeoutError:
             self._hung(w, proc, msg["id"])
-            raise BackendError("timeout", "backend call timed out after %g s; module not responding" % limit)
+            raise BackendError(
+                "timeout", "backend call timed out after %g s; module not responding" % limit
+            )
         if rep.get("ok"):
             return rep.get("result")
         e = rep.get("error") if isinstance(rep.get("error"), dict) else {}
-        raise BackendError(str(e.get("code") or "exception"), e.get("message") or "backend error", stage=e.get("stage"), trace=e.get("trace"))
+        raise BackendError(
+            str(e.get("code") or "exception"),
+            e.get("message") or "backend error",
+            stage=e.get("stage"),
+            trace=e.get("trace"),
+        )
 
     def _hung(self, w, proc, rid):
         if w.proc is not proc or w.stopping:
@@ -741,7 +844,7 @@ class Supervisor:
         self._send(w, {"op": "cancel", "id": next(w.ids), "target": rid})
         if w.state == "ready":
             w.state = "hung"
-            w.health = self._task(self._health(w, proc))
+            self._task(self._health(w, proc))
 
     async def _health(self, w, proc):
         try:
@@ -751,7 +854,6 @@ class Supervisor:
             alive = False
         if w.proc is not proc or w.stopping:
             return
-        w.health = None
         if alive:
             w.state = "ready"
             self._arm(w)
@@ -829,7 +931,10 @@ class Supervisor:
         try:
             fn = self.host.hostcalls[op]
         except (KeyError, AttributeError, TypeError):
-            return self._host_reply(w, rid, error=fy_proto.error("unavailable", "%s is not available" % op))
+            return self._host_reply(
+                w, rid, error=fy_proto.error("unavailable", "%s is not available" % op)
+            )
+        result = None
         try:
             result = await asyncio.wait_for(_aw(fn(w.pid, arg)), HOST_TIMEOUT)
             if len(fy_proto.dumps(result)) > fy_proto.PAYLOAD_MAX:
@@ -841,7 +946,10 @@ class Supervisor:
         except fy_proto.ProtocolError:
             error = fy_proto.error("bad_result", "host result is not JSON")
         except Exception as e:
-            error = fy_proto.error(str(getattr(e, "code", "error")), getattr(e, "message", None) or str(e) or type(e).__name__)
+            error = fy_proto.error(
+                str(getattr(e, "code", "error")),
+                getattr(e, "message", None) or str(e) or type(e).__name__,
+            )
         else:
             error = None
         if w.proc is proc:
@@ -952,7 +1060,6 @@ class Supervisor:
         for task in list(w.host_tasks):
             task.cancel()
         self._cancel_timer(w)
-        w.health = None
         if crash:
             self._crashed(w, message)
             self._fail_waiters(w, BackendError("exit", message))

@@ -8,6 +8,25 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent / 'fixtures' / 'j'))
 import jharness as H
 
 
+class HeldRegistrationPage(H.PluginPage):
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+        self.held = []
+
+    def reply(self, obj, result=None, failure=False):
+        params = obj['params']
+        stage = ('source' if obj['method'] == 'Runtime.evaluate' else
+                 'bind' if 'this.bind(' in params.get('functionDeclaration', '') else 'run')
+        if stage == self.stage:
+            self.held.append(obj)
+        else:
+            super().reply(obj, result, failure)
+
+    def answer(self, request, failure=False):
+        super().reply(request, {'objectId': 'registration-result'}, failure)
+
+
 class RegistrationOrderingTests(unittest.IsolatedAsyncioTestCase):
     async def setup_page(self):
         loader = H.Loader()
@@ -21,6 +40,73 @@ class RegistrationOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(task.cancel)
         self.assertTrue(await H.settle(lambda: len(page.runs) == 2))
         return loader, page
+
+    async def setup_held_stage(self, stage):
+        loader = H.Loader()
+        self.addAsyncCleanup(loader.close)
+        loader.plugin('a', {'api': 1}, main='window.RAN_a=1')
+        page, task = await H.attach(loader, page=HeldRegistrationPage(stage))
+        self.addCleanup(task.cancel)
+        self.assertTrue(await H.settle(lambda: len(page.held) == 1))
+        request = page.held[0]
+        expected = {'registration-result'}
+        if stage == 'bind':
+            source = next(o for o in page.sent if o['method'] == 'Runtime.evaluate' and
+                          o['params'].get('expression', '').startswith('(function(Framey){'))
+            expected.add('source-' + str(source['id']))
+        elif stage == 'run':
+            expected.add(request['params']['objectId'])
+            expected.add(request['params']['arguments'][0]['objectId'])
+        return loader, page, request, expected
+
+    @staticmethod
+    def released(page, start):
+        return [o['params']['objectId'] for o in page.sent[start:]
+                if o['method'] == 'Runtime.releaseObject']
+
+    async def test_each_failed_registration_stage_releases_its_objects_and_allows_restore(self):
+        for stage in ('source', 'bind', 'run'):
+            with self.subTest(stage=stage):
+                loader, page, request, expected = await self.setup_held_stage(stage)
+                start = len(page.sent)
+                page.answer(request, failure=True)
+                self.assertTrue(await H.settle(lambda: 'Framey.restore()' in page.exprs()))
+                self.assertCountEqual(self.released(page, start), expected)
+                self.assertIn('a', loader.fy.FAILS)
+
+    async def test_retired_registration_replies_release_objects_without_advancing(self):
+        for stage in ('source', 'bind', 'run'):
+            with self.subTest(stage=stage):
+                loader, page, request, expected = await self.setup_held_stage(stage)
+                loader.fy.LIVE['main'].accepting = False
+                start = len(page.sent)
+                page.answer(request)
+                self.assertTrue(await H.settle(lambda: len(self.released(page, start)) == len(expected)))
+                self.assertCountEqual(self.released(page, start), expected)
+                self.assertFalse(any(o['method'] in ('Runtime.evaluate', 'Runtime.callFunctionOn')
+                                     for o in page.sent[start:]))
+
+    async def test_previous_generation_registration_replies_release_only_their_objects(self):
+        for stage in ('source', 'bind', 'run'):
+            with self.subTest(stage=stage):
+                loader, page, request, expected = await self.setup_held_stage(stage)
+                page.stage = None
+                page.bind(id=999, gen='reload', plugin='_core', method='reload')
+                self.assertTrue(await H.settle(lambda: 'Framey.restore()' in page.exprs()))
+                start = len(page.sent)
+                page.answer(request)
+                self.assertTrue(await H.settle(lambda: len(self.released(page, start)) == len(expected)))
+                self.assertCountEqual(self.released(page, start), expected)
+                self.assertFalse(any(o['method'] in ('Runtime.evaluate', 'Runtime.callFunctionOn')
+                                     for o in page.sent[start:]))
+
+    async def test_successful_registration_releases_source_api_and_result_once(self):
+        loader, page, request, expected = await self.setup_held_stage('run')
+        start = len(page.sent)
+        page.answer(request)
+        self.assertTrue(await H.settle(lambda: 'Framey.restore()' in page.exprs()))
+        self.assertCountEqual(self.released(page, start), expected)
+        self.assertNotIn('a', loader.fy.FAILS)
 
     async def test_restore_waits_for_all_plugin_registration_replies(self):
         loader, page = await self.setup_page()

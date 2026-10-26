@@ -20,6 +20,7 @@ try:
 except ImportError:
     sys.path.insert(0, HERE)
     import fy_proto
+
     sys.path.remove(HERE)
 
 PR_SET_PDEATHSIG = 1
@@ -65,7 +66,12 @@ def failure(code, message, stage=None, trace=None):
 
 def describe(exc, stage=None):
     trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-600:]
-    return fy_proto.error("exception", str(exc) or type(exc).__name__, **({"stage": stage} if stage else {}), trace=trace)
+    return fy_proto.error(
+        "exception",
+        str(exc) or type(exc).__name__,
+        **({"stage": stage} if stage else {}),
+        trace=trace,
+    )
 
 
 def takes_arg(func):
@@ -73,7 +79,11 @@ def takes_arg(func):
         params = inspect.signature(func).parameters.values()
     except (TypeError, ValueError):
         return True
-    kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
+    kinds = (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.VAR_POSITIONAL,
+    )
     return any(p.kind in kinds for p in params)
 
 
@@ -134,11 +144,16 @@ def privileges():
         return True, None
     try:
         import ctypes
+
         libc = ctypes.CDLL(None, use_errno=True)
         arg = ctypes.c_ulong
         parent = os.getppid()
         if libc.prctl(PR_SET_PDEATHSIG, arg(int(signal.SIGKILL)), arg(0), arg(0), arg(0)) != 0:
-            print("framey worker: parent-death signal unavailable: %s" % os.strerror(ctypes.get_errno()), file=sys.stderr)
+            print(
+                "framey worker: parent-death signal unavailable: %s"
+                % os.strerror(ctypes.get_errno()),
+                file=sys.stderr,
+            )
         elif os.getppid() != parent:
             leave(0)
         if libc.prctl(PR_SET_NO_NEW_PRIVS, arg(1), arg(0), arg(0), arg(0)) != 0:
@@ -179,7 +194,12 @@ class Rpc:
 
 class Worker:
     def __init__(self, loop, out, sdk_module=None, store_module=None):
-        self.loop, self.out, self.sdk_module, self.store_module = loop, out, sdk_module, store_module
+        self.loop, self.out, self.sdk_module, self.store_module = (
+            loop,
+            out,
+            sdk_module,
+            store_module,
+        )
         self.lock = threading.Lock()
         self.window, self.count, self.dropped = 0.0, 0, 0
         self.tasks, self.calls, self.waiting = set(), {}, {}
@@ -219,7 +239,9 @@ class Worker:
         try:
             self.write(msg)
         except fy_proto.ProtocolError:
-            self.write({"re": rid, "ok": False, "error": fy_proto.error("too_large", "reply too large")})
+            self.write(
+                {"re": rid, "ok": False, "error": fy_proto.error("too_large", "reply too large")}
+            )
 
     def term(self):
         if self.closing:
@@ -279,7 +301,11 @@ class Worker:
             fut.set_result(m.get("result"))
         else:
             e = m.get("error") if isinstance(m.get("error"), dict) else {}
-            fut.set_exception(RpcError(str(e.get("code") or "error"), str(e.get("message") or "host call failed")[:300]))
+            fut.set_exception(
+                RpcError(
+                    str(e.get("code") or "error"), str(e.get("message") or "host call failed")[:300]
+                )
+            )
 
     def on_line(self, line):
         try:
@@ -306,27 +332,41 @@ class Worker:
             return self.reply(rid, err=fy_proto.error("not_ready", "backend is stopping"))
         if op == "call":
             if rid in self.calls or len(self.calls) >= CALLS_MAX:
-                return self.reply(rid, err=fy_proto.error("busy", "too many calls running" if rid not in self.calls else "call id already running"))
+                return self.reply(
+                    rid,
+                    err=fy_proto.error(
+                        "busy",
+                        "too many calls running"
+                        if rid not in self.calls
+                        else "call id already running",
+                    ),
+                )
         elif op == "unload":
             self.closing = True
             self.ready = False
         elif self.lifecycle is not None or self.hook_tasks:
-            return self.reply(rid, err=fy_proto.error("busy", "backend lifecycle operation is running", stage=op))
+            return self.reply(
+                rid, err=fy_proto.error("busy", "backend lifecycle operation is running", stage=op)
+            )
         task = self.loop.create_task(self.run(rid, getattr(self, "op_" + op), m))
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
         if op == "call":
             self.calls[rid] = task
+
             def call_done(done, r=rid):
                 if self.calls.get(r) is done:
                     self.calls.pop(r, None)
                 self.cancelled.discard(done)
+
             task.add_done_callback(call_done)
         elif op != "unload":
             self.lifecycle = task
+
             def lifecycle_done(done):
                 if self.lifecycle is done:
                     self.lifecycle = None
+
             task.add_done_callback(lifecycle_done)
 
     async def run(self, rid, operation, message):
@@ -348,19 +388,31 @@ class Worker:
             return
         try:
             plugin, file, d = m["plugin"], m["file"], m["dirs"]
-            if not isinstance(plugin, str) or not PLUGIN_ID.match(plugin) or not isinstance(file, str):
+            if (
+                not isinstance(plugin, str)
+                or not PLUGIN_ID.match(plugin)
+                or not isinstance(file, str)
+            ):
                 raise ValueError("bad startup message")
             limits = m.get("limits") if isinstance(m.get("limits"), dict) else {}
             self.startup_timeout = clamp(limits.get("startup_timeout"), 10.0, 1.0, 60.0)
-            paths = {k: None if k == "runtime" and d[k] is None else pathlib.Path(d[k]) for k in DIR_KEYS}
+            paths = {
+                k: None if k == "runtime" and d[k] is None else pathlib.Path(d[k]) for k in DIR_KEYS
+            }
             if not self.limits_configured:
-                self.limits_applied, self.limits_reason = limit_data(clamp(limits.get("memory_mb"), 32, 16, 64))
+                self.limits_applied, self.limits_reason = limit_data(
+                    clamp(limits.get("memory_mb"), 32, 16, 64)
+                )
                 self.limits_configured = True
             store = self.store_module
-            self.dirs = store.Dirs(**paths) if store is not None and hasattr(store, "Dirs") else Box(paths)
+            self.dirs = (
+                store.Dirs(**paths) if store is not None and hasattr(store, "Dirs") else Box(paths)
+            )
             meta = Box(m.get("meta") if isinstance(m.get("meta"), dict) else {})
             self.runtime = Box(m.get("runtime") if isinstance(m.get("runtime"), dict) else {})
-            self.runtime.update(plugin=plugin, version=meta.get("version"), plugin_dir=pathlib.Path(file).parent)
+            self.runtime.update(
+                plugin=plugin, version=meta.get("version"), plugin_dir=pathlib.Path(file).parent
+            )
             self.plugin, self.key = plugin, "fy_" + plugin
             if self.sdk_module is not None:
                 self.sdk = self.sdk_module.build(plugin, meta, self.dirs, self.runtime, Rpc(self))
@@ -389,7 +441,12 @@ class Worker:
             dirs=getattr(sdk, "dirs", self.dirs),
             settings=getattr(sdk, "settings", None),
             log=getattr(sdk, "log", None),
-            from_version=None, to_version=None, data_from=None, data_to=None, purge=False, reason=None,
+            from_version=None,
+            to_version=None,
+            data_from=None,
+            data_to=None,
+            purge=False,
+            reason=None,
         )
         values.update(extra)
         return types.SimpleNamespace(**values)
@@ -398,19 +455,23 @@ class Worker:
         func = getattr(self.mod, name, None)
         if not callable(func):
             return False
+
         async def checked():
             try:
                 return await invoke(func, arg)
             except (Exception, SystemExit) as e:
                 raise Fail(describe(e, stage))
+
         task = self.loop.create_task(checked())
         self.tasks.add(task)
         self.hook_tasks.add(task)
+
         def hook_done(done):
             self.tasks.discard(done)
             self.hook_tasks.discard(done)
             if not done.cancelled():
                 done.exception()
+
         task.add_done_callback(hook_done)
         try:
             done, _ = await asyncio.wait((task,), timeout=limit)
@@ -430,13 +491,23 @@ class Worker:
         await self.hook("startup", self.context(), self.startup_timeout, "startup")
         self.ready = True
         hooks = [n for n in HOOKS if callable(getattr(self.mod, n, None))]
-        return {"hooks": hooks, "migrated": self.migrated, "limits_applied": self.limits_applied, "limits_reason": self.limits_reason}
+        return {
+            "hooks": hooks,
+            "migrated": self.migrated,
+            "limits_applied": self.limits_applied,
+            "limits_reason": self.limits_reason,
+        }
 
     async def op_migrate(self, rid, m):
         if self.ready:
             raise failure("stage", "backend already started", "migrate")
         self.init(m)
-        ctx = self.context(from_version=m.get("from_version"), to_version=m.get("to_version"), data_from=m.get("data_from"), data_to=m.get("data_to"))
+        ctx = self.context(
+            from_version=m.get("from_version"),
+            to_version=m.get("to_version"),
+            data_from=m.get("data_from"),
+            data_to=m.get("data_to"),
+        )
         ran = await self.hook("migrate", ctx, self.startup_timeout, "migrate")
         self.migrated = self.migrated or ran
         return {"migrated": ran}
@@ -444,7 +515,9 @@ class Worker:
     async def op_uninstall(self, rid, m):
         if not self.inited:
             raise failure("not_ready", "backend is not started")
-        ran = await self.hook("uninstall", self.context(purge=bool(m.get("purge"))), 10.0, "uninstall")
+        ran = await self.hook(
+            "uninstall", self.context(purge=bool(m.get("purge"))), 10.0, "uninstall"
+        )
         return {"ran": ran}
 
     async def op_call(self, rid, m):
@@ -466,9 +539,13 @@ class Worker:
         try:
             size = len(fy_proto.dumps(result))
         except fy_proto.ProtocolError:
-            raise failure("bad_result", "result of type %s is not JSON serialisable" % type(result).__name__)
+            raise failure(
+                "bad_result", "result of type %s is not JSON serialisable" % type(result).__name__
+            )
         if size > fy_proto.PAYLOAD_MAX:
-            raise failure("too_large", "result is %d bytes; limit is %d" % (size, fy_proto.PAYLOAD_MAX))
+            raise failure(
+                "too_large", "result is %d bytes; limit is %d" % (size, fy_proto.PAYLOAD_MAX)
+            )
         return result
 
     async def op_unload(self, rid, m):
@@ -538,6 +615,7 @@ def main():
     os.dup2(2, 1)
     if os.name == "nt":
         import msvcrt
+
         for fd in (rfd, wfd):
             msvcrt.setmode(fd, os.O_BINARY)
     for stream in (sys.stdout, sys.stderr):

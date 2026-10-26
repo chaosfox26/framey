@@ -1,4 +1,3 @@
-"""Context ownership and delayed CDP response regressions, without a browser."""
 import asyncio
 import pathlib
 import sys
@@ -96,7 +95,7 @@ class OwnershipTests(unittest.IsolatedAsyncioTestCase):
             iso, _ = self.iso(rpc)
             with self.assertRaises(ValueError):
                 await iso.make()
-            if value != "20":  # Frame identifiers are opaque strings.
+            if value != "20":
                 with self.assertRaises(ValueError):
                     await iso.locate()
 

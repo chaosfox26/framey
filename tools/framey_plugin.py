@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Offline validation and reproducible packaging for Framey plugins."""
-
 import argparse
 import hashlib
 import importlib.util
@@ -12,13 +10,15 @@ import stat
 import sys
 import zipfile
 
+DESCRIPTION = "Offline validation and reproducible packaging for Framey plugins."
+
 
 def _load_rules():
-    # Load only the sibling repository module, never a plugin or the current directory.
+
     path = Path(__file__).resolve().parents[1] / "fy_pkg.py"
     spec = importlib.util.spec_from_file_location("_framey_plugin_rules", path)
     module = importlib.util.module_from_spec(spec)
-    # Compile the known file directly so validation does not create a bytecode cache.
+
     exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
     return module
 
@@ -29,9 +29,31 @@ STAMP = (1980, 1, 1, 0, 0, 0)
 PACKAGE_MAX = min(pk.ARCHIVE_MAX, 5_000_000)
 ROOT_FILES = {"plugin.json", "main.js", "backend.py", "README", "README.md", "README.txt"}
 ASSET_DIRS = {"assets", "locales", "lib", "vendor", "licenses", "docs"}
-SUFFIXES = {".js", ".mjs", ".cjs", ".py", ".json", ".css", ".html", ".htm", ".svg",
-            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf",
-            ".otf", ".txt", ".md", ".wasm", ".csv"}
+SUFFIXES = {
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".py",
+    ".json",
+    ".css",
+    ".html",
+    ".htm",
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".txt",
+    ".md",
+    ".wasm",
+    ".csv",
+}
 CACHE_DIRS = {"__pycache__", "node_modules", "cache", "caches"}
 
 
@@ -43,8 +65,10 @@ class ToolError(Exception):
 
 def _legal(name):
     upper = name.upper()
-    return any(upper == word or upper.startswith(word + "-") or upper.startswith(word + ".")
-               for word in ("LICENSE", "LICENCE", "COPYING", "NOTICE", "AUTHORS"))
+    return any(
+        upper == word or upper.startswith(word + "-") or upper.startswith(word + ".")
+        for word in ("LICENSE", "LICENCE", "COPYING", "NOTICE", "AUTHORS")
+    )
 
 
 def _allowed(parts, is_dir):
@@ -54,7 +78,9 @@ def _allowed(parts, is_dir):
         return parts[0] in ASSET_DIRS
     if len(parts) == 1:
         return parts[0] in ROOT_FILES or _legal(parts[0])
-    return parts[0] in ASSET_DIRS and (_legal(parts[-1]) or Path(parts[-1]).suffix.lower() in SUFFIXES)
+    return parts[0] in ASSET_DIRS and (
+        _legal(parts[-1]) or Path(parts[-1]).suffix.lower() in SUFFIXES
+    )
 
 
 def _read(path):
@@ -67,13 +93,19 @@ def _read(path):
     fd = os.open(path, flags)
     with os.fdopen(fd, "rb") as stream:
         opened = os.fstat(stream.fileno())
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino) or not stat.S_ISREG(opened.st_mode):
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino) or not stat.S_ISREG(
+            opened.st_mode
+        ):
             raise ToolError("source changed while reading", "source_changed")
         data = stream.read(pk.ENTRY_MAX + 1)
         after = os.fstat(stream.fileno())
     if len(data) > pk.ENTRY_MAX:
         raise ToolError("included file exceeds the per-file size limit", "too_large")
-    if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
+    if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
+        opened.st_size,
+        opened.st_mtime_ns,
+        opened.st_ctime_ns,
+    ):
         raise ToolError("source changed while reading", "source_changed")
     return data
 
@@ -105,7 +137,7 @@ def _collect(source):
             parts = prefix + (path.name,)
             mode = path.lstat().st_mode
             is_dir = stat.S_ISDIR(mode)
-            # A directory symlink in an allowed tree is refused, not followed.
+
             allowed = _allowed(parts, is_dir) or (stat.S_ISLNK(mode) and _allowed(parts, True))
             if not allowed:
                 omitted.append("/".join(parts) + ("/" if is_dir else ""))
@@ -145,7 +177,6 @@ def _decky_layout(source, manifest, files):
         except FileNotFoundError:
             return False
 
-    # Inspect names and file types only; excluded Decky code remains unread.
     return [name for name in ("dist/index.js", "main.py") if regular(name)]
 
 
@@ -158,13 +189,18 @@ def inspect_plugin(source, *, framey_version=None, platform=None, api=pk.API_GEN
     try:
         manifest = _json(files["plugin.json"])
     except (UnicodeError, ValueError, RecursionError):
-        raise ToolError("plugin.json must be UTF-8 JSON with unique fields and finite numbers") from None
+        raise ToolError(
+            "plugin.json must be UTF-8 JSON with unique fields and finite numbers"
+        ) from None
     decky = _decky_layout(source, manifest, files)
     if decky:
-        raise ToolError("Decky format is unsupported: plugin.json declares api_version and " +
-                        " and ".join(decky) + " exist, but Framey main.js/backend.py entry points are missing. " +
-                        "Port the source to Framey's entry points and API before packaging; this tool does not convert Decky plugins.",
-                        "unsupported_format")
+        raise ToolError(
+            "Decky format is unsupported: plugin.json declares api_version and "
+            + " and ".join(decky)
+            + " exist, but Framey main.js/backend.py entry points are missing. "
+            + "Port the source to Framey's entry points and API before packaging; this tool does not convert Decky plugins.",
+            "unsupported_format",
+        )
     normalized = pk.normalize_manifest(manifest)
     if not normalized["ok"]:
         raise ToolError("; ".join(normalized["errors"]))
@@ -200,11 +236,18 @@ def inspect_plugin(source, *, framey_version=None, platform=None, api=pk.API_GEN
         warnings.append("API generation is not declared")
     if not manifest.get("platform"):
         warnings.append("platform compatibility is not declared")
-    report = {"id": normalized["value"]["id"], "name": normalized["value"]["name"],
-              "version": normalized["value"]["version"], "framey": normalized["value"]["framey"],
-              "api": normalized["value"]["api"], "platform": normalized["value"]["platform"],
-              "files": sorted(files), "omitted": sorted(omitted), "warnings": warnings,
-              "compatibility": compatibility}
+    report = {
+        "id": normalized["value"]["id"],
+        "name": normalized["value"]["name"],
+        "version": normalized["value"]["version"],
+        "framey": normalized["value"]["framey"],
+        "api": normalized["value"]["api"],
+        "platform": normalized["value"]["platform"],
+        "files": sorted(files),
+        "omitted": sorted(omitted),
+        "warnings": warnings,
+        "compatibility": compatibility,
+    }
     return source, files, report
 
 
@@ -213,17 +256,27 @@ def validate(source, **target):
 
 
 def _archive(files, report):
-    metadata = {"format": "framey-plugin-package", "format_version": 1,
-                "id": report["id"], "name": report["name"], "version": report["version"],
-                "framey": report["framey"], "api": report["api"],
-                "platform": report["platform"],
-                "files": [{"path": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                          for name, data in sorted(files.items())]}
+    metadata = {
+        "format": "framey-plugin-package",
+        "format_version": 1,
+        "id": report["id"],
+        "name": report["name"],
+        "version": report["version"],
+        "framey": report["framey"],
+        "api": report["api"],
+        "platform": report["platform"],
+        "files": [
+            {"path": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            for name, data in sorted(files.items())
+        ],
+    }
     files = dict(files)
-    files[METADATA] = (json.dumps(metadata, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    files[METADATA] = (
+        json.dumps(metadata, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
     budget = pk._Budget()
     payload = io.BytesIO()
-    # Stored entries avoid dependence on a particular zlib version.
+
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as archive:
         for name, data in sorted(files.items()):
             budget.add(len(data))
@@ -247,7 +300,7 @@ def pack(source, output, **target):
     if output.suffix.lower() != ".zip":
         raise ToolError("output must have a .zip suffix", "bad_output")
     data = _archive(files, report)
-    # Exclusive creation refuses existing files, links, and directories, even dangling links.
+
     created = False
     try:
         with open(destination, "xb") as stream:
@@ -259,35 +312,59 @@ def pack(source, output, **target):
         if created:
             destination.unlink(missing_ok=True)
         raise
-    report.update({"archive_size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
-                   "package_files": sorted([*files, METADATA])})
+    report.update(
+        {
+            "archive_size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "package_files": sorted([*files, METADATA]),
+        }
+    )
     return report
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("validate", "pack"):
-        command = commands.add_parser(name, help="validate a source tree" if name == "validate" else "write a deterministic ZIP")
+        command = commands.add_parser(
+            name,
+            help="validate a source tree" if name == "validate" else "write a deterministic ZIP",
+        )
         command.add_argument("source", help="plugin source directory")
         if name == "pack":
-            command.add_argument("--output", required=True, help="new .zip path outside the source; never overwritten")
+            command.add_argument(
+                "--output",
+                required=True,
+                help="new .zip path outside the source; never overwritten",
+            )
         command.add_argument("--framey-version", help="target Framey version (requires --platform)")
         command.add_argument("--platform", help="target platform, for example linux-aarch64")
-        command.add_argument("--api", type=int, default=pk.API_GENERATION, help="target API generation (default: %(default)s)")
+        command.add_argument(
+            "--api",
+            type=int,
+            default=pk.API_GENERATION,
+            help="target API generation (default: %(default)s)",
+        )
     args = parser.parse_args(argv)
     if not 1 <= args.api <= 1000:
         parser.error("--api must be from 1 to 1000")
     try:
         target = {"framey_version": args.framey_version, "platform": args.platform, "api": args.api}
-        result = pack(args.source, args.output, **target) if args.command == "pack" else validate(args.source, **target)
+        result = (
+            pack(args.source, args.output, **target)
+            if args.command == "pack"
+            else validate(args.source, **target)
+        )
     except (ToolError, pk.PkgError) as error:
         print("framey-plugin: " + error.code + ": " + str(error), file=sys.stderr)
         return 1
     except OSError as error:
-        print("framey-plugin: io_error: " + (error.strerror or "file operation failed"), file=sys.stderr)
+        print(
+            "framey-plugin: io_error: " + (error.strerror or "file operation failed"),
+            file=sys.stderr,
+        )
         return 3
-    except (ValueError, OverflowError, RuntimeError) as error:
+    except (ValueError, OverflowError, RuntimeError):
         print("framey-plugin: invalid_plugin: source could not be processed", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=True, sort_keys=True, indent=2))

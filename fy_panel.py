@@ -1,10 +1,3 @@
-"""Own panel presentation without changing Steam target identities.
-
-``request`` prepares a mode change; the loader calls ``apply_pending`` only after
-replying to its originating RPC. Native calls have one retained thread slot,
-including after a timeout. A late call must drain before cleanup or retry.
-"""
-
 import asyncio
 import copy
 import inspect
@@ -23,7 +16,9 @@ CLOSE_TIMEOUT = 1.0
 VISIBILITY_ATTEMPTS = 5
 VISIBILITY_INTERVAL = 0.05
 ERROR = "Framey's separate panel is unavailable. Use the Steam panel or retry."
-INPUT_NOTICE = "Controller pointers may interrupt game controls while the floating panel is visible."
+INPUT_NOTICE = (
+    "Controller pointers may interrupt game controls while the floating panel is visible."
+)
 
 
 class _Failure(Exception):
@@ -39,22 +34,21 @@ async def _await(value):
 
 
 class Controller:
-    """Host callbacks: capture state, await surface readiness, visibility, notify.
-
-    Factories receive ``enabled=True`` and ``host`` respectively. Tests can
-    inject an async ``native_runner(function, *args)`` instead of worker threads.
-    Public ``mode`` is committed presentation; ``status`` separates pending mode
-    and logical open state from actual compositor visibility (``active``).
-    """
-
     def __init__(self, host, native_factory=None, browser_factory=None, native_runner=None):
         self.host = host
         self._native_factory = native_factory or fy_overlay.NativeOverlay
         self._browser_factory = browser_factory or fy_overlay_browser.OverlayBrowser
         self._runner = native_runner or asyncio.to_thread
-        self.supported = True if native_factory is not None else fy_overlay.NativeOverlay.supported()
+        self.supported = (
+            True if native_factory is not None else fy_overlay.NativeOverlay.supported()
+        )
         self._open = getattr(host, "PANEL", False) is True
-        self.mode, self.available, self.visible, self.error = "embedded", self.supported, self._open, None
+        self.mode, self.available, self.visible, self.error = (
+            "embedded",
+            self.supported,
+            self._open,
+            None,
+        )
         self._native = self._browser = None
         self._native_task = self._cleanup = self._monitor = None
         self._browser_closing = None
@@ -71,11 +65,18 @@ class Controller:
 
     def status(self):
         pending = not self._closed and (self._pending is not None or self._busy or self._applying)
-        result = {"mode": self.mode, "available": bool(self.available), "active": bool(self.visible),
-                "visible": bool(self.visible), "open": self._open,
-                "pending": pending,
-                "requested_mode": (self._pending["mode"] if self._pending else self._requested) if pending else None,
-                "supported": bool(self.supported)}
+        result = {
+            "mode": self.mode,
+            "available": bool(self.available),
+            "active": bool(self.visible),
+            "visible": bool(self.visible),
+            "open": self._open,
+            "pending": pending,
+            "requested_mode": (self._pending["mode"] if self._pending else self._requested)
+            if pending
+            else None,
+            "supported": bool(self.supported),
+        }
         if self.error:
             result["error"] = self.error
         if self.mode == "floating":
@@ -83,7 +84,7 @@ class Controller:
         return result
 
     def refresh_offer(self):
-        """An explicit status retry reoffers support without invoking native code."""
+
         if not self._closed and self.mode == "embedded":
             self.available = bool(self.supported)
         return self.status()
@@ -106,7 +107,9 @@ class Controller:
             native = self._native
             if native is None:
                 raise _Failure()
-            task = self._native_task = asyncio.create_task(self._runner(getattr(native, name), *args))
+            task = self._native_task = asyncio.create_task(
+                self._runner(getattr(native, name), *args)
+            )
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
             if drain:
                 result = await asyncio.shield(task)
@@ -115,22 +118,26 @@ class Controller:
                 if not done:
                     raise _Failure()
                 result = task.result()
-            if isinstance(result, dict) and (result.get("ok") is False or result.get("available") is False):
+            if isinstance(result, dict) and (
+                result.get("ok") is False or result.get("available") is False
+            ):
                 raise _Failure()
-            if name in ("dashboard_visible", "own_visible"):
-                if type(result) is not bool or getattr(native, "last_error", None):
-                    raise _Failure()
+            if name in ("dashboard_visible", "own_visible") and (
+                type(result) is not bool or getattr(native, "last_error", None)
+            ):
+                raise _Failure()
             return result
 
     def _retire(self):
         if self._cleanup is None or self._cleanup.done():
             self._cleanup = asyncio.create_task(self._cleanup_native())
-            self._cleanup.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            self._cleanup.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
         return self._cleanup
 
     async def _cleanup_native(self):
-        # A timeout is not permission to overlap a new native thread. This task
-        # can remain blocked on the original call while close returns bounded.
+
         task = self._native_task
         if task is not None and not task.done():
             try:
@@ -158,19 +165,31 @@ class Controller:
         browser, self._browser = self._browser, None
         if browser is not None:
             self._browser_closing = asyncio.create_task(browser.close())
-            self._browser_closing.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            self._browser_closing.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
         if self._browser_closing is not None:
             await asyncio.wait((self._browser_closing,), timeout=CLOSE_TIMEOUT)
 
     async def request(self, arg=None):
         mode = arg.get("mode") if isinstance(arg, dict) else arg
         if mode not in MODES:
-            return dict(self.status(), error="Choose embedded, dashboard, or floating panel mode.", code="bad_mode")
+            return dict(
+                self.status(),
+                error="Choose embedded, dashboard, or floating panel mode.",
+                code="bad_mode",
+            )
         if self._closed:
             return dict(self.status(), error="Framey's panel is shutting down.", code="closed")
-        if (self._busy or self._applying or self._pending
-                or self._cleanup is not None and not self._cleanup.done()
-                or self._browser_closing is not None and not self._browser_closing.done()):
+        if (
+            self._busy
+            or self._applying
+            or self._pending
+            or self._cleanup is not None
+            and not self._cleanup.done()
+            or self._browser_closing is not None
+            and not self._browser_closing.done()
+        ):
             return dict(self.status(), error="A panel change is already pending.", code="busy")
         if mode == self.mode:
             return self.status()
@@ -236,18 +255,22 @@ class Controller:
     async def _sync_pass(self):
         revision, mode, opened = self._revision, self.mode, self._open
         self._last_poll = asyncio.get_running_loop().time()
+
         def check():
             if self._closed or revision != self._revision:
                 raise _Superseded()
+
         async def native(name, *args):
             check()
             result = await self._native_call(name, *args)
             check()
             return result
+
         async def browser(name):
             check()
             await self._browser_call(name)
             check()
+
         try:
             dashboard = await native("dashboard_visible") if opened else False
             wanted = opened and (mode == "floating" or dashboard)
@@ -298,7 +321,9 @@ class Controller:
         self._revision += 1
         try:
             if not self._closed:
-                await asyncio.wait_for(self._call("switch_panel_surface", "main", state), SWITCH_TIMEOUT)
+                await asyncio.wait_for(
+                    self._call("switch_panel_surface", "main", state), SWITCH_TIMEOUT
+                )
                 if not self._closed:
                     await self._publish_visibility(self._open)
         except Exception:
@@ -330,7 +355,12 @@ class Controller:
         mode = pending["mode"]
         try:
             if (self.mode == "embedded") != (mode == "embedded"):
-                await asyncio.wait_for(self._call("switch_panel_surface", "main" if mode == "embedded" else "panel", state), SWITCH_TIMEOUT)
+                await asyncio.wait_for(
+                    self._call(
+                        "switch_panel_surface", "main" if mode == "embedded" else "panel", state
+                    ),
+                    SWITCH_TIMEOUT,
+                )
             if self._closed:
                 raise _Failure()
             if self.mode == "embedded" and mode != "embedded":
@@ -362,9 +392,15 @@ class Controller:
         return self.status()
 
     def _ensure_monitor(self):
-        if not self._closed and self.mode != "embedded" and (self._monitor is None or self._monitor.done()):
+        if (
+            not self._closed
+            and self.mode != "embedded"
+            and (self._monitor is None or self._monitor.done())
+        ):
             self._monitor = asyncio.create_task(self._watch())
-            self._monitor.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            self._monitor.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
         self._wake.set()
 
     async def _watch(self):

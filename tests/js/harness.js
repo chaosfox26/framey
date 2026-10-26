@@ -1,6 +1,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const TOK = "core-token-for-tests";
@@ -103,4 +104,31 @@ const makeDom = (options = {}) => {
 
 const registerAs = (FY, o) => winOf.get(FY).__bindFramey(o.id, "tok-" + o.id + "-0000", { name: o.name, short: o.short }).register(o);
 
-module.exports = { makeDom, ROOT, TOK, nativeLike, registerAs };
+const readLoaderConstants = names => {
+  const program = `
+import ast, json, sys
+from pathlib import Path
+tree = ast.parse(Path(sys.argv[1]).read_text())
+assignments = {
+    target.id: statement.value
+    for statement in tree.body if isinstance(statement, ast.Assign)
+    for target in statement.targets if isinstance(target, ast.Name)
+}
+def value(node):
+    if isinstance(node, ast.Name):
+        return value(assignments[node.id])
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return value(node.left) + value(node.right)
+    return ast.literal_eval(node)
+print(json.dumps({name: value(assignments[name]) for name in sys.argv[2:]}))
+`;
+  const result = spawnSync(process.env.FRAMEY_PYTHON || "python3", ["-I", "-c", program, path.join(ROOT, "framey.py"), ...names], {
+    encoding: "utf8",
+    timeout: 10000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) throw result.error || new Error(result.stderr || "Could not read loader constants");
+  return JSON.parse(result.stdout);
+};
+
+module.exports = { makeDom, ROOT, TOK, nativeLike, registerAs, readLoaderConstants };

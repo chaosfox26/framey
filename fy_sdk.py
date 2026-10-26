@@ -18,7 +18,7 @@ API_GENERATION = 1
 
 
 class FrameyApiError(Exception):
-    def __init__(self, code, message=""):
+    def __init__(self, code: object, message: object = ""):
         message = str(message)[:300]
         super().__init__(message)
         self.code = str(code)
@@ -26,30 +26,34 @@ class FrameyApiError(Exception):
 
 
 class _LazyDirs:
-    __slots__ = ("_d",)
+    __slots__ = ("_paths",)
 
-    def __init__(self, d):
-        self._d = d
+    def __init__(self, paths):
+        self._paths = paths
 
-    config = property(lambda s: fy_store.ensure(s._d.config))
-    data = property(lambda s: fy_store.ensure(s._d.data))
-    runtime = property(lambda s: fy_store.ensure(s._d.runtime))
-    logs = property(lambda s: fy_store.ensure(s._d.logs))
+    config = property(lambda self: fy_store.ensure(self._paths.config))
+    data = property(lambda self: fy_store.ensure(self._paths.data))
+    runtime = property(lambda self: fy_store.ensure(self._paths.runtime))
+    logs = property(lambda self: fy_store.ensure(self._paths.logs))
 
 
 def build(pid, meta, dirs, runtime, rpc, max_events=50):
     meta = meta if isinstance(meta, dict) else {}
-    rt = runtime if isinstance(runtime, dict) else {}
-    raw_paths = (dirs[k] if isinstance(dirs, dict) else getattr(dirs, k) for k in fy_store.Dirs._fields)
+    runtime_metadata = runtime if isinstance(runtime, dict) else {}
+    raw_paths = (
+        dirs[k] if isinstance(dirs, dict) else getattr(dirs, k) for k in fy_store.Dirs._fields
+    )
     paths = fy_store.Dirs(*(Path(p) if p is not None else None for p in raw_paths))
-    plugin_dir = rt.get("plugin_dir") or meta.get("plugin_dir")
-    api = rt["api"] if type(rt.get("api")) is int else API_GENERATION
+    plugin_dir = runtime_metadata.get("plugin_dir") or meta.get("plugin_dir")
+    api_generation = (
+        runtime_metadata["api"] if type(runtime_metadata.get("api")) is int else API_GENERATION
+    )
 
-    info = types.SimpleNamespace(
-        framey=str(rt.get("framey", "")),
-        api=api,
-        platform=str(rt.get("platform", "")),
-        python=str(rt.get("python") or "%d.%d.%d" % sys.version_info[:3]),
+    runtime_info = types.SimpleNamespace(
+        framey=str(runtime_metadata.get("framey", "")),
+        api=api_generation,
+        platform=str(runtime_metadata.get("platform", "")),
+        python=str(runtime_metadata.get("python") or "%d.%d.%d" % sys.version_info[:3]),
         plugin=pid,
         version=str(meta.get("version") or ""),
         plugin_dir=Path(plugin_dir) if plugin_dir else None,
@@ -57,7 +61,7 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
     settings = fy_store.Settings(paths.config / "settings.json")
     log = fy_store.Log(pid, paths.logs, sys.stderr)
 
-    window = [0.0, 0]
+    event_window = [0.0, 0]
     window_lock = threading.Lock()
 
     def event_dropped():
@@ -80,11 +84,11 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
             return event_dropped()
         now = time.monotonic()
         with window_lock:
-            if not 0 <= now - window[0] < 1.0:
-                window[0], window[1] = now, 0
-            accepted = window[1] < max_events
+            if not 0 <= now - event_window[0] < 1.0:
+                event_window[0], event_window[1] = now, 0
+            accepted = event_window[1] < max_events
             if accepted:
-                window[1] += 1
+                event_window[1] += 1
         if not accepted:
             return event_dropped()
         return bool(rpc.emit(name, payload))
@@ -95,7 +99,9 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
         except FrameyApiError:
             raise
         except Exception as e:
-            raise FrameyApiError(getattr(e, "code", None) or "host_error", getattr(e, "message", None) or e) from None
+            raise FrameyApiError(
+                getattr(e, "code", None) or "host_error", getattr(e, "message", None) or e
+            ) from None
         if isinstance(r, dict) and r.get("error"):
             e = r["error"]
             if isinstance(e, dict):
@@ -103,7 +109,9 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
             raise FrameyApiError(r.get("code") or "host_error", e)
         return r
 
-    async def fetch(url, *, method="GET", headers=None, body=None, timeout=15, max_bytes=524288, dest=None):
+    async def fetch(
+        url, *, method="GET", headers=None, body=None, timeout=15, max_bytes=524288, dest=None
+    ):
         if not isinstance(url, str):
             raise FrameyApiError("bad_argument", "url must be a string")
         for name, value, kind in (
@@ -125,7 +133,7 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
             raise FrameyApiError("bad_result", "unexpected fetch reply")
         return r
 
-    tokens = {}
+    resource_tokens = {}
 
     async def resource_url(root, path, ttl=600):
         r = await host("resource", {"root": root, "path": path, "ttl": ttl})
@@ -133,19 +141,21 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
         if not isinstance(url, str):
             raise FrameyApiError("bad_result", "unexpected resource reply")
         if isinstance(r.get("token"), str):
-            tokens[url] = r["token"]
-            while len(tokens) > TOKENS_MAX:
-                del tokens[next(iter(tokens))]
+            resource_tokens[url] = r["token"]
+            while len(resource_tokens) > TOKENS_MAX:
+                del resource_tokens[next(iter(resource_tokens))]
         return url
 
     async def resource_revoke(url):
-        token = tokens.get(url)
+        token = resource_tokens.get(url)
         if token is None:
             return False
         r = await host("resource", {"revoke": token})
-        revoked = r.get("revoked", r.get("ok", True)) is not False if isinstance(r, dict) else bool(r)
-        if revoked and tokens.get(url) == token:
-            tokens.pop(url, None)
+        revoked = (
+            r.get("revoked", r.get("ok", True)) is not False if isinstance(r, dict) else bool(r)
+        )
+        if revoked and resource_tokens.get(url) == token:
+            resource_tokens.pop(url, None)
         return revoked
 
     async def list_dir(root, path="", *, hidden=None, dirs_only=None, exts=None):
@@ -197,24 +207,26 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
         exe = best[1] / name
         return exe if exe.is_file() and not exe.is_symlink() else best[1]
 
-    mod = types.ModuleType("framey_api")
-    mod.PLUGIN = pid
-    mod.API = api
-    mod.runtime = info
-    mod.dirs = _LazyDirs(paths)
-    mod.settings = settings
-    mod.log = log
-    mod.events = types.SimpleNamespace(emit=emit)
-    mod.fetch = fetch
-    mod.resource_url = resource_url
-    mod.resource_revoke = resource_revoke
-    mod.list_dir = list_dir
-    mod.migrate = types.SimpleNamespace(
-        move=fy_store.migrate_move,
-        keys=keys,
-        copy_once=copy_once,
-        snapshot=lambda: fy_store.snapshot_settings(paths.config),
+    api_module = types.ModuleType("framey_api")
+    api_module.__dict__.update(
+        PLUGIN=pid,
+        API=api_generation,
+        runtime=runtime_info,
+        dirs=_LazyDirs(paths),
+        settings=settings,
+        log=log,
+        events=types.SimpleNamespace(emit=emit),
+        fetch=fetch,
+        resource_url=resource_url,
+        resource_revoke=resource_revoke,
+        list_dir=list_dir,
+        migrate=types.SimpleNamespace(
+            move=fy_store.migrate_move,
+            keys=keys,
+            copy_once=copy_once,
+            snapshot=lambda: fy_store.snapshot_settings(paths.config),
+        ),
+        companion=companion,
+        FrameyApiError=FrameyApiError,
     )
-    mod.companion = companion
-    mod.FrameyApiError = FrameyApiError
-    return mod
+    return api_module

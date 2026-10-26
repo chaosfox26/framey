@@ -16,7 +16,15 @@ STEP = 5
 LOST = 3
 STALE = 2
 HEAD = '{"method":"'
-EVENTS = frozenset(("Runtime.bindingCalled", "Runtime.executionContextCreated", "Runtime.executionContextDestroyed", "Runtime.executionContextsCleared", "Page.frameNavigated"))
+EVENTS = frozenset(
+    (
+        "Runtime.bindingCalled",
+        "Runtime.executionContextCreated",
+        "Runtime.executionContextDestroyed",
+        "Runtime.executionContextsCleared",
+        "Page.frameNavigated",
+    )
+)
 
 
 def valid(v):
@@ -39,7 +47,7 @@ def mode(cfg, path):
 def wanted(raw):
     if not raw.startswith(HEAD):
         return True
-    return raw[len(HEAD):raw.find('"', len(HEAD))] in EVENTS
+    return raw[len(HEAD) : raw.find('"', len(HEAD))] in EVENTS
 
 
 class Iso:
@@ -53,7 +61,9 @@ class Iso:
 
     async def typeof(self, ctx):
         more = {} if ctx is None else {"contextId": ctx}
-        r = await self.rpc("Runtime.evaluate", expression="typeof window.fyCall", returnByValue=True, **more)
+        r = await self.rpc(
+            "Runtime.evaluate", expression="typeof window.fyCall", returnByValue=True, **more
+        )
         return (r.get("result") or {}).get("value")
 
     async def locate(self):
@@ -114,10 +124,16 @@ class Iso:
     async def stop(self, wipe=None):
         ctx, self.on, self.ctx = self.ctx, False, None
         self.epoch += 1
-        calls = [("Runtime.removeBinding", {"name": BINDING}), ("Runtime.disable", {}), ("Page.disable", {})]
+        calls = [
+            ("Runtime.removeBinding", {"name": BINDING}),
+            ("Runtime.disable", {}),
+            ("Page.disable", {}),
+        ]
         if wipe and ctx is not None:
             calls.insert(0, ("Runtime.evaluate", {"expression": wipe, "contextId": ctx}))
-        await asyncio.gather(*(self.rpc(method, **p) for method, p in calls), return_exceptions=True)
+        await asyncio.gather(
+            *(self.rpc(method, **p) for method, p in calls), return_exceptions=True
+        )
 
     def event(self, m):
         if not self.on or not isinstance(m, dict):
@@ -139,7 +155,12 @@ class Iso:
                 self.ctx = None
         elif k == "Page.frameNavigated":
             f = p.get("frame")
-            if isinstance(f, dict) and "parentId" not in f and isinstance(f.get("id"), str) and f["id"]:
+            if (
+                isinstance(f, dict)
+                and "parentId" not in f
+                and isinstance(f.get("id"), str)
+                and f["id"]
+            ):
                 self.epoch += 1
                 self.frame, self.ctx = f["id"], None
 

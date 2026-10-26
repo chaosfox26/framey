@@ -2,7 +2,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { makeDom, ROOT, TOK } = require("./harness");
+const { makeDom, ROOT, TOK, readLoaderConstants } = require("./harness");
 
 const HEAD = ["inject.js", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js"];
 const TAIL = ["fy-modules.js", "fy-settings.js"];
@@ -672,10 +672,7 @@ t("bar reinjection after the loader's wipe: one button, one label, one style eac
 });
 
 t("loader constants used by this test still match framey.py", () => {
-  const py = read("framey.py");
-  assert.ok(py.includes('RM = "' + RM + '"'));
-  assert.ok(py.includes('WIPE = RM + "delete window.Framey"'));
-  assert.ok(py.includes('WIPE_BAR = "window.FYBar&&window.FYBar.dispose&&window.FYBar.dispose();window.FYObs&&window.FYObs.disconnect();" + RM + "delete window.FYBar;delete window.FYObs"'));
+  assert.deepStrictEqual(readLoaderConstants(["RM", "WIPE", "WIPE_BAR"]), { RM, WIPE, WIPE_BAR });
 });
 
 t("size and hygiene of the glue: no HTML injection, bounded payload and spacing", () => {

@@ -1,5 +1,3 @@
-"""Frontend declaration contracts; no dependency installation is performed."""
-
 import ast
 import hashlib
 import io
@@ -54,7 +52,6 @@ class FrontendTypesTests(unittest.TestCase):
         self.assertNotIn("diag", interface_members(self.source, "FrameyBinding"))
 
     def test_unknown_payloads_are_explicit_and_page_fetch_cannot_save(self):
-        # This guards against erasing error handling or silently escaping to any.
         without_comments = re.sub(r"/\*.*?\*/|//[^\n]*", "", self.source, flags=re.DOTALL)
         self.assertNotRegex(without_comments, r"\bany\b")
         self.assertRegex(self.source, r"type FrameyResult<T> = T \| FrameyErrorResult;")
@@ -134,7 +131,6 @@ class FrontendTypesTests(unittest.TestCase):
             self.assertEqual(set(source), interface_members(self.source, "FrameyDeckyCatalogSource"))
             self.assertIn(source["id"], ("decky_stable", "decky_testing"))
             self.assertEqual(source["format"], "decky")
-        # The wire value "unverified" maps to the UI's "Not checked" label.
         catalog_ui = (ROOT / "fy-catalog.js").read_text()
         for status in ("compatible", "incompatible", "unverified"):
             self.assertIn(f'"{status}"', catalog_ui)
@@ -209,7 +205,6 @@ try {
         self.assertEqual(observed["pickers"], ["function", "function"])
 
     def test_typescript_plugin_contract_when_compiler_is_installed(self):
-        # CI and developers can opt into a local compiler without fetching packages.
         compiler = os.environ.get("FRAMEY_TSC") or shutil.which("tsc")
         if not compiler:
             self.skipTest("TypeScript compiler is not installed")

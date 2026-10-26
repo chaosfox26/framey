@@ -252,6 +252,7 @@ An optional module. `call(method, arg)` handles every request; it may be `def` o
 ```python
 import framey_api as fy
 
+
 def call(method, arg):
     count = fy.settings.get("count", 0)
     if method == "add":
@@ -444,6 +445,7 @@ Framey.register({
 
 ```python
 import framey_api as fy
+
 
 def call(method, arg):
     count = fy.settings.get("count", 0)

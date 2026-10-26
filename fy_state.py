@@ -9,7 +9,9 @@ FILE_MAX = 65536
 READ_MAX = 262144
 LIST_MAX = 200
 ID = re.compile(r"[a-z0-9_-]{1,32}")
-RESERVED = frozenset(("_core", "core", "modules", "settings", "store", "discover", "developer", "dev", "decky-store"))
+RESERVED = frozenset(
+    ("_core", "core", "modules", "settings", "store", "discover", "developer", "dev", "decky-store")
+)
 LOCALE = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?")
 VERSION = re.compile(r"[0-9A-Za-z.+~_-]{0,40}")
 TARGET = re.compile(r"[a-z0-9_-]{1,24}")
@@ -65,11 +67,17 @@ def _ver(v):
 
 
 def _text(n):
-    return lambda v: (v, False) if isinstance(v, str) and len(v) <= n and v.isprintable() else ("", True)
+    return lambda v: (
+        (v, False) if isinstance(v, str) and len(v) <= n and v.isprintable() else ("", True)
+    )
 
 
 def _msg(v):
-    return ("".join(c for c in v[:200] if c.isprintable()), False) if isinstance(v, str) else ("", True)
+    return (
+        ("".join(c for c in v[:200] if c.isprintable()), False)
+        if isinstance(v, str)
+        else ("", True)
+    )
 
 
 def _ids(v):
@@ -109,7 +117,15 @@ def _targets(v):
         return {}, True
     out = {}
     for k, x in v.items():
-        if isinstance(k, str) and TARGET.fullmatch(k) and k != "panel" and isinstance(x, str) and 1 <= len(x) <= 120 and x.isprintable() and len(out) < 8:
+        if (
+            isinstance(k, str)
+            and TARGET.fullmatch(k)
+            and k != "panel"
+            and isinstance(x, str)
+            and 1 <= len(x) <= 120
+            and x.isprintable()
+            and len(out) < 8
+        ):
             out[k] = x
     return out, len(out) != len(v)
 
@@ -155,8 +171,19 @@ def _tag_entry(v):
 
 
 FROZEN = {"at": (_number, 0), "version": (_ver, "")}
-MSTATE = {"ver": (_ver, ""), "data_v": (_count, 0), "ok_at": (_number, 0), "fails": (_count, 0), "last_error": (_msg, "")}
-DEV = {"enabled": (_flag, False), "hot": (_ids, []), "hot_until": (_number, 0), "targets": (_targets, {})}
+MSTATE = {
+    "ver": (_ver, ""),
+    "data_v": (_count, 0),
+    "ok_at": (_number, 0),
+    "fails": (_count, 0),
+    "last_error": (_msg, ""),
+}
+DEV = {
+    "enabled": (_flag, False),
+    "hot": (_ids, []),
+    "hot_until": (_number, 0),
+    "targets": (_targets, {}),
+}
 PREFS = {
     "autocheck": (_flag, False),
     "notify_loader": (_flag, False),
@@ -192,7 +219,19 @@ TOP = {
     "updates": (_group(UPDATES), {}),
 }
 OWN = tuple(TOP) + ("repaired",)
-PREF_F = {k: PREFS[k][0] for k in ("autocheck", "notify_loader", "notify_plugins", "channel", "lang", "safe", "workers_max", "file_roots")}
+PREF_F = {
+    k: PREFS[k][0]
+    for k in (
+        "autocheck",
+        "notify_loader",
+        "notify_plugins",
+        "channel",
+        "lang",
+        "safe",
+        "workers_max",
+        "file_roots",
+    )
+}
 PREF_F.update({"dev." + k: DEV[k][0] for k in ("enabled", "hot", "hot_until", "targets")})
 
 
@@ -266,7 +305,10 @@ def repair(path):
     if kind == "ok":
         return {"ok": True}
     if kind == "unreadable":
-        return {"ok": False, "error": "settings.json could not be read (permissions or I/O); nothing was changed"}
+        return {
+            "ok": False,
+            "error": "settings.json could not be read (permissions or I/O); nothing was changed",
+        }
     stamp = int(time.time())
     dst = path.with_name("%s.corrupt-%d" % (path.name, stamp))
     while dst.exists():
@@ -275,7 +317,10 @@ def repair(path):
     try:
         os.replace(path, dst)
     except OSError as e:
-        return {"ok": False, "error": "could not move settings.json aside: " + (e.strerror or "i/o error")}
+        return {
+            "ok": False,
+            "error": "could not move settings.json aside: " + (e.strerror or "i/o error"),
+        }
     _UNREADABLE.pop(key, None)
     pat = re.compile(re.escape(path.name) + r"\.corrupt-(\d+)")
     kept = []
@@ -304,7 +349,9 @@ def save(path, state):
         raise StateError("settings could not be read; not overwriting them", "unreadable")
     clean = validate(state)[0]
     try:
-        data = json.dumps(clean, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        data = json.dumps(clean, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode(
+            "utf-8"
+        )
     except (TypeError, ValueError, UnicodeError, RecursionError, OverflowError):
         raise StateError("state is not serialisable", "bad_state") from None
     if len(data) > FILE_MAX:
@@ -312,6 +359,7 @@ def save(path, state):
     path = Path(path)
     tmp = None
     import tempfile
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
@@ -326,7 +374,9 @@ def save(path, state):
                 os.unlink(tmp)
             except OSError:
                 pass
-        raise StateError("could not save state: " + (e.strerror or "i/o error"), "write_failed") from None
+        raise StateError(
+            "could not save state: " + (e.strerror or "i/o error"), "write_failed"
+        ) from None
     if hasattr(os, "O_DIRECTORY"):
         try:
             d = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY)
@@ -348,6 +398,7 @@ def _names(rows):
 
 def _sort_key(names):
     import unicodedata
+
     return lambda pid: (unicodedata.normalize("NFC", names[pid]).casefold(), pid)
 
 
@@ -522,7 +573,13 @@ def _m_freeze(host, s, a):
     if a.get("frozen") is True and not found:
         raise StateError("module not found", "not_found")
     version = found[0].get("version") if found else ""
-    set_frozen(s, a.get("id"), a.get("frozen"), version if isinstance(version, str) else "", int(host.now()))
+    set_frozen(
+        s,
+        a.get("id"),
+        a.get("frozen"),
+        version if isinstance(version, str) else "",
+        int(host.now()),
+    )
 
 
 def _m_prefs(host, s, a):

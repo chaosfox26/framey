@@ -1,5 +1,3 @@
-"""Adversarial catalog boundaries, using only in-memory catalog downloads."""
-
 import copy
 import json
 import sys

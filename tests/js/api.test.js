@@ -436,6 +436,25 @@ t("onVisible fires only on change and removes its document listener", () => {
   assert.strictEqual(added.length, 2);
 });
 
+t("an async visibility failure is diagnosed once without stopping later subscribers", async () => {
+  const e = fresh();
+  const api = e.plugin("a");
+  Object.defineProperty(e.document, "visibilityState", { configurable: true, value: "visible" });
+  const seen = [];
+  api.onVisible(async () => { throw new Error("async subscriber failure"); });
+  api.onVisible(v => seen.push(v));
+  e.window.Framey._panel(true);
+  await flush();
+  assert.deepStrictEqual(seen, [true]);
+  const row = e.window.__S.K.diagnostics().find(row => row.code === "core.visibility_failed");
+  assert.strictEqual(row.count, 1);
+  e.window.Framey.dispose("a", TOK);
+  e.window.Framey._panel(false);
+  await flush();
+  assert.deepStrictEqual(seen, [true]);
+  assert.strictEqual(e.window.__S.K.diagnostics().find(row => row.code === "core.visibility_failed").count, 1);
+});
+
 t("onPanel reports changes only", () => {
   const e = fresh();
   const F = e.window.Framey;

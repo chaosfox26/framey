@@ -1,4 +1,3 @@
-"""Store RPC ownership and inert metadata boundaries, without live CDP or archives."""
 import asyncio
 import json
 import pathlib
@@ -77,7 +76,6 @@ class StoreSessionOwnership(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
         self.assertFalse(task.done())
         self.assertEqual(calls, [])
-        # Denied plugin capabilities can receive an error, but cannot enter core.
         self.assertTrue(all(reply[2] == fy.NOAUTH for reply in page.replies()))
         for index, method in enumerate(("catalog_list", "catalog_details", "catalog_assess")):
             self.emit(page, fy, 60 + index, method, owned.id)

@@ -1,4 +1,16 @@
-import asyncio, collections, importlib, io, json, os, pathlib, re, socket, stat, sys, time, urllib.parse
+import asyncio
+import collections
+import importlib
+import io
+import json
+import os
+import pathlib
+import re
+import socket
+import stat
+import sys
+import time
+import urllib.parse
 
 VERSION = "1.0.2"
 API_GENERATION = API_VERSION = 1
@@ -9,20 +21,40 @@ HOME = pathlib.Path.home()
 CONF = HOME / ".config/framey/settings.json"
 CDP = ("127.0.0.1", 8080)
 NAME = re.compile(r"[a-z0-9_-]{1,32}")
-RESERVED_IDS = frozenset(("_core", "core", "modules", "settings", "store", "discover", "developer", "dev", "decky-store"))
+RESERVED_IDS = frozenset(
+    ("_core", "core", "modules", "settings", "store", "discover", "developer", "dev", "decky-store")
+)
 ENTRIES, ENTRY_MAX, TOTAL_MAX, DEPTH = 500, 5_000_000, 20_000_000, 8
 MAX_MSG = 4 << 20
 PAYLOAD_IN = 256 << 10
 FETCH_S = 45
 REQUIRED = {
-    "fy_state": ("load", "save", "PREF_F", "module_state", "set_module_state", "forget_module", "StateError"),
+    "fy_state": (
+        "load",
+        "save",
+        "PREF_F",
+        "module_state",
+        "set_module_state",
+        "forget_module",
+        "StateError",
+    ),
     "fy_supervisor": ("Supervisor", "BackendError"),
     "fy_updates": ("Updates",),
     "fy_catalog": ("METHODS",),
     "fy_report": ("METHODS",),
     "fy_panel": ("METHODS", "get"),
     "fy_iso": ("mode", "Iso", "wanted"),
-    "fy_store": ("dirs", "purge", "discard_held", "snapshot_settings", "drop_snapshot", "restore_snapshot", "Log", "read_locale", "clean_tmp"),
+    "fy_store": (
+        "dirs",
+        "purge",
+        "discard_held",
+        "snapshot_settings",
+        "drop_snapshot",
+        "restore_snapshot",
+        "Log",
+        "read_locale",
+        "clean_tmp",
+    ),
     "fy_net": ("hostcall", "sync_disk", "_target", "_resolve", "_connect"),
     "fy_pkg": ("decide", "parse_version", "identity", "write_identity", "replace_guard"),
     "fy_files": ("roots", "hostcall"),
@@ -34,7 +66,9 @@ REQUIRED = {
 EDIT = ("install", "add", "enable", "disable", "uninstall", "reload", "settings_repair")
 UPDATED = ("update", "rollback", "retry", "ver_install", "repair", "batch_apply")
 RELOAD = EDIT + ("finish", "catalog_install")
-SCOPED = frozenset(("fetch", "files_list", "resource", "log", "locale", "target_add", "target_remove"))
+SCOPED = frozenset(
+    ("fetch", "files_list", "resource", "log", "locale", "target_add", "target_remove")
+)
 PAGE_FORBIDDEN = ("file_roots", "safe", "channel")
 NOAUTH = {"error": "not authorized"}
 CORE_TOK = os.urandom(16).hex()
@@ -50,20 +84,99 @@ PRINCIPAL = "framey-release"
 HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 NOSETUP = "Protected updater not set up: run Install / Update in the Framey App once (it asks for your password a single time)"
 BUSY = {"busy": True, "error": "Busy: another check or update is running"}
-MANIFEST = ("framey.py", "inject.js", "bar.js", "icon.svg", "fy_proto.py", "fy_worker.py", "fy_supervisor.py", "fy_store.py", "fy_sdk.py", "fy_net.py", "fy_files.py", "fy_media.py", "fy_targets.py", "fy_state.py", "fy_pkg.py", "fy_updates.py", "fy_dev.py", "fy_diag.py", "fy_report.py", "fy_panel.py", "fy_overlay.py", "fy_overlay_browser.py", "fy_maint.py", "fy_iso.py", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-modules.js", "fy-settings.js", "fy-badge.js", "fy-picker.js", "fy-dev.js", "fy-strings-en.js", "fy-report.js", "fy_catalog.py", "fy_decky_catalog.py", "fy-catalog.js", "catalog/index.json")
+MANIFEST = (
+    "framey.py",
+    "inject.js",
+    "bar.js",
+    "icon.svg",
+    "fy_proto.py",
+    "fy_worker.py",
+    "fy_supervisor.py",
+    "fy_store.py",
+    "fy_sdk.py",
+    "fy_net.py",
+    "fy_files.py",
+    "fy_media.py",
+    "fy_targets.py",
+    "fy_state.py",
+    "fy_pkg.py",
+    "fy_updates.py",
+    "fy_dev.py",
+    "fy_diag.py",
+    "fy_report.py",
+    "fy_panel.py",
+    "fy_overlay.py",
+    "fy_overlay_browser.py",
+    "fy_maint.py",
+    "fy_iso.py",
+    "fy-api.js",
+    "fy-ui.js",
+    "fy-pages.js",
+    "fy-modules.js",
+    "fy-settings.js",
+    "fy-badge.js",
+    "fy-picker.js",
+    "fy-dev.js",
+    "fy-strings-en.js",
+    "fy-report.js",
+    "fy_catalog.py",
+    "fy_decky_catalog.py",
+    "fy-catalog.js",
+    "catalog/index.json",
+)
 LEGACY = MANIFEST[:4]
 SMOKE = "import importlib.util as u,sys;s=u.spec_from_file_location('framey_smoke',sys.argv[1]);m=u.module_from_spec(s);s.loader.exec_module(m);print('framey-smoke-ok' if callable(getattr(m,'main',None)) and isinstance(getattr(m,'VERSION',None),str) else '')"
-PANEL_JS = ("inject.js", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-report.js", "fy-modules.js", "fy-catalog.js", "fy-settings.js", "fy-picker.js")
+PANEL_JS = (
+    "inject.js",
+    "fy-api.js",
+    "fy-ui.js",
+    "fy-pages.js",
+    "fy-strings-en.js",
+    "fy-report.js",
+    "fy-modules.js",
+    "fy-catalog.js",
+    "fy-settings.js",
+    "fy-picker.js",
+)
 EVENT = "function(p,n,y,d){return this.event(p,n,y,d)}"
 REPLY = "function(g,i,v){return this.reply(g,i,v)}"
 BIND = "function(i,t,m){return this.bind(i,t,m)}"
 RUN = "function(p){return this(p)}"
 DISPOSE = "function(p){return this.dispose(p)}"
 OWNER = {}
-for _mod, _names in (("fy_state", "state_get mod_order mod_sort mod_hide mod_freeze prefs_set"), ("fy_updates", "ver_list ver_install repair notes batch_plan batch_apply loader_check badge autocheck_status companion_fetch"), ("fy_targets", "target_add target_remove"), ("fy_net", "fetch"), ("fy_files", "files_list"), ("fy_media", "resource"), ("fy_dev", "dev_set dev_status devtools_info"), ("fy_diag", "diag"), ("fy_report", "report_draft report_link report_open"), ("fy_panel", "panel_status panel_mode"), ("fy_maint", "maint_get maint_refresh maint_prefs"), ("fy_catalog", "catalog_list catalog_details catalog_install catalog_sources catalog_assess")):
+for _mod, _names in (
+    ("fy_state", "state_get mod_order mod_sort mod_hide mod_freeze prefs_set"),
+    (
+        "fy_updates",
+        "ver_list ver_install repair notes batch_plan batch_apply loader_check badge autocheck_status companion_fetch",
+    ),
+    ("fy_targets", "target_add target_remove"),
+    ("fy_net", "fetch"),
+    ("fy_files", "files_list"),
+    ("fy_media", "resource"),
+    ("fy_dev", "dev_set dev_status devtools_info"),
+    ("fy_diag", "diag"),
+    ("fy_report", "report_draft report_link report_open"),
+    ("fy_panel", "panel_status panel_mode"),
+    ("fy_maint", "maint_get maint_refresh maint_prefs"),
+    ("fy_catalog", "catalog_list catalog_details catalog_install catalog_sources catalog_assess"),
+):
     OWNER.update(dict.fromkeys(_names.split(), _mod))
-LOCKED = frozenset(("panel_mode", "catalog_install", "catalog_sources", "loader_check", "ver_install", "repair", "batch_apply", "companion_fetch"))
-DEV_OFF = {"dev_status": {"enabled": False, "hot": [], "exposure": {"state": "unknown", "addresses": []}}}
+LOCKED = frozenset(
+    (
+        "panel_mode",
+        "catalog_install",
+        "catalog_sources",
+        "loader_check",
+        "ver_install",
+        "repair",
+        "batch_apply",
+        "companion_fetch",
+    )
+)
+DEV_OFF = {
+    "dev_status": {"enabled": False, "hot": [], "exposure": {"state": "unknown", "addresses": []}}
+}
 LOCK = None
 LIVE = {}
 TASKS = set()
@@ -86,7 +199,11 @@ UI_RESTORE = None
 SURFACES = {}
 RM = "document.querySelectorAll('[data-fy]').forEach(e=>e.remove());"
 WIPE = RM + "delete window.Framey"
-WIPE_BAR = "window.FYBar&&window.FYBar.dispose&&window.FYBar.dispose();window.FYObs&&window.FYObs.disconnect();" + RM + "delete window.FYBar;delete window.FYObs"
+WIPE_BAR = (
+    "window.FYBar&&window.FYBar.dispose&&window.FYBar.dispose();window.FYObs&&window.FYObs.disconnect();"
+    + RM
+    + "delete window.FYBar;delete window.FYObs"
+)
 WIPES = {"main": WIPE, "bar": WIPE_BAR, "panel": WIPE}
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -126,6 +243,7 @@ def log_tail():
 
 def rmtree(p):
     import shutil
+
     shutil.rmtree(p, ignore_errors=True)
 
 
@@ -137,6 +255,7 @@ def sweep(p):
 
 def tree_copy(a, b):
     import shutil
+
     shutil.copytree(a, b)
 
 
@@ -178,7 +297,9 @@ def parse(s):
 
 
 def valid(m):
-    return isinstance(m, dict) and all(isinstance(m.get(k, ""), str) for k in ("name", "version", "short"))
+    return isinstance(m, dict) and all(
+        isinstance(m.get(k, ""), str) for k in ("name", "version", "short")
+    )
 
 
 def manifest(d):
@@ -203,7 +324,11 @@ def conf_file(name):
     if not f.is_file():
         return None
     try:
-        j = json.loads(read(f, 4097) or "{}", parse_constant=finite) if f.stat().st_size <= 4096 else {}
+        j = (
+            json.loads(read(f, 4097) or "{}", parse_constant=finite)
+            if f.stat().st_size <= 4096
+            else {}
+        )
     except (OSError, ValueError, RecursionError):
         j = {}
     return j if isinstance(j, dict) else {}
@@ -211,8 +336,18 @@ def conf_file(name):
 
 def trust():
     st, dev, cfg = use("fy_state"), conf_file("developer"), conf_file("loader.json") or {}
-    out = {"safe": (CONF.parent / "safe").is_file(), "dev": dev is not None, "channel": "stable", "file_roots": [], "targets": {}}
-    for field, key, src in (("targets", "dev.targets", dev or {}), ("channel", "channel", cfg), ("file_roots", "file_roots", cfg)):
+    out = {
+        "safe": (CONF.parent / "safe").is_file(),
+        "dev": dev is not None,
+        "channel": "stable",
+        "file_roots": [],
+        "targets": {},
+    }
+    for field, key, src in (
+        ("targets", "dev.targets", dev or {}),
+        ("channel", "channel", cfg),
+        ("file_roots", "file_roots", cfg),
+    ):
         v, bad = st.PREF_F[key](src[field]) if st and field in src else (None, True)
         if not bad:
             out[field] = v
@@ -223,7 +358,13 @@ def overlay(p):
     t = trust()
     p = p if isinstance(p, dict) else {}
     dev = p.get("dev") if isinstance(p.get("dev"), dict) else {}
-    return {**p, "safe": t["safe"], "channel": t["channel"], "file_roots": t["file_roots"], "dev": {**dev, "enabled": t["dev"], "targets": t["targets"]}}
+    return {
+        **p,
+        "safe": t["safe"],
+        "channel": t["channel"],
+        "file_roots": t["file_roots"],
+        "dev": {**dev, "enabled": t["dev"], "targets": t["targets"]},
+    }
 
 
 def settings():
@@ -237,7 +378,10 @@ def settings():
             s = None
         s = s if isinstance(s, dict) else {}
         off = s.get("disabled")
-        s = {**s, "disabled": [x for x in off if isinstance(x, str)] if isinstance(off, list) else []}
+        s = {
+            **s,
+            "disabled": [x for x in off if isinstance(x, str)] if isinstance(off, list) else [],
+        }
     s["prefs"] = overlay(s.get("prefs"))
     return s
 
@@ -308,7 +452,17 @@ def manifests():
 
 
 def catalog():
-    return [{"id": m["id"], "name": m["name"], "version": m.get("version", ""), "installed": os.path.lexists(PLUGINS / m["id"]), "linked": (PLUGINS / m["id"]).is_symlink()} for m in map(manifest, entries(STORE)) if m]
+    return [
+        {
+            "id": m["id"],
+            "name": m["name"],
+            "version": m.get("version", ""),
+            "installed": os.path.lexists(PLUGINS / m["id"]),
+            "linked": (PLUGINS / m["id"]).is_symlink(),
+        }
+        for m in map(manifest, entries(STORE))
+        if m
+    ]
 
 
 def plugin_dir(pid):
@@ -367,7 +521,9 @@ def loader_ok(d):
 
 def loader_stage_owned(path):
     try:
-        return not _link(path) and (path / ".framey-stage").read_bytes() == b"framey-update-stage-v1\n"
+        return (
+            not _link(path) and (path / ".framey-stage").read_bytes() == b"framey-update-stage-v1\n"
+        )
     except OSError:
         return False
 
@@ -402,7 +558,9 @@ def recover():
         except (OSError, ValueError, TypeError):
             return False
 
-    ids = {p.name.partition("-")[2] for p in entries(PLUGINS) if p.name.startswith((".old-", ".hold-"))}
+    ids = {
+        p.name.partition("-")[2] for p in entries(PLUGINS) if p.name.startswith((".old-", ".hold-"))
+    }
     for pid in sorted(ids):
         if not ok_id(pid):
             continue
@@ -427,7 +585,12 @@ def recover():
         try:
             if kind in (".old", ".hold") and _link(p):
                 log("recover", p.name, "refused: link")
-            elif kind == ".old" and ok_id(pid) and not os.path.lexists(PLUGINS / pid) and (p / "plugin.json").is_file():
+            elif (
+                kind == ".old"
+                and ok_id(pid)
+                and not os.path.lexists(PLUGINS / pid)
+                and (p / "plugin.json").is_file()
+            ):
                 p.rename(PLUGINS / pid)
             elif kind == ".hold" and ok_id(pid) and not os.path.lexists(PLUGINS / (".old-" + pid)):
                 p.rename(PLUGINS / (".old-" + pid))
@@ -452,7 +615,12 @@ def recover():
 
 
 def mark(pid, what, msg, stage=None):
-    FAILS[pid] = {"what": what, "msg": str(msg)[:300], "at": time.time(), **({"stage": stage} if stage else {})}
+    FAILS[pid] = {
+        "what": what,
+        "msg": str(msg)[:300],
+        "at": time.time(),
+        **({"stage": stage} if stage else {}),
+    }
 
 
 def spawn(coro):
@@ -491,7 +659,11 @@ def hostcall(mod):
     return run
 
 
-hostcalls = {"fetch": hostcall("fy_net"), "files": hostcall("fy_files"), "resource": hostcall("fy_media")}
+hostcalls = {
+    "fetch": hostcall("fy_net"),
+    "files": hostcall("fy_files"),
+    "resource": hostcall("fy_media"),
+}
 
 
 async def backend(pid, method, arg):
@@ -527,7 +699,12 @@ def load_backends(only=None):
         return
     off = settings()["disabled"]
     for m in manifests():
-        if only in (None, m["id"]) and m["id"] not in off and (PLUGINS / m["id"] / "backend.py").exists() and sup():
+        if (
+            only in (None, m["id"])
+            and m["id"] not in off
+            and (PLUGINS / m["id"] / "backend.py").exists()
+            and sup()
+        ):
             supervisor.register(m["id"], PLUGINS / m["id"], m)
 
 
@@ -581,7 +758,10 @@ def attached(target):
 
 def overlay_key(url, want):
     p = urllib.parse.urlsplit(url)
-    return any(urllib.parse.parse_qs(q).get("vrOverlayKey") == [want] for q in (p.query, p.fragment.partition("?")[2]))
+    return any(
+        urllib.parse.parse_qs(q).get("vrOverlayKey") == [want]
+        for q in (p.query, p.fragment.partition("?")[2])
+    )
 
 
 async def send(target, expression):
@@ -593,12 +773,22 @@ async def send(target, expression):
 async def send_main(target, expression):
     f = LIVE.get(target)
     if f:
-        await (f.main(expression) if hasattr(f, "main") else f("Runtime.evaluate", expression=expression))
+        await (
+            f.main(expression)
+            if hasattr(f, "main")
+            else f("Runtime.evaluate", expression=expression)
+        )
 
 
 async def call_core(f, fn, args):
     if f and getattr(f, "core", None):
-        await f("Runtime.callFunctionOn", objectId=f.core, functionDeclaration=fn, arguments=[{"value": a} for a in args], returnByValue=True)
+        await f(
+            "Runtime.callFunctionOn",
+            objectId=f.core,
+            functionDeclaration=fn,
+            arguments=[{"value": a} for a in args],
+            returnByValue=True,
+        )
 
 
 def panel_overlay_url(url):
@@ -606,7 +796,12 @@ def panel_overlay_url(url):
         return False
     try:
         parsed = urllib.parse.urlsplit(url)
-        return parsed.scheme == "about" and parsed.path == "blank" and not parsed.netloc and overlay_key(url, "framey.panel")
+        return (
+            parsed.scheme == "about"
+            and parsed.path == "blank"
+            and not parsed.netloc
+            and overlay_key(url, "framey.panel")
+        )
     except ValueError:
         return False
 
@@ -617,14 +812,24 @@ def ui_name():
 
 def ui_sender():
     sender = LIVE.get(ui_name())
-    return sender if sender and getattr(sender, "ui", True) and getattr(sender, "accepting", True) else None
+    return (
+        sender
+        if sender and getattr(sender, "ui", True) and getattr(sender, "accepting", True)
+        else None
+    )
 
 
 def cleanup_request(req):
     arg = req.get("arg")
-    return (req.get("plugin") == "_core" and req.get("id") == 0 and req.get("method") == "resource" and isinstance(arg, dict)
-            and isinstance(arg.get("revoke"), str) and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", arg["revoke"]))
-            and set(arg) <= {"pid", "revoke"})
+    return (
+        req.get("plugin") == "_core"
+        and req.get("id") == 0
+        and req.get("method") == "resource"
+        and isinstance(arg, dict)
+        and isinstance(arg.get("revoke"), str)
+        and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", arg["revoke"]))
+        and set(arg) <= {"pid", "revoke"}
+    )
 
 
 async def capture_panel_state():
@@ -645,7 +850,9 @@ def start_surface_watches():
             continue
         key = "framey.panel" if name == "panel" else "valve.steam.gamepadui.main"
         probe = "typeof window.Framey" if name == ui_name() else "typeof window.__framey_targets"
-        marker = panel_overlay_url if name == "panel" else lambda url, key=key: overlay_key(url, key)
+        marker = (
+            panel_overlay_url if name == "panel" else lambda url, key=key: overlay_key(url, key)
+        )
         SURFACES[name] = spawn(watch(name, marker, lambda name=name: main_code(name), probe))
 
 
@@ -694,7 +901,9 @@ async def panel_session_lost(name):
 async def ui_panel_visibility(on):
     sender = ui_sender()
     if sender:
-        await sender("Runtime.evaluate", expression="window.Framey&&Framey._panel(%s)" % json.dumps(on))
+        await sender(
+            "Runtime.evaluate", expression="window.Framey&&Framey._panel(%s)" % json.dumps(on)
+        )
 
 
 def event_context(evs):
@@ -704,17 +913,29 @@ def event_context(evs):
     for event in evs:
         pid = event["plugin"]
         worker = registrations.get(pid)
-        owners[pid] = (worker, getattr(worker, "epoch", None), tuple(t for t, owner in TOKS.items() if owner == pid))
+        owners[pid] = (
+            worker,
+            getattr(worker, "epoch", None),
+            tuple(t for t, owner in TOKS.items() if owner == pid),
+        )
     return sender, getattr(sender, "core", None), supervisor, owners
 
 
 async def emit_all(evs, context=None):
     sender, core, active, owners = context if context is not None else event_context(evs)
     for e in evs:
-        if ui_sender() is not sender or getattr(sender, "core", None) != core or supervisor is not active:
+        if (
+            ui_sender() is not sender
+            or getattr(sender, "core", None) != core
+            or supervisor is not active
+        ):
             break
         worker = getattr(active, "_ws", {}).get(e["plugin"])
-        current = (worker, getattr(worker, "epoch", None), tuple(t for t, owner in TOKS.items() if owner == e["plugin"]))
+        current = (
+            worker,
+            getattr(worker, "epoch", None),
+            tuple(t for t, owner in TOKS.items() if owner == e["plugin"]),
+        )
         if current != owners[e["plugin"]]:
             continue
         await call_core(sender, EVENT, [e["plugin"], e["name"], e["payload"], e["dropped"]])
@@ -751,7 +972,14 @@ def sync_watches():
         WATCH.pop(n).cancel()
     for n in want:
         if n not in WATCH:
-            WATCH[n] = spawn(watch(n, lambda u, n=n: bool(t.urlpart(n)) and t.urlpart(n) in u, lambda n=n: t.replay(n), "typeof window.__framey_targets"))
+            WATCH[n] = spawn(
+                watch(
+                    n,
+                    lambda u, n=n: bool(t.urlpart(n)) and t.urlpart(n) in u,
+                    lambda n=n: t.replay(n),
+                    "typeof window.__framey_targets",
+                )
+            )
 
 
 def replay(name):
@@ -788,7 +1016,14 @@ ICON_DEFAULT = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><cir
 
 def prelude():
     url = "data:image/svg+xml," + urllib.parse.quote(js("icon.svg") or ICON_DEFAULT)
-    rt = {"version": VERSION, "api": API_GENERATION, "platform": PLATFORM, "lang": pref("lang", ""), "trusted_input": trusted_input(), "report_repository": LOADER}
+    rt = {
+        "version": VERSION,
+        "api": API_GENERATION,
+        "platform": PLATFORM,
+        "lang": pref("lang", ""),
+        "trusted_input": trusted_input(),
+        "report_repository": LOADER,
+    }
     return "window.FY_ICON_URL=%s;window.FY_RUNTIME=%s;\n" % (json.dumps(url), json.dumps(rt))
 
 
@@ -804,7 +1039,14 @@ def new_tok(pid):
 
 
 def panel_js(parts):
-    return "(function(__fyt){%s\n%s\nreturn __FY&&__FY._k(__fyt);})(%s)" % ("\n".join(parts[:2]), "\n".join("try{%s\n}catch(e){console.error('[Framey] Panel module initialization failed')}" % p for p in parts[2:]), json.dumps(CORE_TOK))
+    return "(function(__fyt){%s\n%s\nreturn __FY&&__FY._k(__fyt);})(%s)" % (
+        "\n".join(parts[:2]),
+        "\n".join(
+            "try{%s\n}catch(e){console.error('[Framey] Panel module initialization failed')}" % p
+            for p in parts[2:]
+        ),
+        json.dumps(CORE_TOK),
+    )
 
 
 def plugin_args(m, keep=False):
@@ -823,7 +1065,11 @@ def page_root_ok(a):
     root = a.get("root")
     if not m or (root is not None and not isinstance(root, str)):
         return False
-    return root is None or root == "data" or root in set(m.roots(HOME, None, pref("file_roots", []))) - {"home", "media"}
+    return (
+        root is None
+        or root == "data"
+        or root in set(m.roots(HOME, None, pref("file_roots", []))) - {"home", "media"}
+    )
 
 
 def request(payload):
@@ -854,7 +1100,9 @@ def main_code(name=None):
     global CORE_TOK, UI_RESTORE
     name = name or ui_name()
     if name != ui_name():
-        return [(Main("window.__framey_targets=window.__framey_targets||Object.create(null)"), None)] + replay("main")
+        return [
+            (Main("window.__framey_targets=window.__framey_targets||Object.create(null)"), None)
+        ] + replay("main")
     CORE_TOK = os.urandom(16).hex()
     TOKS.clear()
     prefix = prelude()
@@ -885,7 +1133,12 @@ def main_code(name=None):
 
 
 def bar_code():
-    return [(prelude() + js("bar.js"), None), (js("fy-badge.js"), None), ("window.FYBar&&FYBar.set(%s)" % json.dumps(PANEL), None), ("window.FYBar&&FYBar.badge(%d)" % badge_n(), None)] + replay("bar")
+    return [
+        (prelude() + js("bar.js"), None),
+        (js("fy-badge.js"), None),
+        ("window.FYBar&&FYBar.set(%s)" % json.dumps(PANEL), None),
+        ("window.FYBar&&FYBar.badge(%d)" % badge_n(), None),
+    ] + replay("bar")
 
 
 async def panel(on):
@@ -920,7 +1173,9 @@ def pinned_https():
             if not n:
                 raise OSError("fy_net unavailable")
             end = time.monotonic() + self.timeout
-            ips = PINS.pop((self.host, self.port), None) or n._resolve(self.host, self.port, None, end)
+            ips = PINS.pop((self.host, self.port), None) or n._resolve(
+                self.host, self.port, None, end
+            )
             self.sock = n._connect("https", self.host, self.port, ips, end, None, [])
 
     return Conn
@@ -943,7 +1198,9 @@ def fetch(url, headers=None, hosts=None, limit=5_000_000, progress=None):
 
     end = time.monotonic() + FETCH_S
     parts, n = [], 0
-    with urllib.request.build_opener(Https, Pinned).open(urllib.request.Request(url, headers=headers or {}), timeout=FETCH_S) as r:
+    with urllib.request.build_opener(Https, Pinned).open(
+        urllib.request.Request(url, headers=headers or {}), timeout=FETCH_S
+    ) as r:
         total = r.headers.get("Content-Length")
         total = int(total) if total and total.isdigit() else None
         sock = getattr(getattr(r.fp, "raw", None), "_sock", None)
@@ -1005,7 +1262,9 @@ def fix_identity(stage):
     try:
         j = json.loads(f.read_text())
         if p and isinstance(j, dict) and j.get("v") != 1:
-            p.write_identity(stage, p.identity(j.get("kind"), j.get("source"), j.get("tag"), j.get("commit")))
+            p.write_identity(
+                stage, p.identity(j.get("kind"), j.get("source"), j.get("tag"), j.get("commit"))
+            )
     except FileNotFoundError:
         pass
     except Exception:
@@ -1062,7 +1321,9 @@ def restore_ready(dest):
         raise OSError("previous copy has no valid manifest") from None
     if not valid(meta):
         raise OSError("previous copy has no valid manifest")
-    if os.path.lexists(bad) and (_link(bad) or bad.parent != PLUGINS and not (bad / ".version").is_file()):
+    if os.path.lexists(bad) and (
+        _link(bad) or bad.parent != PLUGINS and not (bad / ".version").is_file()
+    ):
         raise OSError("unrecognised staging folder: " + bad.name)
     return old, bad, meta
 
@@ -1092,9 +1353,18 @@ def vet(data, loader=False):
         return {"error": "zip has ambiguous entry names"}
     infos = {i.filename: i for i in z.infolist() if not i.filename.endswith("/")}
     names = list(infos)
-    if len(z.infolist()) > ENTRIES or any(n.startswith("/") or "\\" in n or len(n.split("/")) > DEPTH or any(x in ("", ".", "..") for x in n.split("/")) for n in names):
+    if len(z.infolist()) > ENTRIES or any(
+        n.startswith("/")
+        or "\\" in n
+        or len(n.split("/")) > DEPTH
+        or any(x in ("", ".", "..") for x in n.split("/"))
+        for n in names
+    ):
         return {"error": "zip has unsafe paths or too many files"}
-    if any(i.file_size > ENTRY_MAX for i in infos.values()) or sum(i.file_size for i in infos.values()) > TOTAL_MAX:
+    if (
+        any(i.file_size > ENTRY_MAX for i in infos.values())
+        or sum(i.file_size for i in infos.values()) > TOTAL_MAX
+    ):
         return {"error": "zip too large unpacked"}
     key = "framey.py" if loader else "plugin.json"
     base = ""
@@ -1120,9 +1390,18 @@ def vet(data, loader=False):
     if not ok_id(pid):
         return {"error": "bad plugin id"}
     native_entry = any(base + f in infos for f in ("main.js", "backend.py"))
-    decky_layout = "api_version" in meta or any(base + f in infos for f in ("main.py", "dist/index.js"))
-    if decky_layout and (not native_entry or "api_version" in meta and (type(meta.get("api")) is not int or meta["api"] < 1)):
-        return {"error": "This is a Decky plugin. It needs a Framey port before it can run on this headset", "code": "unsupported_format"}
+    decky_layout = "api_version" in meta or any(
+        base + f in infos for f in ("main.py", "dist/index.js")
+    )
+    if decky_layout and (
+        not native_entry
+        or "api_version" in meta
+        and (type(meta.get("api")) is not int or meta["api"] < 1)
+    ):
+        return {
+            "error": "This is a Decky plugin. It needs a Framey port before it can run on this headset",
+            "code": "unsupported_format",
+        }
     return z, infos, base, pid, meta
 
 
@@ -1131,7 +1410,7 @@ def unpack(z, infos, base):
         total = 0
         for n, i in infos.items():
             if n.startswith(base):
-                f = stage / n[len(base):]
+                f = stage / n[len(base) :]
                 if stage.resolve() not in f.resolve().parents:
                     raise ValueError("zip has unsafe paths")
                 f.parent.mkdir(parents=True, exist_ok=True)
@@ -1162,7 +1441,18 @@ def untar(data, top):
             for m in tf:
                 n += 1
                 parts = m.name.split("/")
-                if n > ENTRIES or m.name.startswith("/") or "\\" in m.name or len(parts) > DEPTH or parts[0] != top or any(x in ("", ".", "..") for x in parts) or not (m.isreg() or m.isdir()) or m.issparse() or m.size > ENTRY_MAX or (m.isreg() and len(parts) < 2):
+                if (
+                    n > ENTRIES
+                    or m.name.startswith("/")
+                    or "\\" in m.name
+                    or len(parts) > DEPTH
+                    or parts[0] != top
+                    or any(x in ("", ".", "..") for x in parts)
+                    or not (m.isreg() or m.isdir())
+                    or m.issparse()
+                    or m.size > ENTRY_MAX
+                    or (m.isreg() and len(parts) < 2)
+                ):
                     raise ValueError("package has unsafe or oversized entries")
                 if m.isdir():
                     continue
@@ -1216,7 +1506,13 @@ def real(pid, need=True):
         return p
     t = pathlib.Path(os.path.realpath(p))
     h, r = HOME.resolve(), ROOT.resolve()
-    if h in t.parents and t != r and r not in t.parents and t not in r.parents and (t.is_dir() or not need):
+    if (
+        h in t.parents
+        and t != r
+        and r not in t.parents
+        and t not in r.parents
+        and (t.is_dir() or not need)
+    ):
         return t
 
 
@@ -1228,7 +1524,12 @@ def installed(pid):
 def gh(src):
     u = urllib.parse.urlsplit(src.strip())
     p = [urllib.parse.unquote(x) for x in u.path.split("/") if x]
-    if u.scheme != "https" or u.netloc.lower() != "github.com" or len(p) < 2 or (len(p) > 2 and p[2] != "tree"):
+    if (
+        u.scheme != "https"
+        or u.netloc.lower() != "github.com"
+        or len(p) < 2
+        or (len(p) > 2 and p[2] != "tree")
+    ):
         return None
     if p[1].endswith(".git"):
         p[1] = p[1][:-4]
@@ -1241,16 +1542,27 @@ def source(m):
     receipt = PLUGINS / m["id"] / ".catalog.json"
     if os.path.lexists(receipt):
         return None, "Pinned catalog package: manage updates and repairs in Store"
-    found = [x for x in (read(PLUGINS / m["id"] / ".source"), m.get("source")) if isinstance(x, str) and x.strip()]
+    found = [
+        x
+        for x in (read(PLUGINS / m["id"] / ".source"), m.get("source"))
+        if isinstance(x, str) and x.strip()
+    ]
     for x in found:
         g = gh(x)
         if g:
             return g, ""
-    return None, "Automatic checking unavailable: " + ("the recorded source is not a GitHub repository link" if found else "no update source recorded")
+    return None, "Automatic checking unavailable: " + (
+        "the recorded source is not a GitHub repository link"
+        if found
+        else "no update source recorded"
+    )
 
 
 def api(path):
-    return fetch("https://api.github.com/repos/" + path, {"Accept": "application/vnd.github+json", "User-Agent": "Framey"})
+    return fetch(
+        "https://api.github.com/repos/" + path,
+        {"Accept": "application/vnd.github+json", "User-Agent": "Framey"},
+    )
 
 
 def api_json(path):
@@ -1258,7 +1570,15 @@ def api_json(path):
 
 
 def latest(owner, repo, ref):
-    t = fetch("https://api.github.com/repos/%s/%s/commits/%s" % (owner, repo, urllib.parse.quote(ref, safe="/")), {"Accept": "application/vnd.github.sha", "User-Agent": "Framey"}).decode("ascii", "replace").strip()
+    t = (
+        fetch(
+            "https://api.github.com/repos/%s/%s/commits/%s"
+            % (owner, repo, urllib.parse.quote(ref, safe="/")),
+            {"Accept": "application/vnd.github.sha", "User-Agent": "Framey"},
+        )
+        .decode("ascii", "replace")
+        .strip()
+    )
     if not SHA.fullmatch(t):
         raise ValueError("unexpected reply from GitHub")
     return t
@@ -1270,7 +1590,11 @@ def release(owner, repo):
         tag = j["tag_name"]
         if not (isinstance(tag, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", tag)):
             raise ValueError
-        ok = [a for a in j.get("assets", []) if isinstance(a.get("name"), str) and isinstance(a.get("browser_download_url"), str)]
+        ok = [
+            a
+            for a in j.get("assets", [])
+            if isinstance(a.get("name"), str) and isinstance(a.get("browser_download_url"), str)
+        ]
         assets = {a["name"]: a["browser_download_url"] for a in ok}
         digests = {a["name"]: a["digest"] for a in ok if isinstance(a.get("digest"), str)}
         body = j.get("body") if isinstance(j.get("body"), str) else ""
@@ -1280,7 +1604,10 @@ def release(owner, repo):
 
 
 def archive(owner, repo, sha, progress=None):
-    url, head = "https://github.com/%s/%s/archive/%s.zip" % (owner, repo, sha), {"User-Agent": "Framey"}
+    url, head = (
+        "https://github.com/%s/%s/archive/%s.zip" % (owner, repo, sha),
+        {"User-Agent": "Framey"},
+    )
     return fetch(url, head, None, 5_000_000, progress) if progress else fetch(url, head)
 
 
@@ -1309,7 +1636,11 @@ def why(e):
     if isinstance(e, urllib.error.HTTPError):
         if e.code == 429 or (e.code == 403 and e.headers.get("X-RateLimit-Remaining") == "0"):
             return "GitHub rate limit reached, try again later"
-        return "not found on GitHub (no release yet, private, or renamed)" if e.code == 404 else "GitHub answered HTTP %d" % e.code
+        return (
+            "not found on GitHub (no release yet, private, or renamed)"
+            if e.code == 404
+            else "GitHub answered HTTP %d" % e.code
+        )
     if isinstance(e, urllib.error.URLError):
         return "network error: %s" % e.reason
     if isinstance(e, (TimeoutError, socket.timeout)):
@@ -1319,7 +1650,9 @@ def why(e):
 
 def priv(m):
     p = m.get("privileged") if m else None
-    if isinstance(p, dict) and all(isinstance(p.get(k), str) and os.path.isabs(p[k]) for k in ("installed", "helper")):
+    if isinstance(p, dict) and all(
+        isinstance(p.get(k), str) and os.path.isabs(p[k]) for k in ("installed", "helper")
+    ):
         return p
 
 
@@ -1329,7 +1662,9 @@ def root_ok(st, kind):
 
 def trusted(path):
     try:
-        return root_ok(os.lstat(path), stat.S_ISREG) and root_ok(os.lstat(os.path.dirname(path)), stat.S_ISDIR)
+        return root_ok(os.lstat(path), stat.S_ISREG) and root_ok(
+            os.lstat(os.path.dirname(path)), stat.S_ISDIR
+        )
     except OSError:
         return False
 
@@ -1364,7 +1699,14 @@ def helper(p, arg):
     if not sane(h):
         return NOSETUP
     try:
-        r = subprocess.run(SUDO + [h, arg], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180, env=ENV)
+        r = subprocess.run(
+            SUDO + [h, arg],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=180,
+            env=ENV,
+        )
     except subprocess.TimeoutExpired:
         return "The protected updater took longer than 3 minutes"
     except OSError:
@@ -1388,7 +1730,14 @@ def verify(data, sig, signers):
         f = pathlib.Path(t) / "sig"
         f.write_bytes(sig)
         try:
-            r = subprocess.run([KEYGEN, "-Y", "verify", "-f", signers, "-I", PRINCIPAL, "-n", ns[1], "-s", str(f)], input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, env=ENV)
+            r = subprocess.run(
+                [KEYGEN, "-Y", "verify", "-f", signers, "-I", PRINCIPAL, "-n", ns[1], "-s", str(f)],
+                input=data,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                env=ENV,
+            )
         except (OSError, subprocess.TimeoutExpired):
             return "Could not run the signature check"
     return "" if r.returncode == 0 else "Refused: the package is not signed by the Framey publisher"
@@ -1418,7 +1767,11 @@ def rel_probe(m, g):
     new = vkey(tag)
     if not new:
         return {"state": "error", "msg": "unrecognised release tag " + tag}
-    r = {"state": "update" if new > (vkey(m.get("version", "")) or ZERO) else "current", "latest": tag, "known": True}
+    r = {
+        "state": "update" if new > (vkey(m.get("version", "")) or ZERO) else "current",
+        "latest": tag,
+        "known": True,
+    }
     return {**r, "notes": rel["notes"]} if r["state"] == "update" else r
 
 
@@ -1441,12 +1794,26 @@ def sib(sfx):
 
 def info(m):
     pid = m["id"]
-    return {"commit": installed(pid)[:7], "nosource": source(m)[1], "pending": pending(pid), "held": held(pid), "compat": compat(m), "fail": FAILS.get(pid), "stuck": bool(supervisor and supervisor.stuck(pid))}
+    return {
+        "commit": installed(pid)[:7],
+        "nosource": source(m)[1],
+        "pending": pending(pid),
+        "held": held(pid),
+        "compat": compat(m),
+        "fail": FAILS.get(pid),
+        "stuck": bool(supervisor and supervisor.stuck(pid)),
+    }
 
 
 async def page_reload(pid, redraw=True):
     send, m = ui_sender(), manifest(PLUGINS / pid) if ok_id(pid) else None
-    if send and m and pid not in settings()["disabled"] and not safe() and (PLUGINS / pid / "main.js").exists():
+    if (
+        send
+        and m
+        and pid not in settings()["disabled"]
+        and not safe()
+        and (PLUGINS / pid / "main.js").exists()
+    ):
         await call_core(send, DISPOSE, [pid])
         await load_plugin(*plugin_args(m, True), pid=pid, redraw=redraw)
 
@@ -1464,14 +1831,37 @@ async def reload_one(pid):
 def update_event(method, arg, out):
     pid = arg.get("id") if isinstance(arg, dict) else arg
     pid = pid if isinstance(pid, str) else None
-    rows = out["results"] if isinstance(out.get("results"), list) else [{"id": pid, "state": "failed" if out.get("error") else ("current" if out.get("current") else "ok"), "to": out.get("version", ""), **({"error": out["error"]} if out.get("error") else {})}]
-    return {"method": method, "id": pid, "ok": sum(r.get("state") == "ok" for r in rows if isinstance(r, dict)), "failed": sum(r.get("state") == "failed" for r in rows if isinstance(r, dict)), "results": rows}
+    rows = (
+        out["results"]
+        if isinstance(out.get("results"), list)
+        else [
+            {
+                "id": pid,
+                "state": "failed"
+                if out.get("error")
+                else ("current" if out.get("current") else "ok"),
+                "to": out.get("version", ""),
+                **({"error": out["error"]} if out.get("error") else {}),
+            }
+        ]
+    )
+    return {
+        "method": method,
+        "id": pid,
+        "ok": sum(r.get("state") == "ok" for r in rows if isinstance(r, dict)),
+        "failed": sum(r.get("state") == "failed" for r in rows if isinstance(r, dict)),
+        "results": rows,
+    }
 
 
 async def after_update(method, arg, out):
     if "ok" in out:
         pid = arg.get("id") if isinstance(arg, dict) else arg
-        for x in [r.get("id") for r in out["results"] if isinstance(r, dict) and r.get("state") == "ok"] if isinstance(out.get("results"), list) else [pid]:
+        for x in (
+            [r.get("id") for r in out["results"] if isinstance(r, dict) and r.get("state") == "ok"]
+            if isinstance(out.get("results"), list)
+            else [pid]
+        ):
             await page_reload(x, False)
     if not (out.get("confirm") or out.get("busy")):
         await notify_page("_core", "update_result", update_event(method, arg, out))
@@ -1507,7 +1897,9 @@ async def rel_update(pid, m, p, g, dest):
     if not sane(p["helper"]):
         return {"error": NOSETUP}
     if not trusted(signers):
-        return {"error": "Release signing key not installed by root: run Install / Update in the Framey App once"}
+        return {
+            "error": "Release signing key not installed by root: run Install / Update in the Framey App once"
+        }
     cur = m.get("version", "")
     name = g[1] + ".tar.gz"
     try:
@@ -1519,9 +1911,17 @@ async def rel_update(pid, m, p, g, dest):
             return {"current": True}
         urls = [rel["assets"].get(x) for x in (name, name + ".sig")]
         pre = "/%s/%s/releases/download/" % (g[0], g[1])
-        if not all(u and urllib.parse.urlsplit(u).scheme == "https" and urllib.parse.urlsplit(u).hostname == "github.com" and urllib.parse.urlsplit(u).path.startswith(pre) for u in urls):
+        if not all(
+            u
+            and urllib.parse.urlsplit(u).scheme == "https"
+            and urllib.parse.urlsplit(u).hostname == "github.com"
+            and urllib.parse.urlsplit(u).path.startswith(pre)
+            for u in urls
+        ):
             return {"error": "the release has no signed package from this repository"}
-        data, sig = [await asyncio.to_thread(fetch, u, {"User-Agent": "Framey"}, HOSTS) for u in urls]
+        data, sig = [
+            await asyncio.to_thread(fetch, u, {"User-Agent": "Framey"}, HOSTS) for u in urls
+        ]
         sha = await asyncio.to_thread(latest, g[0], g[1], rel["tag"])
     except Exception as e:
         return {"error": why(e)}
@@ -1552,7 +1952,11 @@ async def rel_update(pid, m, p, g, dest):
         if src:
             (stage / ".source").write_text(src)
         (stage / ".version").write_text(rel["tag"])
-        (stage / ".identity.json").write_text(json.dumps({"kind": "release", "source": "%s/%s" % g[:2], "tag": rel["tag"], "commit": sha}))
+        (stage / ".identity.json").write_text(
+            json.dumps(
+                {"kind": "release", "source": "%s/%s" % g[:2], "tag": rel["tag"], "commit": sha}
+            )
+        )
 
     try:
         guard(PLUGINS / pid)
@@ -1577,7 +1981,10 @@ async def settle(pid, arg):
         return {"error": "update undone: " + (str(e) or "failed")}
     err = await asyncio.to_thread(helper, p, arg)
     if not err and marker(p) != m.get("version"):
-        err = "Partial update: the protected part reports %s, expected %s" % (marker(p) or "nothing", m.get("version"))
+        err = "Partial update: the protected part reports %s, expected %s" % (
+            marker(p) or "nothing",
+            m.get("version"),
+        )
     if err:
         return {"error": err if err.startswith("Partial") else "Partial update: " + err}
     await reload(pid, "update")
@@ -1591,7 +1998,9 @@ async def do_update(pid):
         return {"error": "unknown plugin"}
     dest = real(pid)
     if not dest:
-        return {"error": "the link must point to a real folder inside your home, outside the loader folder"}
+        return {
+            "error": "the link must point to a real folder inside your home, outside the loader folder"
+        }
     if pending(pid):
         return {"error": "finish or roll back the pending update first"}
     g, msg = source(m)
@@ -1638,7 +2047,10 @@ async def do_rollback(pid):
         if err:
             return {"error": "Roll back stopped: " + err}
         if marker(p) != oldv:
-            return {"error": "Roll back stopped: the protected part reports %s, expected %s; user files were kept" % (marker(p) or "nothing", oldv)}
+            return {
+                "error": "Roll back stopped: the protected part reports %s, expected %s; user files were kept"
+                % (marker(p) or "nothing", oldv)
+            }
     try:
         restore(d)
     except OSError as e:
@@ -1662,7 +2074,9 @@ def needs(src):
 
     try:
         for n in ast.parse(src).body:
-            if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "MANIFEST" for t in n.targets):
+            if isinstance(n, ast.Assign) and any(
+                getattr(t, "id", "") == "MANIFEST" for t in n.targets
+            ):
                 v = ast.literal_eval(n.value)
                 if isinstance(v, (tuple, list)) and all(isinstance(x, str) for x in v):
                     return v
@@ -1721,12 +2135,22 @@ async def install_loader(tag, sha):
         src = (stage / "framey.py").read_text()
         compile(src, "framey.py", "exec")
         for f in needs(src):
-            if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:/[A-Za-z0-9_.-]{1,64})*", f) or any(x in (".", "..") for x in f.split("/")) or not (stage / f).is_file():
+            if (
+                not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:/[A-Za-z0-9_.-]{1,64})*", f)
+                or any(x in (".", "..") for x in f.split("/"))
+                or not (stage / f).is_file()
+            ):
                 raise ValueError("the package has no " + f)
             if f.endswith(".py"):
                 compile((stage / f).read_text(), f, "exec")
         try:
-            out = subprocess.run([sys.executable, "-I", "-B", "-c", SMOKE, str(stage / "framey.py")], stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=True)
+            out = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", SMOKE, str(stage / "framey.py")],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=30,
+                check=True,
+            )
         except (subprocess.SubprocessError, OSError):
             out = None
         if not (out and out.stdout.rstrip().endswith(b"framey-smoke-ok")):
@@ -1770,7 +2194,12 @@ loader_install = install_loader
 
 async def loader_update(arg):
     candidate = arg.get("candidate") if isinstance(arg, dict) else None
-    if candidate is not None and (not isinstance(candidate, dict) or not isinstance(candidate.get("tag"), str) or not isinstance(candidate.get("commit"), str) or not SHA.fullmatch(candidate["commit"])):
+    if candidate is not None and (
+        not isinstance(candidate, dict)
+        or not isinstance(candidate.get("tag"), str)
+        or not isinstance(candidate.get("commit"), str)
+        or not SHA.fullmatch(candidate["commit"])
+    ):
         return {"error": "Invalid Framey release selection; check for updates again"}
     g, u = gh(LOADER), upd()
     if bak_busy():
@@ -1816,18 +2245,37 @@ async def loader_roll(_):
 
 
 async def report(arg):
-    if isinstance(arg, dict) and ok_id(arg.get("id")) and arg.get("what") in ("load", "render") and isinstance(arg.get("msg"), str):
+    if (
+        isinstance(arg, dict)
+        and ok_id(arg.get("id"))
+        and arg.get("what") in ("load", "render")
+        and isinstance(arg.get("msg"), str)
+    ):
         mark(arg["id"], arg["what"], arg["msg"])
-    return None
 
 
-JOBS = {"check": do_check, "update": do_update, "finish": do_finish, "retry": do_retry, "rollback": do_rollback, "loader_update": loader_update, "loader_done": loader_done, "loader_roll": loader_roll}
+JOBS = {
+    "check": do_check,
+    "update": do_update,
+    "finish": do_finish,
+    "retry": do_retry,
+    "rollback": do_rollback,
+    "loader_update": loader_update,
+    "loader_done": loader_done,
+    "loader_roll": loader_roll,
+}
 
 
 def restart():
     import subprocess
 
-    subprocess.Popen(["systemctl", "--user", "restart", "framey.service"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    subprocess.Popen(
+        ["systemctl", "--user", "restart", "framey.service"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 async def delegate(method, arg):
@@ -1837,8 +2285,15 @@ async def delegate(method, arg):
     mod = use(name)
     if not mod:
         return {"error": name + " unavailable"}
-    if method == "prefs_set" and isinstance(arg, dict) and any(k in PAGE_FORBIDDEN or str(k).startswith("dev.") for k in arg):
-        return {"error": "That setting is changed in a file in ~/.config/framey, not from the page", "code": "not_allowed"}
+    if (
+        method == "prefs_set"
+        and isinstance(arg, dict)
+        and any(k in PAGE_FORBIDDEN or str(k).startswith("dev.") for k in arg)
+    ):
+        return {
+            "error": "That setting is changed in a file in ~/.config/framey, not from the page",
+            "code": "not_allowed",
+        }
     if name == "fy_diag":
         media = MODS.get("fy_media")
         host.media = media.get() if media else None
@@ -1860,9 +2315,8 @@ async def resync():
 
 
 async def settled(method, arg):
-    if method == "prefs_set" and isinstance(arg, dict):
-        if "autocheck" in arg and upd():
-            upd().arm_autocheck() if arg["autocheck"] is True else upd().disarm()
+    if method == "prefs_set" and isinstance(arg, dict) and "autocheck" in arg and upd():
+        upd().arm_autocheck() if arg["autocheck"] is True else upd().disarm()
     if method in ("prefs_set", "target_add", "target_remove"):
         sync_watches()
 
@@ -1907,7 +2361,15 @@ async def run(method, arg):
         return await reload_one(arg)
     if method == "list":
         off = settings()["disabled"]
-        return [{**m, "enabled": m["id"] not in off, "linked": (PLUGINS / m["id"]).is_symlink(), **info(m)} for m in manifests()]
+        return [
+            {
+                **m,
+                "enabled": m["id"] not in off,
+                "linked": (PLUGINS / m["id"]).is_symlink(),
+                **info(m),
+            }
+            for m in manifests()
+        ]
     if method == "loader":
         return {"commit": loader_sha()[:7], "kept": sib(".bak").is_dir()}
     if method == "store":
@@ -1934,7 +2396,10 @@ async def run(method, arg):
         if method == "locale":
             return {"strings": st.read_locale(PLUGINS / pid, a.get("lang"))}
         lg = LOGS.get(pid) or LOGS.setdefault(pid, st.Log(pid, dirs(pid).logs))
-        getattr(lg, a.get("level") if a.get("level") in ("debug", "info", "warning", "error") else "info")(str(a.get("msg"))[:2048])
+        getattr(
+            lg,
+            a.get("level") if a.get("level") in ("debug", "info", "warning", "error") else "info",
+        )(str(a.get("msg"))[:2048])
         return None
     if method == "install":
         return await install(arg)
@@ -1964,7 +2429,9 @@ async def run(method, arg):
         save(s)
         reason = method
     elif method == "uninstall":
-        pid, wipe = (arg.get("id"), arg.get("purge") is True) if isinstance(arg, dict) else (arg, False)
+        pid, wipe = (
+            (arg.get("id"), arg.get("purge") is True) if isinstance(arg, dict) else (arg, False)
+        )
         if not ok_id(pid):
             return {"error": "unknown plugin"}
         if supervisor:
@@ -2004,7 +2471,12 @@ class WS:
         r, w = await asyncio.wait_for(asyncio.open_connection(*CDP), 5)
         key = base64.b64encode(os.urandom(16)).decode()
         try:
-            w.write(("GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (urllib.parse.urlsplit(url).path, *CDP, key)).encode())
+            w.write(
+                (
+                    "GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                    % (urllib.parse.urlsplit(url).path, *CDP, key)
+                ).encode()
+            )
             head = await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), 5)
             if b" 101 " not in head.split(b"\r\n")[0]:
                 raise ConnectionError("handshake refused")
@@ -2015,7 +2487,13 @@ class WS:
 
     def frame(self, op, data):
         n = len(data)
-        head = bytes([0x80 | op]) + (bytes([0x80 | n]) if n < 126 else bytes([0xFE]) + n.to_bytes(2, "big") if n < 65536 else bytes([0xFF]) + n.to_bytes(8, "big"))
+        head = bytes([0x80 | op]) + (
+            bytes([0x80 | n])
+            if n < 126
+            else bytes([0xFE]) + n.to_bytes(2, "big")
+            if n < 65536
+            else bytes([0xFF]) + n.to_bytes(8, "big")
+        )
         mask = os.urandom(4)
         return head + mask + bytes(b ^ mask[i & 3] for i, b in enumerate(data))
 
@@ -2069,7 +2547,9 @@ async def tabs():
     try:
         w.write(("GET /json HTTP/1.1\r\nHost: %s:%d\r\n\r\n" % CDP).encode())
         head = await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), 3)
-        body = await asyncio.wait_for(r.readexactly(int(re.search(rb"Content-Length:\s*(\d+)", head, re.I)[1])), 3)
+        body = await asyncio.wait_for(
+            r.readexactly(int(re.search(rb"Content-Length:\s*(\d+)", head, re.I)[1])), 3
+        )
     finally:
         w.close()
     return json.loads(body)
@@ -2100,7 +2580,18 @@ async def session(name, tab, code, probe_expr, marker=None):
     async def matches():
         if marker is None:
             return True
-        current = next((x for x in await tabs() if (x.get("id") == tab["id"] if isinstance(tab.get("id"), str) else x.get("webSocketDebuggerUrl") == tab.get("webSocketDebuggerUrl"))), None)
+        current = next(
+            (
+                x
+                for x in await tabs()
+                if (
+                    x.get("id") == tab["id"]
+                    if isinstance(tab.get("id"), str)
+                    else x.get("webSocketDebuggerUrl") == tab.get("webSocketDebuggerUrl")
+                )
+            ),
+            None,
+        )
         return current is not None and marker(current.get("url", ""))
 
     async def send(method, _pid=None, _main=False, **p):
@@ -2108,7 +2599,9 @@ async def session(name, tab, code, probe_expr, marker=None):
         if method in ("Runtime.evaluate", "Runtime.callFunctionOn"):
             if LIVE.get(name) is not send:
                 raise ConnectionError("debugger session was replaced")
-            if (not owns_surface or _main or _pid == "#core" or isinstance(_pid, tuple)) and not await matches():
+            if (
+                not owns_surface or _main or _pid == "#core" or isinstance(_pid, tuple)
+            ) and not await matches():
                 ws.close()
                 raise ConnectionError("debugger target no longer matches")
         if p.get("expression") in WIPES.values():
@@ -2117,7 +2610,9 @@ async def session(name, tab, code, probe_expr, marker=None):
             if getattr(send, "core", None):
                 await send("Runtime.releaseObjectGroup", objectGroup=object_group)
             send.core = None
-        if method in ("Runtime.evaluate", "Runtime.callFunctionOn") and (_pid == "#core" or isinstance(_pid, tuple)):
+        if method in ("Runtime.evaluate", "Runtime.callFunctionOn") and (
+            _pid == "#core" or isinstance(_pid, tuple)
+        ):
             p.setdefault("objectGroup", object_group)
         if iso and iso.on and method == "Runtime.evaluate" and not _main:
             if iso.ctx is None:
@@ -2170,7 +2665,11 @@ async def session(name, tab, code, probe_expr, marker=None):
             if target and hasattr(target, "reconcile"):
                 await target.reconcile(name)
                 if name == "main":
-                    await send("Runtime.evaluate", expression="window.__framey_targets=window.__framey_targets||Object.create(null)", _main=True)
+                    await send(
+                        "Runtime.evaluate",
+                        expression="window.__framey_targets=window.__framey_targets||Object.create(null)",
+                        _main=True,
+                    )
             else:
                 for expression, pid in code():
                     await send("Runtime.evaluate", _pid=pid, expression=expression)
@@ -2211,19 +2710,36 @@ async def session(name, tab, code, probe_expr, marker=None):
             await legacy()
 
     async def fail_load(pid, d):
-        msg = ((d.get("exception", {}).get("description") or d.get("text") or "error") if d else "not loaded").split("\n")[0]
+        msg = (
+            (d.get("exception", {}).get("description") or d.get("text") or "error")
+            if d
+            else "not loaded"
+        ).split("\n")[0]
         log("plugin", pid, "failed:", msg)
         mark(pid, "load", msg)
-        await send("Runtime.evaluate", expression="Framey.fail(%s,{message:%s})" % (json.dumps(pid), json.dumps(msg)))
+        await send(
+            "Runtime.evaluate",
+            expression="Framey.fail(%s,{message:%s})" % (json.dumps(pid), json.dumps(msg)),
+        )
 
-    async def plug(m, tok, src, pid, redraw=True):
-        await send("Runtime.evaluate", _pid=("#src", pid, tok, m, redraw), expression="(function(Framey){" + src + "\n})")
+    async def plug(manifest, token, source, pid, redraw=True):
+        await send(
+            "Runtime.evaluate",
+            _pid=("#src", pid, token, manifest, redraw),
+            expression="(function(Framey){" + source + "\n})",
+        )
 
     async def step():
         while todo:
             if todo[0][0] == "Framey.restore()":
                 world = (iso.ctx, getattr(iso, "epoch", None)) if iso and iso.on else None
-                if any(isinstance(p[0], tuple) and p[0][0] in ("#src", "#bind", "#run") and p[1] == load_epoch and p[2] == world for p in pending.values()):
+                if any(
+                    isinstance(p[0], tuple)
+                    and p[0][0] in ("#src", "#bind", "#run")
+                    and p[1] == load_epoch
+                    and p[2] == world
+                    for p in pending.values()
+                ):
                     return
             expr, pid = todo.pop(0)
             if isinstance(expr, tuple):
@@ -2235,7 +2751,9 @@ async def session(name, tab, code, probe_expr, marker=None):
         target = getattr(host, "targets", None)
         if name in ("main", "bar") and target and hasattr(target, "reconcile"):
             await target.reconcile(name)
-        if ui and not any(isinstance(value[0], tuple) and value[1] == load_epoch for value in pending.values()):
+        if ui and not any(
+            isinstance(value[0], tuple) and value[1] == load_epoch for value in pending.values()
+        ):
             send.ready = True
 
     async def registered(generation, world, who=None):
@@ -2246,12 +2764,19 @@ async def session(name, tab, code, probe_expr, marker=None):
             if todo[0][0] == "Framey.restore()":
                 await step()
         elif who:
-            await send("Runtime.evaluate", expression="window.Framey&&Framey.redraw(%s)" % json.dumps(who))
+            await send(
+                "Runtime.evaluate", expression="window.Framey&&Framey.redraw(%s)" % json.dumps(who)
+            )
 
     async def query(function):
         if LIVE.get(name) is not send or not await matches() or not send.core:
             return None
-        result = await rpc("Runtime.callFunctionOn", objectId=send.core, functionDeclaration=function, returnByValue=True)
+        result = await rpc(
+            "Runtime.callFunctionOn",
+            objectId=send.core,
+            functionDeclaration=function,
+            returnByValue=True,
+        )
         return (result.get("result") or {}).get("value")
 
     async def evaluate(expression):
@@ -2285,16 +2810,30 @@ async def session(name, tab, code, probe_expr, marker=None):
                 return
             if req.get("plugin") == "_core":
                 allowed, arg = authorize(req)
-                if isinstance(req.get("t"), str) and same(req["t"], CORE_TOK) and (not ui or name != ui_name()):
+                if (
+                    isinstance(req.get("t"), str)
+                    and same(req["t"], CORE_TOK)
+                    and (not ui or name != ui_name())
+                ):
                     allowed = False
                 out = await core(req.get("method"), arg) if allowed else NOAUTH
             else:
-                out = await backend(req.get("plugin"), req.get("method"), req.get("arg")) if ui and name == ui_name() and LIVE.get(name) is send and backend_ok(req) else NOAUTH
+                out = (
+                    await backend(req.get("plugin"), req.get("method"), req.get("arg"))
+                    if ui and name == ui_name() and LIVE.get(name) is send and backend_ok(req)
+                    else NOAUTH
+                )
             json.dumps(out)
         except Exception as e:
             out = {"error": str(e) or "failed"}
         i, gen = req.get("id"), req.get("gen")
-        if send.accepting and LIVE.get(name) is send and i and isinstance(i, int) and isinstance(gen, str):
+        if (
+            send.accepting
+            and LIVE.get(name) is send
+            and i
+            and isinstance(i, int)
+            and isinstance(gen, str)
+        ):
             try:
                 await call_core(send, REPLY, [gen, i, out])
             except Exception as e:
@@ -2346,7 +2885,12 @@ async def session(name, tab, code, probe_expr, marker=None):
             if iso and iso.on:
                 iso.event(m)
             if m.get("id") == probe:
-                if probe_world is not None and iso and iso.on and probe_world != (iso.ctx, getattr(iso, "epoch", None)):
+                if (
+                    probe_world is not None
+                    and iso
+                    and iso.on
+                    and probe_world != (iso.ctx, getattr(iso, "epoch", None))
+                ):
                     continue
                 missed = 0
                 v = m.get("result", {}).get("result", {}).get("value")
@@ -2366,42 +2910,75 @@ async def session(name, tab, code, probe_expr, marker=None):
                     if not owns_surface and target and hasattr(target, "reconcile"):
                         await target.reconcile(name)
                         if name == "main":
-                            await send("Runtime.evaluate", expression="window.__framey_targets=window.__framey_targets||Object.create(null)", _main=True)
+                            await send(
+                                "Runtime.evaluate",
+                                expression="window.__framey_targets=window.__framey_targets||Object.create(null)",
+                                _main=True,
+                            )
                     else:
                         load_epoch += 1
-                        todo[:] = [(expression, pid) for expression, pid in code() if not owns_surface or not isinstance(expression, Main)]
+                        todo[:] = [
+                            (expression, pid)
+                            for expression, pid in code()
+                            if not owns_surface or not isinstance(expression, Main)
+                        ]
                         send.core = None
                         await step()
             elif m.get("id") in pending:
                 pid, generation, world = pending.pop(m["id"])
                 res = m.get("result") or {}
                 current_world = (iso.ctx, getattr(iso, "epoch", None)) if iso and iso.on else None
+                result_object = (res.get("result") or {}).get("objectId")
+                source_object = api_object = None
+                if isinstance(pid, tuple):
+                    stage, who = pid[:2]
+                    if stage == "#src":
+                        token, manifest, redraw = pid[2:]
+                    elif stage == "#bind":
+                        source_object, redraw = pid[2:]
+                    elif stage == "#run":
+                        source_object, api_object, redraw = pid[2:]
                 if not send.accepting or generation != load_epoch or world != current_world:
-                    await release((res.get("result") or {}).get("objectId"), *(pid[2:] if isinstance(pid, tuple) and pid[0] in ("#bind", "#run") else []))
+                    await release(result_object, source_object, api_object)
                     continue
                 if pid == "#core":
-                    send.core = (res.get("result") or {}).get("objectId")
+                    send.core = result_object
                     if send.core:
                         await step()
                     else:
                         todo.clear()
                     continue
                 if isinstance(pid, tuple):
-                    stage, who, *rest = pid
                     d = res.get("exceptionDetails")
-                    oid = (res.get("result") or {}).get("objectId")
-                    if d or not send.core or (stage != "#run" and not oid):
+                    if d or not send.core or (stage != "#run" and not result_object):
                         await fail_load(who, d)
-                        await release(oid, *(rest if stage in ("#bind", "#run") else []))
+                        await release(result_object, source_object, api_object)
                         await registered(generation, world)
                     elif stage == "#src":
-                        tok, mf, redraw = rest
-                        await send("Runtime.callFunctionOn", _pid=("#bind", who, oid, redraw), objectId=send.core, functionDeclaration=BIND, arguments=[{"value": mf["id"]}, {"value": tok}, {"value": mf}])
+                        source_object = result_object
+                        await send(
+                            "Runtime.callFunctionOn",
+                            _pid=("#bind", who, source_object, redraw),
+                            objectId=send.core,
+                            functionDeclaration=BIND,
+                            arguments=[
+                                {"value": manifest["id"]},
+                                {"value": token},
+                                {"value": manifest},
+                            ],
+                        )
                     elif stage == "#bind":
-                        await send("Runtime.callFunctionOn", _pid=("#run", who, rest[0], oid, rest[1]), objectId=rest[0], functionDeclaration=RUN, arguments=[{"objectId": oid}])
+                        api_object = result_object
+                        await send(
+                            "Runtime.callFunctionOn",
+                            _pid=("#run", who, source_object, api_object, redraw),
+                            objectId=source_object,
+                            functionDeclaration=RUN,
+                            arguments=[{"objectId": api_object}],
+                        )
                     elif stage == "#run":
-                        await release(*rest, oid)
-                        await registered(generation, world, who if rest[2] else None)
+                        await release(source_object, api_object, result_object)
+                        await registered(generation, world, who if redraw else None)
                     continue
                 d = res.get("exceptionDetails")
                 if d:
@@ -2410,13 +2987,26 @@ async def session(name, tab, code, probe_expr, marker=None):
                 p = m.get("params") or {}
                 if p.get("name") != "fyCall":
                     continue
-                if iso and iso.on and (iso.ctx is None or type(p.get("executionContextId")) is not int or p.get("executionContextId") != iso.ctx):
+                if (
+                    iso
+                    and iso.on
+                    and (
+                        iso.ctx is None
+                        or type(p.get("executionContextId")) is not int
+                        or p.get("executionContextId") != iso.ctx
+                    )
+                ):
                     continue
                 payload = p.get("payload")
                 if isinstance(payload, str) and len(payload) > PAYLOAD_IN:
-                    head = re.match(r'\{\s*"gen"\s*:\s*("(?:[^"\\]|\\.){1,200}")\s*,\s*"id"\s*:\s*(\d{1,12})', payload[:512])
+                    head = re.match(
+                        r'\{\s*"gen"\s*:\s*("(?:[^"\\]|\\.){1,200}")\s*,\s*"id"\s*:\s*(\d{1,12})',
+                        payload[:512],
+                    )
                     if head:
-                        await call_core(send, REPLY, [json.loads(head[1]), int(head[2]), {"error": "too large"}])
+                        await call_core(
+                            send, REPLY, [json.loads(head[1]), int(head[2]), {"error": "too large"}]
+                        )
                     continue
                 req = request(payload)
                 if req:
@@ -2449,7 +3039,9 @@ async def watch(name, marker, code, probe_expr):
     while True:
         try:
             candidates = [t for t in await tabs() if marker(t.get("url", ""))]
-            tab = candidates[0] if candidates and (name != "panel" or len(candidates) == 1) else None
+            tab = (
+                candidates[0] if candidates and (name != "panel" or len(candidates) == 1) else None
+            )
             if tab:
                 await session(name, tab, code, probe_expr, marker)
         except Exception as e:
@@ -2466,7 +3058,16 @@ async def down():
     if MODS.get("fy_dev"):
         MODS["fy_dev"].shutdown(host)
     controller = getattr(host, "panel_controller", None)
-    steps = [x for x in (controller and controller.close(), t and t.remove_all(), supervisor and supervisor.shutdown(1.5), media and media.close()) if x]
+    steps = [
+        x
+        for x in (
+            controller and controller.close(),
+            t and t.remove_all(),
+            supervisor and supervisor.shutdown(1.5),
+            media and media.close(),
+        )
+        if x
+    ]
     await asyncio.wait_for(asyncio.gather(*steps, return_exceptions=True), 6)
 
 
@@ -2496,13 +3097,25 @@ async def main():
             log("separate panel startup unavailable; using Steam panel")
     start_surface_watches()
     work = asyncio.gather(
-        watch("bar", lambda u: overlay_key(u, "valve.steam.gamepadui.bar"), bar_code, "typeof window.FYBar"),
+        watch(
+            "bar",
+            lambda u: overlay_key(u, "valve.steam.gamepadui.bar"),
+            bar_code,
+            "typeof window.FYBar",
+        ),
     )
     try:
         await stop.wait()
     finally:
         stopping = True
-        await asyncio.gather(*(asyncio.wait_for(send("Runtime.evaluate", expression=WIPES[name]), 2) for name, send in list(LIVE.items()) if name in WIPES), return_exceptions=True)
+        await asyncio.gather(
+            *(
+                asyncio.wait_for(send("Runtime.evaluate", expression=WIPES[name]), 2)
+                for name, send in list(LIVE.items())
+                if name in WIPES
+            ),
+            return_exceptions=True,
+        )
         try:
             await down()
         except Exception as e:
@@ -2515,7 +3128,6 @@ async def main():
             await asyncio.wait_for(asyncio.gather(work, *tasks, return_exceptions=True), 3)
         except asyncio.TimeoutError:
             log("shutdown task cleanup timed out")
-
 
 
 def main_entry():

@@ -68,6 +68,15 @@ t("renders cards in the saved order with name, version, commit and compatibility
   assert.deepEqual(c.calls.map(x => x.method).sort(), ["list", "maint_get", "maint_prefs", "state_get", "status", "store"]);
 });
 
+t("prototype-colliding module IDs do not display inherited note text", async () => {
+  const c = boot({ list: [mod("__proto__", "Prototype Module"), mod("constructor", "Constructor Module")] });
+  c.w.Object.prototype[0] = "Inherited note text";
+  await c.open("modules");
+  assert.ok(c.text().includes("Prototype Module"));
+  assert.ok(c.text().includes("Constructor Module"));
+  assert.ok(!c.text().includes("Inherited note text"));
+});
+
 t("unavailable list shows the loader error, nothing else breaks", async () => {
   const c = boot({ list: { error: "loader busy" } });
   await c.open("modules");

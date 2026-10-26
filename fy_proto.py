@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import math
 import re
@@ -12,56 +14,59 @@ class ProtocolError(Exception):
     pass
 
 
-def _constant(name):
+def _reject_constant(name: str) -> None:
     raise ValueError(name)
 
 
-def _float(value):
+def _parse_finite_float(value: str) -> float:
     result = float(value)
     if not math.isfinite(result):
         raise ValueError(value)
     return result
 
 
-def loads(data):
-    return json.loads(data, parse_constant=_constant, parse_float=_float)
+def loads(data: str | bytes | bytearray) -> object:
+    value: object = json.loads(
+        data, parse_constant=_reject_constant, parse_float=_parse_finite_float
+    )
+    return value
 
 
-def dumps(obj):
+def dumps(obj: object) -> str:
     try:
         return json.dumps(obj, separators=(",", ":"), allow_nan=False)
-    except (TypeError, ValueError, RecursionError) as e:
-        raise ProtocolError("not serialisable: %s" % type(e).__name__)
+    except (TypeError, ValueError, RecursionError) as exception:
+        raise ProtocolError("not serialisable: %s" % type(exception).__name__)
 
 
-def encode(obj):
+def encode(obj: object) -> bytes:
     data = dumps(obj).encode("ascii") + b"\n"
     if len(data) > LINE_MAX:
         raise ProtocolError("line too large")
     return data
 
 
-def decode(line):
+def decode(line: bytes) -> dict[str, object]:
     data = line.rstrip(b"\r\n")
     if len(data) > LINE_MAX:
         raise ProtocolError("line too large")
     try:
-        obj = loads(data)
+        message = loads(data)
     except (ValueError, RecursionError):
         raise ProtocolError("bad json")
-    if not isinstance(obj, dict):
+    if not isinstance(message, dict):
         raise ProtocolError("not an object")
-    return obj
+    return message
 
 
-def error(code, message, **extra):
-    out = {"code": code, "message": str(message)[:300]}
+def error(code: str, message: object, **extra: object) -> dict[str, object]:
+    result: dict[str, object] = {"code": code, "message": str(message)[:300]}
     for key, value in extra.items():
-        out[key] = value[:600] if isinstance(value, str) else value
-    return out
+        result[key] = value[:600] if isinstance(value, str) else value
+    return result
 
 
-def event_ok(name, payload):
+def event_ok(name: object, payload: object) -> bool:
     if not isinstance(name, str) or not EVENT_NAME.match(name):
         return False
     try:

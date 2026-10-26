@@ -1,11 +1,3 @@
-"""Decky inspection boundaries alongside live runtime requests and events.
-
-Fixture I/O is injected into the production catalog service. Core routing,
-session authorization, request scheduling, reply generations, archive inspection
-and event delivery are production code. No browser, network, device, or service
-is contacted.
-"""
-
 import asyncio
 import hashlib
 import io

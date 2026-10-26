@@ -1,10 +1,3 @@
-"""Own one hidden SteamCEF popup; compositor placement belongs to the caller.
-
-Steam's popup factory is a private, version-dependent interface. Every operation
-rediscovers its SharedJSContext and checks both the debugger endpoint and the
-page origin. This module never adopts windows by title or closes Steam's host.
-"""
-
 import asyncio
 import json
 import re
@@ -26,17 +19,25 @@ class _Failure(Exception):
 
 
 def _shared_target(target):
-    if (not isinstance(target, dict) or target.get("title") != "SharedJSContext"
-            or target.get("type") != "page"):
+    if (
+        not isinstance(target, dict)
+        or target.get("title") != "SharedJSContext"
+        or target.get("type") != "page"
+    ):
         return False
     raw = target.get("url")
     if not isinstance(raw, str) or len(raw) > 4096 or any(ord(c) < 32 for c in raw):
         return False
     try:
         url = urllib.parse.urlsplit(raw)
-        return (url.scheme == "https" and url.netloc == "steamloopback.host"
-                and url.hostname == "steamloopback.host" and not url.username
-                and not url.password and url.port is None)
+        return (
+            url.scheme == "https"
+            and url.netloc == "steamloopback.host"
+            and url.hostname == "steamloopback.host"
+            and not url.username
+            and not url.password
+            and url.port is None
+        )
     except ValueError:
         return False
 
@@ -44,15 +45,23 @@ def _shared_target(target):
 def _websocket(target):
     identifier = target.get("id")
     raw = target.get("webSocketDebuggerUrl")
-    if (not isinstance(identifier, str) or not _IDENTIFIER.fullmatch(identifier)
-            or not isinstance(raw, str) or len(raw) > 512
-            or any(ord(c) < 33 for c in raw)):
+    if (
+        not isinstance(identifier, str)
+        or not _IDENTIFIER.fullmatch(identifier)
+        or not isinstance(raw, str)
+        or len(raw) > 512
+        or any(ord(c) < 33 for c in raw)
+    ):
         raise _Failure("endpoint_unavailable")
     try:
         url = urllib.parse.urlsplit(raw)
-        if (url.scheme != "ws" or url.netloc != "127.0.0.1:8080"
-                or url.path != "/devtools/page/" + identifier
-                or url.query or url.fragment):
+        if (
+            url.scheme != "ws"
+            or url.netloc != "127.0.0.1:8080"
+            or url.path != "/devtools/page/" + identifier
+            or url.query
+            or url.fragment
+        ):
             raise _Failure("endpoint_unavailable")
     except ValueError:
         raise _Failure("endpoint_unavailable") from None
@@ -60,10 +69,10 @@ def _websocket(target):
 
 
 def _expression(action):
-    # Only fixed application-owned configuration enters this expression. A
-    # retained pending creation prevents a lost CDP reply causing a second popup.
-    config = json.dumps({"owner": OWNER, "key": KEY, "action": action},
-                        ensure_ascii=True, allow_nan=False)
+
+    config = json.dumps(
+        {"owner": OWNER, "key": KEY, "action": action}, ensure_ascii=True, allow_nan=False
+    )
     return """(async () => {
   const config = CONFIG;
   const failure = code => ({ok: false, code});
@@ -156,14 +165,6 @@ def _expression(action):
 
 
 class OverlayBrowser:
-    """Serialized popup commands; no background task or idle polling loop.
-
-    The host supplies its fixed local ``tabs``, ``WS`` and ``cdp_owner_ok``
-    implementations. A timed-out command has an uncertain native outcome; the
-    next command rediscovers the page and consults the retained owned record.
-    ``ok`` means a native command returned, not that pixels are visible.
-    """
-
     def __init__(self, host):
         self.host = host
         self._lock = asyncio.Lock()
@@ -186,10 +187,18 @@ class OverlayBrowser:
                     ws = await self.host.WS.open(endpoint)
                     self._serial += 1
                     request_id = self._serial
-                    await ws.send({"id": request_id, "method": "Runtime.evaluate", "params": {
-                        "expression": _expression(action), "returnByValue": True,
-                        "awaitPromise": True, "userGesture": True,
-                    }})
+                    await ws.send(
+                        {
+                            "id": request_id,
+                            "method": "Runtime.evaluate",
+                            "params": {
+                                "expression": _expression(action),
+                                "returnByValue": True,
+                                "awaitPromise": True,
+                                "userGesture": True,
+                            },
+                        }
+                    )
                     for _ in range(EVENT_MAX):
                         raw = await ws.recv()
                         if not isinstance(raw, str) or len(raw.encode("utf-8")) > MESSAGE_MAX:
@@ -200,7 +209,11 @@ class OverlayBrowser:
                         if type(message.get("id")) is not int or message["id"] != request_id:
                             continue
                         result = message.get("result")
-                        if "error" in message or not isinstance(result, dict) or "exceptionDetails" in result:
+                        if (
+                            "error" in message
+                            or not isinstance(result, dict)
+                            or "exceptionDetails" in result
+                        ):
                             raise _Failure("window_command_failed")
                         remote = result.get("result")
                         value = remote.get("value") if isinstance(remote, dict) else None
@@ -208,10 +221,22 @@ class OverlayBrowser:
                             raise _Failure("debugger_reply_failed")
                         if value["ok"] is not True:
                             code = value.get("code")
-                            allowed = {"context_changed", "ownership_conflict", "popup_missing",
-                                       "factory_unavailable", "creation_failed", "popup_busy",
-                                       "window_api_unavailable", "window_command_failed", "popup_closing"}
-                            raise _Failure(code if isinstance(code, str) and code in allowed else "window_command_failed")
+                            allowed = {
+                                "context_changed",
+                                "ownership_conflict",
+                                "popup_missing",
+                                "factory_unavailable",
+                                "creation_failed",
+                                "popup_busy",
+                                "window_api_unavailable",
+                                "window_command_failed",
+                                "popup_closing",
+                            }
+                            raise _Failure(
+                                code
+                                if isinstance(code, str) and code in allowed
+                                else "window_command_failed"
+                            )
                         answer = {"ok": True, "key": KEY}
                         if action == "probe":
                             if type(value.get("available")) is not bool:
@@ -223,7 +248,10 @@ class OverlayBrowser:
                             answer["absent"] = True
                         else:
                             expected = "hide" if action == "ensure" else action
-                            if value.get("requested") != expected or type(value.get("created")) is not bool:
+                            if (
+                                value.get("requested") != expected
+                                or type(value.get("created")) is not bool
+                            ):
                                 raise _Failure("debugger_reply_failed")
                             answer["created"] = value["created"]
                             answer["requested"] = value["requested"]
@@ -242,13 +270,15 @@ class OverlayBrowser:
                 try:
                     ws.close()
                 except Exception:
-                    # This is the final transport boundary; never log CDP data.
                     pass
 
     @staticmethod
     def _failure(code):
-        return {"ok": False, "error": "Framey's separate panel is unavailable; use the Steam panel.",
-                "code": code}
+        return {
+            "ok": False,
+            "error": "Framey's separate panel is unavailable; use the Steam panel.",
+            "code": code,
+        }
 
     async def ensure(self):
         return await self._run("ensure")

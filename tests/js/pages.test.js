@@ -2,7 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require(process.env.FRAMEY_JSDOM ? require.resolve("jsdom", { paths: [process.env.FRAMEY_JSDOM] }) : "jsdom");
-const { makeDom, TOK } = require("./harness");
+const { makeDom, TOK, readLoaderConstants } = require("./harness");
 
 const root = path.join(__dirname, "..", "..");
 const read = f => fs.readFileSync(path.join(root, f), "utf8");
@@ -875,9 +875,8 @@ test("a namespaced plugin page called decky-store does not collide with the core
 });
 
 test("global teardown from a fullscreen plugin page cannot restart the real Decky Store", async () => {
-  const manifest = read("framey.py").match(/^PANEL_JS\s*=\s*\(([^)\n]+)\)/m);
-  assert.ok(manifest, "the runtime panel script manifest is available");
-  const files = JSON.parse("[" + manifest[1] + "]");
+  const { PANEL_JS: files } = readLoaderConstants(["PANEL_JS"]);
+  assert.ok(Array.isArray(files) && files.includes("fy-catalog.js"), "the runtime panel script manifest is available");
   const h = makeDom({ loadFiles: files.filter(file => file !== "inject.js") });
   const FY = h.window.Framey, K = FY._k(TOK), oldCall = K.call, oldOpen = FY.open;
   try {

@@ -1,8 +1,3 @@
-"""Exercise the authored Framey source port across real worker lifetimes.
-
-Only the repository example is executed. No Decky Store package is imported.
-"""
-
 import json
 import shutil
 import sys
@@ -47,8 +42,6 @@ class AuthoredSourcePortRuntimeTests(unittest.TestCase):
             events.append(reply)
 
     def boot(self):
-        # Declare the test host honestly: ARM64 manifest support is metadata,
-        # while this subprocess exercises only the current machine.
         policy = fy_pkg.decide(self.manifest, "1.1.0", fy_pkg.PLATFORM)
         if policy["state"] != "ok":
             self.skipTest("source-port example does not declare this test host")

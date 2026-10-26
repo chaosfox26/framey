@@ -1,5 +1,3 @@
-"""Selected archive inspection stays outside the plugin worker lifecycle."""
-
 import asyncio
 import hashlib
 import importlib.util

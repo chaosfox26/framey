@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import pathlib
+import re
 import sys
 import unittest
 import zipfile
@@ -608,7 +609,11 @@ class LoaderUpdateTests(Base):
     async def test_a_package_that_names_a_file_outside_itself_is_refused(self):
         loader = await self.start()
         full = H.full_tree()
-        full["framey.py"] = full["framey.py"].replace('MANIFEST = ("framey.py",', 'MANIFEST = ("../escape.py", "framey.py",', 1)
+        full["framey.py"], replacements = re.subn(
+            r"(?m)^(MANIFEST\s*=\s*\()", r'\1"../escape.py",', full["framey.py"], count=1,
+        )
+        self.assertEqual(replacements, 1, "the fixture must change the package manifest")
+        self.assertEqual(loader.fy.needs(full["framey.py"])[0], "../escape.py")
         self.serve_loader(loader, full)
         r = await loader.core("loader_update")
         self.assertEqual(r, {"error": "Framey update not applied: the package has no ../escape.py"})

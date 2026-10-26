@@ -33,7 +33,16 @@ TTL_MAX = 3600
 HOST_DATA_MAX = (fy_proto.PAYLOAD_MAX - 512) * 3 // 4
 TOKEN = re.compile(r"/m/([0-9a-f]{32})")
 RANGE = re.compile(r"bytes=(\d*)-(\d*)")
-REASONS = {200: "OK", 206: "Partial Content", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 416: "Range Not Satisfiable", 431: "Request Header Fields Too Large", 503: "Service Unavailable"}
+REASONS = {
+    200: "OK",
+    206: "Partial Content",
+    400: "Bad Request",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    416: "Range Not Satisfiable",
+    431: "Request Header Fields Too Large",
+    503: "Service Unavailable",
+}
 COMMON = "X-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nContent-Security-Policy: sandbox\r\nConnection: close\r\n"
 
 
@@ -106,7 +115,9 @@ def _chunk(f, n):
 
 
 class Media:
-    def __init__(self, loop=None, *, max_tokens=16, default_ttl=600, data_max=1048576, clock=time.monotonic):
+    def __init__(
+        self, loop=None, *, max_tokens=16, default_ttl=600, data_max=1048576, clock=time.monotonic
+    ):
         self._loop = loop
         self._max = max_tokens if type(max_tokens) is int and max_tokens > 0 else 16
         self._ttl = 600
@@ -125,7 +136,12 @@ class Media:
         self._streams = {}
 
     def _ttl_for(self, ttl):
-        if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or (isinstance(ttl, float) and not math.isfinite(ttl)) or ttl < 1:
+        if (
+            isinstance(ttl, bool)
+            or not isinstance(ttl, (int, float))
+            or (isinstance(ttl, float) and not math.isfinite(ttl))
+            or ttl < 1
+        ):
             return self._ttl
         return min(ttl, TTL_MAX)
 
@@ -149,7 +165,12 @@ class Media:
             if generation != self._generation or owner != self._owners.get(pid, 0):
                 raise MediaError("cancelled", "That resource request was cancelled")
             if data is not None and len(data) <= limit:
-                return {"url": "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii")), "kind": "data", "expires": int(time.time() + ttl), "token": None}
+                return {
+                    "url": "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii")),
+                    "kind": "data",
+                    "expires": int(time.time() + ttl),
+                    "token": None,
+                }
             self._sweep()
             for token, e in self._tokens.items():
                 if e[0] == pid and e[1] == real:
@@ -172,20 +193,28 @@ class Media:
             elif len(self._tokens) >= self._max:
                 self._drop(next(iter(self._tokens)))
             import secrets
+
             token = secrets.token_hex(16)
             self._tokens[token] = [pid, real, mime, self._clock() + ttl]
             self._arm()
             return self._answer(token, int(time.time() + ttl))
 
     def _answer(self, token, expires):
-        return {"url": "http://127.0.0.1:%d/m/%s" % (self._port, token), "kind": "http", "expires": expires, "token": token}
+        return {
+            "url": "http://127.0.0.1:%d/m/%s" % (self._port, token),
+            "kind": "http",
+            "expires": expires,
+            "token": token,
+        }
 
     async def _start(self):
         if self._start_lock is None:
             self._start_lock = asyncio.Lock()
         async with self._start_lock:
             if self._server is None:
-                self._server = await asyncio.start_server(self._serve, "127.0.0.1", 0, limit=HEAD_MAX)
+                self._server = await asyncio.start_server(
+                    self._serve, "127.0.0.1", 0, limit=HEAD_MAX
+                )
                 self._port = self._server.sockets[0].getsockname()[1]
 
     def _arm(self):
@@ -194,7 +223,9 @@ class Media:
             self._handle = None
         if self._tokens:
             loop = self._loop or asyncio.get_running_loop()
-            self._handle = loop.call_later(max(0.0, min(e[3] for e in self._tokens.values()) - self._clock()), self._tick)
+            self._handle = loop.call_later(
+                max(0.0, min(e[3] for e in self._tokens.values()) - self._clock()), self._tick
+            )
 
     def _tick(self):
         self._handle = None
@@ -258,7 +289,12 @@ class Media:
         return e if e and e[3] > self._clock() else None
 
     async def _reply(self, writer, code, extra="", reader=None):
-        writer.write(("HTTP/1.1 %d %s\r\nContent-Length: 0\r\n%s%s\r\n" % (code, REASONS[code], extra, COMMON)).encode("latin-1"))
+        writer.write(
+            (
+                "HTTP/1.1 %d %s\r\nContent-Length: 0\r\n%s%s\r\n"
+                % (code, REASONS[code], extra, COMMON)
+            ).encode("latin-1")
+        )
         await asyncio.wait_for(writer.drain(), READ_TIMEOUT)
         if reader:
             await asyncio.wait_for(reader.read(65536), 1)
@@ -328,10 +364,18 @@ class Media:
                     return await self._reply(writer, 416, "Content-Range: bytes */%d\r\n" % size)
                 code = 206
             length = end - start + 1 if size else 0
-            extra = "Content-Type: %s\r\nContent-Length: %d\r\nAccept-Ranges: bytes\r\n" % (entry[2] + ("; charset=utf-8" if entry[2].startswith(("text/", "application/json")) else ""), length)
+            extra = "Content-Type: %s\r\nContent-Length: %d\r\nAccept-Ranges: bytes\r\n" % (
+                entry[2]
+                + ("; charset=utf-8" if entry[2].startswith(("text/", "application/json")) else ""),
+                length,
+            )
             if code == 206:
                 extra += "Content-Range: bytes %d-%d/%d\r\n" % (start, end, size)
-            writer.write(("HTTP/1.1 %d %s\r\n%s%s\r\n" % (code, REASONS[code], extra, COMMON)).encode("latin-1"))
+            writer.write(
+                ("HTTP/1.1 %d %s\r\n%s%s\r\n" % (code, REASONS[code], extra, COMMON)).encode(
+                    "latin-1"
+                )
+            )
             f.seek(start)
             left = length
             while left > 0 and self._live(token):
@@ -376,10 +420,14 @@ async def hostcall(host, pid, arg, page=False):
         raw = a["revoke"] if isinstance(a["revoke"], str) else ""
         media = get()
         prefix = "http://127.0.0.1:%d" % media._port
-        m = TOKEN.fullmatch(raw[len(prefix):]) if raw.startswith(prefix + "/") else None
+        m = TOKEN.fullmatch(raw[len(prefix) :]) if raw.startswith(prefix + "/") else None
         return {"ok": media.revoke(m[1] if m else raw, pid)}
     dirs = fy_files.plugin_dirs(host, pid)
-    own = {k: getattr(dirs, k) for k in (("data", "runtime") if page else ("data", "config", "runtime")) if dirs and getattr(dirs, k, None)}
+    own = {
+        k: getattr(dirs, k)
+        for k in (("data", "runtime") if page else ("data", "config", "runtime"))
+        if dirs and getattr(dirs, k, None)
+    }
     root = a.get("root")
     if not isinstance(root, str) or root not in own:
         raise MediaError("bad_root", "That location is not available")
@@ -388,7 +436,9 @@ async def hostcall(host, pid, arg, page=False):
         path = fy_files.safe_join(base, a.get("path", ""))
     except fy_files.FileError as e:
         raise MediaError(e.code, e.message)
-    return await get().url_for(pid, path, ttl=a.get("ttl"), data_max=None if page else HOST_DATA_MAX, _root=base)
+    return await get().url_for(
+        pid, path, ttl=a.get("ttl"), data_max=None if page else HOST_DATA_MAX, _root=base
+    )
 
 
 async def resource(host, arg):

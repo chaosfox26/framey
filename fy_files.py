@@ -21,7 +21,20 @@ class FileError(Exception):
         self.message = message[:300]
 
 
-DENY_ROOTS = ("/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/sbin", "/sys", "/usr", "/var")
+DENY_ROOTS = (
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib64",
+    "/proc",
+    "/root",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var",
+)
 
 
 def _under(path, base):
@@ -73,7 +86,9 @@ def safe_join(root, rel=""):
     base = os.path.realpath(root)
     full = os.path.realpath(os.path.join(base, *parts))
     try:
-        inside = os.path.commonpath([os.path.normcase(base), os.path.normcase(full)]) == os.path.normcase(base)
+        inside = os.path.commonpath(
+            [os.path.normcase(base), os.path.normcase(full)]
+        ) == os.path.normcase(base)
     except ValueError:
         inside = False
     if not inside:
@@ -135,7 +150,13 @@ def list_dir(rts, root, rel="", *, hidden=False, dirs_only=False, exts=None, lim
                     mtime = int(st.st_mtime)
                 except OSError:
                     size = mtime = None
-                rows.append((0 if isdir else 1, name.casefold(), {"name": name, "type": kind, "size": size, "mtime": mtime}))
+                rows.append(
+                    (
+                        0 if isdir else 1,
+                        name.casefold(),
+                        {"name": name, "type": kind, "size": size, "mtime": mtime},
+                    )
+                )
     except FileNotFoundError:
         raise FileError("not_found", "That folder was not found")
     except NotADirectoryError:
@@ -169,7 +190,15 @@ def stat_file(rts, root, rel):
     except OSError:
         raise FileError("not_found", "That item was not found")
     link = bool(rel) and os.path.islink(os.path.join(str(base), *rel.split("/")))
-    kind = "link" if link else "dir" if stat.S_ISDIR(st.st_mode) else "file" if stat.S_ISREG(st.st_mode) else "other"
+    kind = (
+        "link"
+        if link
+        else "dir"
+        if stat.S_ISDIR(st.st_mode)
+        else "file"
+        if stat.S_ISREG(st.st_mode)
+        else "other"
+    )
     return {
         "root": root,
         "path": rel,
@@ -211,7 +240,14 @@ def _hostcall(host, pid, arg, page):
     if page:
         rts.pop("media", None)
     if page and a.get("root") is None:
-        return {"root": "", "path": "", "parent": None, "entries": [], "truncated": False, "roots": root_list(rts)}
+        return {
+            "root": "",
+            "path": "",
+            "parent": None,
+            "entries": [],
+            "truncated": False,
+            "roots": root_list(rts),
+        }
     return list_dir(
         rts,
         a.get("root") if isinstance(a.get("root"), str) else next(iter(rts), ""),

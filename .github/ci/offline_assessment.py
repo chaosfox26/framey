@@ -1,5 +1,3 @@
-"""Run Decky fixtures with a Python audit guard; child processes are not isolated."""
-
 from pathlib import Path
 import ipaddress
 import socket
@@ -8,10 +6,16 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BLOCKED = frozenset({
-    "socket.connect", "socket.getaddrinfo", "socket.gethostbyname",
-    "socket.gethostbyaddr", "socket.getnameinfo", "socket.sendto",
-})
+BLOCKED = frozenset(
+    {
+        "socket.connect",
+        "socket.getaddrinfo",
+        "socket.gethostbyname",
+        "socket.gethostbyaddr",
+        "socket.getnameinfo",
+        "socket.sendto",
+    }
+)
 
 
 def loopback(value):

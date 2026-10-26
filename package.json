@@ -1,0 +1,26 @@
+{
+  "name": "framey-development",
+  "private": true,
+  "scripts": {
+    "lint": "eslint *.js compat/*.js examples/*/*.js *.mjs tests/browser/*.mjs",
+    "format:check": "prettier --check *.js compat/*.js examples/*/source.js examples/hello-plugin/main.js examples/starter/main.js types/*.ts *.mjs tests/browser/*.mjs",
+    "types:check": "tsc --strict --noEmit --lib ES2020,DOM types/framey.d.ts",
+    "python:types": "pyright",
+    "javascript:types": "tsc -p tsconfig.checks.json",
+    "language:server": "tsserver",
+    "browser:install": "playwright install chromium",
+    "browser:test": "playwright test",
+    "python:check": ".venv/bin/python -m ruff check . && .venv/bin/python -m ruff format --check . && .venv/bin/python -m mypy && pyright",
+    "check": "npm run python:check && npm run lint && npm run format:check && npm run types:check && npm run javascript:types"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.64.1",
+    "eslint": "10.13.0",
+    "espree": "11.2.0",
+    "globals": "17.13.0",
+    "prettier": "3.9.10",
+    "pyright": "1.1.414",
+    "typescript": "5.9.3"
+  }
+}

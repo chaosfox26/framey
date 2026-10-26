@@ -1,5 +1,3 @@
-"""Regressions for supervisor lifecycle transitions using isolated workers."""
-
 import asyncio
 import unittest
 from unittest import mock
@@ -162,7 +160,6 @@ async def call(method, arg):
         caller = asyncio.create_task(self.sup.call("a", "echo", "unused"))
         self.addAsyncCleanup(self.finish_tasks, caller)
         await asyncio.wait_for(entered.wait(), 2)
-        # Queue boot first, then mark its admission future cancelled before boot runs.
         resume.set()
         caller.cancel()
         with self.assertRaises(asyncio.CancelledError):

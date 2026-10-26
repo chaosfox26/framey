@@ -29,11 +29,32 @@ ACCESS_RETRY_MAX = 604800
 ACCESS_CODES = ("access_denied", "rate_limited", "server_retry")
 DEFAULT_URL = "https://raw.githubusercontent.com/chaosfox26/framey/experimental/catalog/index.json"
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
-REPO = re.compile(r"https://github\.com/([A-Za-z0-9][A-Za-z0-9_.-]{0,99})/([A-Za-z0-9][A-Za-z0-9_.-]{0,99})\Z")
+REPO = re.compile(
+    r"https://github\.com/([A-Za-z0-9][A-Za-z0-9_.-]{0,99})/([A-Za-z0-9][A-Za-z0-9_.-]{0,99})\Z"
+)
 PROJECT_URL = "https://github.com/chaosfox26/framey"
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
-ENTRY_KEYS = frozenset(("id", "name", "version", "description", "category", "tags", "license", "homepage", "channel", "updated", "kind", "platform", "api", "framey", "source", "artifact"))
+ENTRY_KEYS = frozenset(
+    (
+        "id",
+        "name",
+        "version",
+        "description",
+        "category",
+        "tags",
+        "license",
+        "homepage",
+        "channel",
+        "updated",
+        "kind",
+        "platform",
+        "api",
+        "framey",
+        "source",
+        "artifact",
+    )
+)
 SOURCES = {"stable": "Stable", "testing": "Testing", "custom": "Custom"}
 _instances = weakref.WeakKeyDictionary()
 
@@ -44,13 +65,14 @@ class CatalogError(ValueError):
         super().__init__(self.message)
 
 
-def _fail(code, message):
-    raise CatalogError(code, message)
-
-
 def _text(value, limit, field, empty=True):
-    if not isinstance(value, str) or len(value) > limit or any(not c.isprintable() for c in value) or (not empty and not value.strip()):
-        _fail("bad_catalog", "%s is not valid" % field)
+    if (
+        not isinstance(value, str)
+        or len(value) > limit
+        or any(not c.isprintable() for c in value)
+        or (not empty and not value.strip())
+    ):
+        raise CatalogError("bad_catalog", "%s is not valid" % field)
     return value.strip()
 
 
@@ -58,13 +80,13 @@ def _object(pairs):
     out = {}
     for key, value in pairs:
         if key in out:
-            _fail("bad_catalog", "Catalog has duplicate JSON fields")
+            raise CatalogError("bad_catalog", "Catalog has duplicate JSON fields")
         out[key] = value
     return out
 
 
 def _constant(_):
-    _fail("bad_catalog", "Catalog contains a non-finite number")
+    raise CatalogError("bad_catalog", "Catalog contains a non-finite number")
 
 
 def _float(value):
@@ -76,21 +98,26 @@ def _float(value):
 
 def _decode(data, limit=CATALOG_MAX):
     if not isinstance(data, (bytes, str)):
-        _fail("bad_catalog", "Catalog must be UTF-8 JSON")
+        raise CatalogError("bad_catalog", "Catalog must be UTF-8 JSON")
     try:
         raw = data.encode("utf-8") if isinstance(data, str) else data
         if len(raw) > limit:
-            _fail("too_large", "Catalog is too large")
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_object, parse_constant=_constant, parse_float=_float)
+            raise CatalogError("too_large", "Catalog is too large")
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_object,
+            parse_constant=_constant,
+            parse_float=_float,
+        )
     except (UnicodeError, ValueError, RecursionError) as e:
         if isinstance(e, CatalogError):
             raise
-        _fail("bad_catalog", "Catalog is not valid UTF-8 JSON")
+        raise CatalogError("bad_catalog", "Catalog is not valid UTF-8 JSON")
     stack = [(value, 0)]
     while stack:
         item, depth = stack.pop()
         if depth > 32:
-            _fail("bad_catalog", "Catalog is nested too deeply")
+            raise CatalogError("bad_catalog", "Catalog is nested too deeply")
         if isinstance(item, dict):
             stack.extend((x, depth + 1) for x in item.values())
         elif isinstance(item, list):
@@ -115,14 +142,18 @@ def validate_source_url(url):
         authority = "[" + host.lower() + "]" if ":" in host else host.lower()
         return urllib.parse.urlunsplit(("https", authority, parsed.path or "/", "", ""))
     except (ValueError, fy_net.NetError):
-        _fail("bad_source", "Use a public HTTPS catalog URL without credentials, query or fragment")
+        raise CatalogError(
+            "bad_source", "Use a public HTTPS catalog URL without credentials, query or fragment"
+        )
 
 
 def _repository(value):
     value = _text(value, 240, "source.repository", False)
     match = REPO.fullmatch(value)
     if not match or match[1] in (".", "..") or match[2] in (".", "..") or match[2].endswith(".git"):
-        _fail("bad_catalog", "Package source must be a canonical GitHub repository URL")
+        raise CatalogError(
+            "bad_catalog", "Package source must be a canonical GitHub repository URL"
+        )
     return value
 
 
@@ -131,55 +162,75 @@ def _path(value):
     if not value:
         return ""
     pieces = value.split("/")
-    if len(pieces) > 6 or any(not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}", x) or x in (".", "..") for x in pieces):
-        _fail("bad_catalog", "Package subdirectory is not a safe relative path")
+    if len(pieces) > 6 or any(
+        not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}", x) or x in (".", "..")
+        for x in pieces
+    ):
+        raise CatalogError("bad_catalog", "Package subdirectory is not a safe relative path")
     return value
 
 
 def _entry(raw):
     if not isinstance(raw, dict) or set(raw) - ENTRY_KEYS:
-        _fail("bad_catalog", "Catalog entry has unknown or invalid fields")
+        raise CatalogError("bad_catalog", "Catalog entry has unknown or invalid fields")
     pid = raw.get("id")
     if not isinstance(pid, str) or not fy_pkg.ID.fullmatch(pid) or pid in ("_core", "_loader"):
-        _fail("bad_catalog", "Catalog plugin ID is not valid")
+        raise CatalogError("bad_catalog", "Catalog plugin ID is not valid")
     kind = raw.get("kind", "plugin")
     if kind not in ("plugin", "setup"):
-        _fail("bad_catalog", "Catalog entry kind is not valid")
+        raise CatalogError("bad_catalog", "Catalog entry kind is not valid")
     source = raw.get("source")
     if not isinstance(source, dict) or set(source) - {"repository", "commit", "path"}:
-        _fail("bad_catalog", "Package source is not valid")
+        raise CatalogError("bad_catalog", "Package source is not valid")
     src = {"repository": _repository(source.get("repository")), "commit": "", "path": ""}
     if kind == "plugin":
         sha = source.get("commit")
         if not isinstance(sha, str) or not COMMIT.fullmatch(sha):
-            _fail("bad_catalog", "Package source requires an immutable full commit")
+            raise CatalogError("bad_catalog", "Package source requires an immutable full commit")
         src.update(commit=sha, path=_path(source.get("path", "")))
     elif source.get("commit") or source.get("path"):
-        _fail("bad_catalog", "Setup listings cannot declare installable package sources")
+        raise CatalogError(
+            "bad_catalog", "Setup listings cannot declare installable package sources"
+        )
     version = _text(raw.get("version", ""), 40, "version")
     if kind == "plugin" and fy_pkg.parse_version(version) is None:
-        _fail("bad_catalog", "Package version is not valid")
+        raise CatalogError("bad_catalog", "Package version is not valid")
     category = raw.get("category", "other")
     if not isinstance(category, str) or not SLUG.fullmatch(category):
-        _fail("bad_catalog", "Catalog category is not valid")
+        raise CatalogError("bad_catalog", "Catalog category is not valid")
     tags = raw.get("tags", [])
-    if not isinstance(tags, list) or len(tags) > 8 or not all(isinstance(x, str) and SLUG.fullmatch(x) for x in tags) or len(set(tags)) != len(tags):
-        _fail("bad_catalog", "Catalog tags are not valid")
+    if (
+        not isinstance(tags, list)
+        or len(tags) > 8
+        or not all(isinstance(x, str) and SLUG.fullmatch(x) for x in tags)
+        or len(set(tags)) != len(tags)
+    ):
+        raise CatalogError("bad_catalog", "Catalog tags are not valid")
     channel = raw.get("channel", "stable")
     if channel not in ("stable", "testing"):
-        _fail("bad_catalog", "Catalog channel is not valid")
-    manifest = {k: raw[k] for k in ("id", "name", "version", "platform", "api", "framey") if k in raw}
+        raise CatalogError("bad_catalog", "Catalog channel is not valid")
+    manifest = {
+        k: raw[k] for k in ("id", "name", "version", "platform", "api", "framey") if k in raw
+    }
     if isinstance(raw.get("framey"), dict) and set(raw["framey"]) - {"min", "max"}:
-        _fail("bad_catalog", "Framey compatibility has unknown fields")
+        raise CatalogError("bad_catalog", "Framey compatibility has unknown fields")
     checked = fy_pkg.normalize_manifest(manifest)
     if not checked["ok"]:
-        _fail("bad_catalog", "Catalog compatibility fields are not valid")
-    out = {"id": pid, "name": _text(raw.get("name"), 80, "name", False), "version": version,
-           "description": _text(raw.get("description", ""), 600, "description"), "category": category,
-           "tags": list(tags), "license": _text(raw.get("license", ""), 80, "license"),
-           "homepage": _text(raw.get("homepage", src["repository"]), 400, "homepage"),
-           "channel": channel, "updated": _text(raw.get("updated", ""), 40, "updated"),
-           "kind": kind, "source": src}
+        raise CatalogError("bad_catalog", "Catalog compatibility fields are not valid")
+    out = {
+        "id": pid,
+        "name": _text(raw.get("name"), 80, "name", False),
+        "version": version,
+        "description": _text(raw.get("description", ""), 600, "description"),
+        "category": category,
+        "tags": list(tags),
+        "license": _text(raw.get("license", ""), 80, "license"),
+        "homepage": _text(raw.get("homepage", src["repository"]), 400, "homepage"),
+        "channel": channel,
+        "updated": _text(raw.get("updated", ""), 40, "updated"),
+        "kind": kind,
+        "source": src,
+    }
     if out["homepage"]:
         out["homepage"] = validate_source_url(out["homepage"])
     for key in ("platform", "api", "framey"):
@@ -187,11 +238,20 @@ def _entry(raw):
             out[key] = raw[key]
     artifact = raw.get("artifact")
     if artifact is not None:
-        if kind != "plugin" or not isinstance(artifact, dict) or set(artifact) != {"sha256", "size"}:
-            _fail("bad_catalog", "Package artifact metadata is not valid")
+        if (
+            kind != "plugin"
+            or not isinstance(artifact, dict)
+            or set(artifact) != {"sha256", "size"}
+        ):
+            raise CatalogError("bad_catalog", "Package artifact metadata is not valid")
         sha, size = artifact["sha256"], artifact["size"]
-        if not isinstance(sha, str) or not HEX.fullmatch(sha) or type(size) is not int or not 1 <= size <= fy_pkg.ARCHIVE_MAX:
-            _fail("bad_catalog", "Package artifact hash or size is not valid")
+        if (
+            not isinstance(sha, str)
+            or not HEX.fullmatch(sha)
+            or type(size) is not int
+            or not 1 <= size <= fy_pkg.ARCHIVE_MAX
+        ):
+            raise CatalogError("bad_catalog", "Package artifact hash or size is not valid")
         out["artifact"] = {"sha256": sha, "size": size}
     return out
 
@@ -201,28 +261,43 @@ def parse_catalog(data):
 
 
 def _normalize_catalog(raw):
-    if not isinstance(raw, dict) or set(raw) - {"schema", "name", "plugins"} or type(raw.get("schema")) is not int or raw["schema"] != 1:
-        _fail("bad_catalog", "Catalog schema is not supported")
+    if (
+        not isinstance(raw, dict)
+        or set(raw) - {"schema", "name", "plugins"}
+        or type(raw.get("schema")) is not int
+        or raw["schema"] != 1
+    ):
+        raise CatalogError("bad_catalog", "Catalog schema is not supported")
     plugins = raw.get("plugins")
     if not isinstance(plugins, list) or len(plugins) > PLUGIN_MAX:
-        _fail("bad_catalog", "Catalog must contain at most %d entries" % PLUGIN_MAX)
+        raise CatalogError("bad_catalog", "Catalog must contain at most %d entries" % PLUGIN_MAX)
     out, seen = [], set()
     for row in plugins:
         item = _entry(row)
         if item["id"] in seen:
-            _fail("bad_catalog", "Catalog contains duplicate plugin IDs")
+            raise CatalogError("bad_catalog", "Catalog contains duplicate plugin IDs")
         seen.add(item["id"])
         out.append(item)
-    return {"schema": 1, "name": _text(raw.get("name", "Plugin catalog"), 80, "catalog name", False), "plugins": out}
+    return {
+        "schema": 1,
+        "name": _text(raw.get("name", "Plugin catalog"), 80, "catalog name", False),
+        "plugins": out,
+    }
 
 
 def _json(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    )
 
 
 def _user_agent(host):
     version = getattr(host, "VERSION", None)
-    if not isinstance(version, str) or not re.fullmatch(r"[0-9A-Za-z.+-]{1,80}", version) or fy_pkg.parse_version(version) is None:
+    if (
+        not isinstance(version, str)
+        or not re.fullmatch(r"[0-9A-Za-z.+-]{1,80}", version)
+        or fy_pkg.parse_version(version) is None
+    ):
         version = "unknown"
     project = getattr(host, "LOADER", PROJECT_URL)
     if not isinstance(project, str) or not REPO.fullmatch(project):
@@ -231,9 +306,14 @@ def _user_agent(host):
 
 
 def _access_error(code, retry=0, label="The catalog server"):
-    messages = {"access_denied": "%s denied Framey access. Try again later or report the problem to Framey." % label,
-                "rate_limited": "%s asked Framey to slow down. Wait for the retry delay before trying again." % label,
-                "server_retry": "%s is temporarily unavailable. Wait for the retry delay before trying again." % label}
+    messages = {
+        "access_denied": "%s denied Framey access. Try again later or report the problem to Framey."
+        % label,
+        "rate_limited": "%s asked Framey to slow down. Wait for the retry delay before trying again."
+        % label,
+        "server_retry": "%s is temporarily unavailable. Wait for the retry delay before trying again."
+        % label,
+    }
     if code not in messages:
         return None
     error = CatalogError(code, messages[code])
@@ -248,16 +328,32 @@ def _response_access(reply, now, label="The catalog server"):
     if not code and status != 503:
         return None
     headers = reply.get("headers", {})
-    delay = fy_net.retry_after_seconds(headers.get("retry-after") if isinstance(headers, dict) else None, now)
+    delay = fy_net.retry_after_seconds(
+        headers.get("retry-after") if isinstance(headers, dict) else None, now
+    )
     return _access_error(code or "server_retry", delay, label) if code or delay > 0 else None
 
 
 def _transport_access(error, label="The catalog server"):
     delay = getattr(error, "retry_after", 0)
     access = _access_error(getattr(error, "code", None), delay, label)
-    if access is None and getattr(error, "status", None) == 503 and type(delay) in (int, float) and 0 < delay <= ACCESS_RETRY_MAX:
+    if (
+        access is None
+        and getattr(error, "status", None) == 503
+        and type(delay) in (int, float)
+        and 0 < delay <= ACCESS_RETRY_MAX
+    ):
         access = _access_error("server_retry", delay, label)
     return access
+
+
+def _visible(entry, source):
+    if source["id"] == "testing":
+        return True
+    if entry["channel"] == "testing":
+        return False
+    version = fy_pkg.parse_version(entry["version"])
+    return not (version and version.prerelease)
 
 
 def _fingerprint(source, entry):
@@ -270,6 +366,7 @@ def _safe(fn):
             return await fn(self, arg)
         except CatalogError as error:
             return {"error": error.message, "code": error.code}
+
     return invoke
 
 
@@ -286,9 +383,21 @@ def _receipt(path):
         return None
     try:
         src = raw["source"]
-        if not isinstance(raw.get("id"), str) or not fy_pkg.ID.fullmatch(raw["id"]) or not isinstance(src.get("commit"), str) or not COMMIT.fullmatch(src["commit"]):
+        if (
+            not isinstance(raw.get("id"), str)
+            or not fy_pkg.ID.fullmatch(raw["id"])
+            or not isinstance(src.get("commit"), str)
+            or not COMMIT.fullmatch(src["commit"])
+        ):
             return None
-        return {"id": raw["id"], "source": {"repository": _repository(src["repository"]), "commit": src["commit"], "path": _path(src.get("path", ""))}}
+        return {
+            "id": raw["id"],
+            "source": {
+                "repository": _repository(src["repository"]),
+                "commit": src["commit"],
+                "path": _path(src.get("path", "")),
+            },
+        }
     except (CatalogError, KeyError, TypeError):
         return None
 
@@ -302,7 +411,10 @@ class Catalog:
         self.host, self.fetcher = host, fetcher
         self.archive_fetcher = archive_fetcher
         self.decky = None
-        self.path = Path(getattr(host, "CONF", Path(host.HOME) / ".config/framey/settings.json")).parent / "catalog.json"
+        self.path = (
+            Path(getattr(host, "CONF", Path(host.HOME) / ".config/framey/settings.json")).parent
+            / "catalog.json"
+        )
         self.state = None
         self.refreshes = {}
         self.install_lock = asyncio.Lock()
@@ -312,7 +424,13 @@ class Catalog:
     def now(self):
         try:
             value = self.host.now()
-            return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value < 1e12 else time.time()
+            return (
+                float(value)
+                if isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and 0 <= value < 1e12
+                else time.time()
+            )
         except (AttributeError, TypeError, ValueError):
             return time.time()
 
@@ -342,7 +460,11 @@ class Catalog:
         except CatalogError:
             pass
         now = self.now()
-        for key, value in list(raw.get("cache", {}).items())[:CACHE_SOURCES] if isinstance(raw.get("cache"), dict) else []:
+        for key, value in (
+            list(raw.get("cache", {}).items())[:CACHE_SOURCES]
+            if isinstance(raw.get("cache"), dict)
+            else []
+        ):
             if not isinstance(key, str) or not HEX.fullmatch(key) or not isinstance(value, dict):
                 continue
             try:
@@ -350,7 +472,12 @@ class Catalog:
                 catalog = None
                 if "catalog" in value:
                     try:
-                        encoded = json.dumps(value["catalog"], ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                        encoded = json.dumps(
+                            value["catalog"],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        ).encode("utf-8")
                         catalog = _normalize_catalog(_decode(encoded, CACHE_MAX))
                     except (CatalogError, TypeError, ValueError):
                         if access is None:
@@ -358,14 +485,35 @@ class Catalog:
                 elif access is None:
                     continue
                 downloaded = value.get("downloaded_at", 0)
-                if not isinstance(downloaded, (int, float)) or isinstance(downloaded, bool) or not 0 <= downloaded <= now + 60:
+                if (
+                    not isinstance(downloaded, (int, float))
+                    or isinstance(downloaded, bool)
+                    or not 0 <= downloaded <= now + 60
+                ):
                     continue
                 checked = value.get("checked_at", downloaded)
-                checked = checked if type(checked) in (int, float) and 0 <= checked <= now + 60 else downloaded
+                checked = (
+                    checked
+                    if type(checked) in (int, float) and 0 <= checked <= now + 60
+                    else downloaded
+                )
                 retry = value.get("retry_after", 0)
-                retry = retry if type(retry) in (int, float) and 0 <= retry <= now + (ACCESS_RETRY_MAX if access else RETRY) else 0
-                record = {"downloaded_at": downloaded, "checked_at": checked,
-                          "error": access.message if access else "Previous catalog refresh failed" if value.get("error") else "", "retry_after": retry}
+                retry = (
+                    retry
+                    if type(retry) in (int, float)
+                    and 0 <= retry <= now + (ACCESS_RETRY_MAX if access else RETRY)
+                    else 0
+                )
+                record = {
+                    "downloaded_at": downloaded,
+                    "checked_at": checked,
+                    "error": access.message
+                    if access
+                    else "Previous catalog refresh failed"
+                    if value.get("error")
+                    else "",
+                    "retry_after": retry,
+                }
                 if catalog is not None:
                     record["catalog"] = catalog
                 if access:
@@ -386,12 +534,12 @@ class Catalog:
     def _selection(self, arg):
         source = arg.get("source", self.state["source"])
         if not isinstance(source, str) or source not in SOURCES:
-            _fail("bad_source", "Unknown catalog source")
+            raise CatalogError("bad_source", "Unknown catalog source")
         if source == "testing" and not self.developer():
-            _fail("dev_off", "Testing catalog requires developer mode")
+            raise CatalogError("dev_off", "Testing catalog requires developer mode")
         url = arg.get("url", self.state["custom_url"]) if source == "custom" else DEFAULT_URL
         if source == "custom" and not url:
-            _fail("bad_source", "Enter a custom catalog URL")
+            raise CatalogError("bad_source", "Enter a custom catalog URL")
         return {"id": source, "label": SOURCES[source], "url": validate_source_url(url)}
 
     @_safe
@@ -407,52 +555,92 @@ class Catalog:
             error = await self._save()
             if error:
                 self.state.update(source=old_source, custom_url=old_url)
-                _fail("write_failed", error)
+                raise CatalogError("write_failed", error)
         effective = dict(arg)
         if not effective and self.state["source"] == "testing" and not self.developer():
             effective["source"] = "stable"
         selection = self._selection(effective)
         from fy_decky_catalog import SOURCES as decky_sources
-        return {"source": selection, "sources": [{"id": k, "label": label, "url": self.state["custom_url"] if k == "custom" else DEFAULT_URL} for k, label in SOURCES.items()], "custom_url": self.state["custom_url"], "decky_sources": [dict(x) for x in decky_sources.values()]}
+
+        return {
+            "source": selection,
+            "sources": [
+                {
+                    "id": k,
+                    "label": label,
+                    "url": self.state["custom_url"] if k == "custom" else DEFAULT_URL,
+                }
+                for k, label in SOURCES.items()
+            ],
+            "custom_url": self.state["custom_url"],
+            "decky_sources": [dict(x) for x in decky_sources.values()],
+        }
 
     def _decky(self):
         if self.decky is None:
             from fy_decky_catalog import DeckyCatalog
+
             self.decky = DeckyCatalog(self.host, self.fetcher, self.archive_fetcher)
         return self.decky
 
     async def _download(self, url):
         if self.fetcher is not None:
             return await _await(self.fetcher(url, CATALOG_MAX))
-        reply = await fy_net.fetch_plugin("_core", url, headers={"Accept": "application/json", "User-Agent": _user_agent(self.host)}, timeout=15, max_bytes=CATALOG_MAX, allow_http=False)
+        reply = await fy_net.fetch_plugin(
+            "_core",
+            url,
+            headers={"Accept": "application/json", "User-Agent": _user_agent(self.host)},
+            timeout=15,
+            max_bytes=CATALOG_MAX,
+            allow_http=False,
+        )
         access = _response_access(reply, self.now())
         if access:
             raise access
         if not isinstance(reply, dict) or reply.get("status") != 200 or reply.get("truncated"):
-            _fail("download_failed", "The catalog server did not return a complete catalog")
+            raise CatalogError(
+                "download_failed", "The catalog server did not return a complete catalog"
+            )
         if isinstance(reply.get("text"), str):
             return reply["text"]
         try:
             return base64.b64decode(reply["b64"], validate=True)
         except (KeyError, TypeError, ValueError):
-            _fail("download_failed", "The catalog server returned unreadable content")
+            raise CatalogError("download_failed", "The catalog server returned unreadable content")
 
     async def _refresh(self, source, key):
         now = self.now()
         old = self.state["cache"].get(key)
         try:
             catalog = parse_catalog(await self._download(source["url"]))
-            record = {"catalog": catalog, "downloaded_at": now, "checked_at": now, "error": "", "retry_after": 0}
+            record = {
+                "catalog": catalog,
+                "downloaded_at": now,
+                "checked_at": now,
+                "error": "",
+                "retry_after": 0,
+            }
         except Exception as error:
             record = dict(old or {})
             access = _transport_access(error)
-            record.update(checked_at=now, error=access.message if access else error.message if isinstance(error, CatalogError) else "Catalog could not be refreshed", retry_after=now + (access.retry_after if access else RETRY))
+            record.update(
+                checked_at=now,
+                error=access.message
+                if access
+                else error.message
+                if isinstance(error, CatalogError)
+                else "Catalog could not be refreshed",
+                retry_after=now + (access.retry_after if access else RETRY),
+            )
             record.pop("access_code", None)
             if access:
                 record["access_code"] = access.code
         self.state["cache"][key] = record
         while len(self.state["cache"]) > CACHE_SOURCES:
-            victim = min((k for k in self.state["cache"] if k != key), key=lambda k: self.state["cache"][k].get("checked_at", 0))
+            victim = min(
+                (k for k in self.state["cache"] if k != key),
+                key=lambda k: self.state["cache"][k].get("checked_at", 0),
+            )
             del self.state["cache"][victim]
         save_error = await self._save()
         if save_error and not record.get("error"):
@@ -466,13 +654,30 @@ class Catalog:
         source = self._selection(arg)
         key = hashlib.sha256(_json(source).encode()).hexdigest()
         record, now = self.state["cache"].get(key), self.now()
-        refresh = arg.get("refresh") is True or not record or now - record.get("downloaded_at", 0) >= TTL or bool(record.get("error"))
-        blocked = record and record.get("access_code") in ACCESS_CODES and now < record.get("retry_after", 0)
-        if refresh and not blocked and (arg.get("refresh") is True or not record or now >= record.get("retry_after", 0)):
+        refresh = (
+            arg.get("refresh") is True
+            or not record
+            or now - record.get("downloaded_at", 0) >= TTL
+            or bool(record.get("error"))
+        )
+        blocked = (
+            record
+            and record.get("access_code") in ACCESS_CODES
+            and now < record.get("retry_after", 0)
+        )
+        if (
+            refresh
+            and not blocked
+            and (arg.get("refresh") is True or not record or now >= record.get("retry_after", 0))
+        ):
             task = self.refreshes.get(key)
             if task is None:
                 task = self.refreshes[key] = asyncio.create_task(self._refresh(source, key))
-                task.add_done_callback(lambda done, k=key: self.refreshes.pop(k, None) if self.refreshes.get(k) is done else None)
+                task.add_done_callback(
+                    lambda done, k=key: (
+                        self.refreshes.pop(k, None) if self.refreshes.get(k) is done else None
+                    )
+                )
             try:
                 record = await asyncio.shield(task)
             finally:
@@ -482,7 +687,9 @@ class Catalog:
         catalog = record.get("catalog") if record else None
         if catalog is None:
             try:
-                data = await asyncio.to_thread((Path(self.host.ROOT) / "catalog/index.json").read_bytes)
+                data = await asyncio.to_thread(
+                    (Path(self.host.ROOT) / "catalog/index.json").read_bytes
+                )
                 catalog = parse_catalog(data)
             except (OSError, CatalogError):
                 catalog = {"schema": 1, "name": "Plugin catalog", "plugins": []}
@@ -491,31 +698,65 @@ class Catalog:
             origin = "downloaded" if refresh and not error else "cache"
             downloaded = record.get("downloaded_at", 0)
         stale = origin == "bundled" or bool(error) or now - downloaded >= TTL
-        warning = "Bundled catalog; remote source unavailable" if origin == "bundled" else "Saved catalog; refresh failed" if error else "Saved catalog is older than 24 hours" if stale else ""
+        warning = (
+            "Bundled catalog; remote source unavailable"
+            if origin == "bundled"
+            else "Saved catalog; refresh failed"
+            if error
+            else "Saved catalog is older than 24 hours"
+            if stale
+            else ""
+        )
         if record and record.get("save_warning"):
             warning = record["save_warning"]
         if record and record.get("access_code") in ACCESS_CODES:
             warning = error
-        return catalog, {"source": source, "origin": origin, "stale": stale, "checked_at": record.get("checked_at", 0) if record else 0, "downloaded_at": downloaded, "error": None, "fetch_error": error or None, "warning": warning,
-                         "retry_after": record.get("retry_after", 0) if record else 0}
+        return catalog, {
+            "source": source,
+            "origin": origin,
+            "stale": stale,
+            "checked_at": record.get("checked_at", 0) if record else 0,
+            "downloaded_at": downloaded,
+            "error": None,
+            "fetch_error": error or None,
+            "warning": warning,
+            "retry_after": record.get("retry_after", 0) if record else 0,
+        }
 
     def _row(self, entry, source):
         row = dict(entry)
         pid = entry["id"]
         dest = Path(self.host.PLUGINS) / pid
-        installed, linked = os.path.lexists(dest), dest.is_symlink() or getattr(dest, "is_junction", lambda: False)()
+        installed, linked = (
+            os.path.lexists(dest),
+            dest.is_symlink() or getattr(dest, "is_junction", lambda: False)(),
+        )
         receipt = _receipt(dest) if installed and not linked else None
-        managed = bool(receipt and receipt["id"] == pid and all(receipt["source"][k] == entry["source"][k] for k in ("repository", "path")))
+        managed = bool(
+            receipt
+            and receipt["id"] == pid
+            and all(receipt["source"][k] == entry["source"][k] for k in ("repository", "path"))
+        )
         newer = bool(managed and receipt["source"].get("commit") != entry["source"].get("commit"))
-        compatibility = fy_pkg.decide(entry, self.host.VERSION, self.host.PLATFORM, getattr(self.host, "API_GENERATION", 1))
-        existing = fy_store.read_json(dest / "plugin.json", {}, 65536) if installed and not linked else {}
-        current = fy_pkg.parse_version(existing.get("version")) if isinstance(existing, dict) else None
+        compatibility = fy_pkg.decide(
+            entry, self.host.VERSION, self.host.PLATFORM, getattr(self.host, "API_GENERATION", 1)
+        )
+        existing = (
+            fy_store.read_json(dest / "plugin.json", {}, 65536) if installed and not linked else {}
+        )
+        current = (
+            fy_pkg.parse_version(existing.get("version")) if isinstance(existing, dict) else None
+        )
         candidate = fy_pkg.parse_version(entry.get("version"))
         state = self.host.settings() if hasattr(self.host, "settings") else {}
         modules = state.get("modules", {}) if isinstance(state, dict) else {}
         frozen = modules.get("frozen", {}) if isinstance(modules, dict) else {}
         reason = ""
-        if entry["kind"] == "setup" or pid == "fan" or entry["source"]["repository"].casefold() == "https://github.com/chaosfox26/frame-fan":
+        if (
+            entry["kind"] == "setup"
+            or pid == "fan"
+            or entry["source"]["repository"].casefold() == "https://github.com/chaosfox26/frame-fan"
+        ):
             reason = "Requires Framey App signed privileged setup"
         elif compatibility["state"] == "incompatible":
             reason = compatibility["msg"]
@@ -527,30 +768,71 @@ class Catalog:
             reason = "Unfreeze this module from Modules before updating"
         elif installed and current is not None and candidate is not None and candidate < current:
             reason = "A newer version is installed"
-        elif installed and (os.path.lexists(dest.with_name(".old-" + pid)) or getattr(self.host, "pending", lambda _: None)(pid)):
+        elif installed and (
+            os.path.lexists(dest.with_name(".old-" + pid))
+            or getattr(self.host, "pending", lambda _: None)(pid)
+        ):
             reason = "Keep or restore the previous version from Modules first"
         elif installed and not newer:
             reason = "Already installed; manage it from Modules"
-        row.update(identity=_fingerprint(source, entry), compat=compatibility, installed=installed, linked=linked,
-                   eligible=not reason, reason=reason, catalog_managed=managed, update_available=newer,
-                   platform_declared=bool(entry.get("platform")))
+        row.update(
+            identity=_fingerprint(source, entry),
+            compat=compatibility,
+            installed=installed,
+            linked=linked,
+            eligible=not reason,
+            reason=reason,
+            catalog_managed=managed,
+            update_available=newer,
+            platform_declared=bool(entry.get("platform")),
+        )
         known_platform = bool(entry.get("platform"))
-        status = "incompatible" if compatibility["state"] == "incompatible" else "compatible" if compatibility["state"] == "ok" and known_platform else "unverified"
+        status = (
+            "incompatible"
+            if compatibility["state"] == "incompatible"
+            else "compatible"
+            if compatibility["state"] == "ok" and known_platform
+            else "unverified"
+        )
         explanations = []
         for message in compatibility["reasons"]:
             if message.startswith("built for "):
-                explanations.append("Built for a different processor; this headset needs an ARM64 build." if self.host.PLATFORM == "linux-aarch64" else "Built for a different processor than this device uses.")
+                explanations.append(
+                    "Built for a different processor; this headset needs an ARM64 build."
+                    if self.host.PLATFORM == "linux-aarch64"
+                    else "Built for a different processor than this device uses."
+                )
             elif message.startswith("needs API generation "):
-                explanations.append("Needs a newer Framey plugin interface than this version provides.")
+                explanations.append(
+                    "Needs a newer Framey plugin interface than this version provides."
+                )
             elif message.startswith("needs Framey "):
                 explanations.append("Needs a newer version of Framey.")
             elif message.startswith("supports Framey up to "):
                 explanations.append("Supports an older version of Framey.")
             else:
-                explanations.append("The plugin's compatibility requirements could not be verified.")
-        plain = " ".join(explanations) if status == "incompatible" else "Declared requirements match this Framey version and headset architecture. VR behavior has not been verified." if status == "compatible" else "The plugin does not declare enough requirements to verify support for this headset."
-        row["compatibility"] = {"status": status, "label": "Requirements match" if status == "compatible" else "Not compatible" if status == "incompatible" else "Unverified",
-                                "reason": plain, "reasons": explanations or [plain], "basis": "declared_requirements", "runtime_verified": False}
+                explanations.append(
+                    "The plugin's compatibility requirements could not be verified."
+                )
+        plain = (
+            " ".join(explanations)
+            if status == "incompatible"
+            else "Declared requirements match this Framey version and headset architecture. VR behavior has not been verified."
+            if status == "compatible"
+            else "The plugin does not declare enough requirements to verify support for this headset."
+        )
+        row["compatibility"] = {
+            "status": status,
+            "label": "Requirements match"
+            if status == "compatible"
+            else "Not compatible"
+            if status == "incompatible"
+            else "Unverified",
+            "reason": plain,
+            "reasons": explanations or [plain],
+            "basis": "declared_requirements",
+            "runtime_verified": False,
+        }
         return row
 
     @_safe
@@ -561,22 +843,53 @@ class Catalog:
         query = _text(arg.get("query", ""), 120, "search query").casefold()
         category = arg.get("category", "all")
         sort = arg.get("sort", "name")
-        if not isinstance(category, str) or (category != "all" and not SLUG.fullmatch(category)) or sort not in ("name", "updated", "relevance"):
-            _fail("bad_arg", "Catalog filter or sorting is not valid")
+        if (
+            not isinstance(category, str)
+            or (category != "all" and not SLUG.fullmatch(category))
+            or sort not in ("name", "updated", "relevance")
+        ):
+            raise CatalogError("bad_arg", "Catalog filter or sorting is not valid")
         offset, limit = arg.get("offset", 0), arg.get("limit", 50)
-        if type(offset) is not int or not 0 <= offset <= PLUGIN_MAX or type(limit) is not int or not 1 <= limit <= 100:
-            _fail("bad_arg", "Catalog page is not valid")
+        if (
+            type(offset) is not int
+            or not 0 <= offset <= PLUGIN_MAX
+            or type(limit) is not int
+            or not 1 <= limit <= 100
+        ):
+            raise CatalogError("bad_arg", "Catalog page is not valid")
         catalog, status = await self._catalog(arg)
-        entries = [x for x in catalog["plugins"] if status["source"]["id"] == "testing" or (x["channel"] != "testing" and not (fy_pkg.parse_version(x["version"]) and fy_pkg.parse_version(x["version"]).prerelease))]
+        entries = [x for x in catalog["plugins"] if _visible(x, status["source"])]
         categories = sorted({x["category"] for x in entries})
-        entries = [x for x in entries if (category == "all" or x["category"] == category) and all(word in " ".join((x["name"], x["description"], x["id"], " ".join(x["tags"]))).casefold() for word in query.split())]
+        entries = [
+            x
+            for x in entries
+            if (category == "all" or x["category"] == category)
+            and all(
+                word
+                in " ".join((x["name"], x["description"], x["id"], " ".join(x["tags"]))).casefold()
+                for word in query.split()
+            )
+        ]
         if sort == "updated":
             entries.sort(key=lambda x: (x["updated"], x["name"].casefold()), reverse=True)
         elif sort == "relevance" and query:
-            entries.sort(key=lambda x: (0 if query in x["name"].casefold() else 1, x["name"].casefold(), x["id"]))
+            entries.sort(
+                key=lambda x: (
+                    0 if query in x["name"].casefold() else 1,
+                    x["name"].casefold(),
+                    x["id"],
+                )
+            )
         else:
             entries.sort(key=lambda x: (x["name"].casefold(), x["id"]))
-        return {**status, "rows": [self._row(x, status["source"]) for x in entries[offset:offset + limit]], "total": len(entries), "offset": offset, "limit": limit, "categories": categories}
+        return {
+            **status,
+            "rows": [self._row(x, status["source"]) for x in entries[offset : offset + limit]],
+            "total": len(entries),
+            "offset": offset,
+            "limit": limit,
+            "categories": categories,
+        }
 
     @_safe
     async def details(self, arg):
@@ -585,44 +898,68 @@ class Catalog:
             return await self._decky().details(arg)
         pid = arg.get("id")
         if not isinstance(pid, str) or not fy_pkg.ID.fullmatch(pid):
-            _fail("bad_arg", "Choose a catalog module")
-        result = await self.list({k: v for k, v in arg.items() if k in ("source", "url", "refresh")} | {"limit": 100})
-        if "rows" not in result:
-            return result
-        entry = next((x for x in result["rows"] if x["id"] == pid), None)
-        if entry is None and result["total"] > 100:
-            second = await self.list({k: v for k, v in arg.items() if k in ("source", "url")} | {"offset": 100, "limit": 100})
-            entry = next((x for x in second["rows"] if x["id"] == pid), None)
+            raise CatalogError("bad_arg", "Choose a catalog module")
+        catalog, status = await self._catalog(arg)
+        entry = next(
+            (x for x in catalog["plugins"] if x["id"] == pid and _visible(x, status["source"])),
+            None,
+        )
         if entry is None:
-            _fail("not_found", "Module is not in this catalog")
-        return {k: result[k] for k in ("source", "origin", "stale", "checked_at", "downloaded_at", "error", "fetch_error", "warning")} | {"entry": entry}
+            raise CatalogError("not_found", "Module is not in this catalog")
+        return {
+            k: status[k]
+            for k in (
+                "source",
+                "origin",
+                "stale",
+                "checked_at",
+                "downloaded_at",
+                "error",
+                "fetch_error",
+                "warning",
+            )
+        } | {"entry": self._row(entry, status["source"])}
 
     @_safe
     async def install(self, arg):
         arg = arg if isinstance(arg, dict) else {}
         if arg.get("source") in ("decky_stable", "decky_testing") or arg.get("format") == "decky":
-            _fail("decky_port_required", "Built for Decky’s interface; it needs a Framey version before it can run here.")
-        if arg.get("confirm") is not True or not isinstance(arg.get("identity"), str) or not HEX.fullmatch(arg["identity"]):
-            _fail("confirmation_required", "Review the catalog module before installing it")
+            raise CatalogError(
+                "decky_port_required",
+                "Built for Decky’s interface; it needs a Framey version before it can run here.",
+            )
+        if (
+            arg.get("confirm") is not True
+            or not isinstance(arg.get("identity"), str)
+            or not HEX.fullmatch(arg["identity"])
+        ):
+            raise CatalogError(
+                "confirmation_required", "Review the catalog module before installing it"
+            )
         async with self.install_lock:
             result = await self.details(arg)
             if "entry" not in result:
                 return result
             row = result["entry"]
             if not __import__("hmac").compare_digest(arg["identity"], row["identity"]):
-                _fail("stale_catalog", "Catalog entry changed; review it again before installing")
+                raise CatalogError(
+                    "stale_catalog", "Catalog entry changed; review it again before installing"
+                )
             if not row["eligible"]:
-                _fail("not_eligible", row["reason"])
+                raise CatalogError("not_eligible", row["reason"])
             if result["stale"] or result["origin"] == "bundled":
-                _fail("stale_catalog", "Refresh the catalog before installing this module")
+                raise CatalogError(
+                    "stale_catalog", "Refresh the catalog before installing this module"
+                )
             from fy_updates import _finish_transaction
+
             return await _finish_transaction(self._install(row))
 
     @_safe
     async def assess(self, arg=None):
         arg = arg if isinstance(arg, dict) else {}
         if arg.get("source") not in ("decky_stable", "decky_testing"):
-            _fail("bad_source", "Choose a plugin in Decky Store to inspect")
+            raise CatalogError("bad_source", "Choose a plugin in Decky Store to inspect")
         return await self._decky().assess(arg)
 
     async def _install(self, row):
@@ -630,51 +967,79 @@ class Catalog:
         owner, repo = REPO.fullmatch(source["repository"]).groups()
         data = await asyncio.to_thread(self.host.archive, owner, repo, source["commit"])
         if not isinstance(data, bytes) or len(data) > fy_pkg.ARCHIVE_MAX:
-            _fail("bad_archive", "Package archive is not valid or is too large")
+            raise CatalogError("bad_archive", "Package archive is not valid or is too large")
         artifact = row.get("artifact")
-        if artifact and (len(data) != artifact["size"] or hashlib.sha256(data).hexdigest() != artifact["sha256"]):
-            _fail("digest_mismatch", "Package does not match the catalog hash and size")
+        if artifact and (
+            len(data) != artifact["size"] or hashlib.sha256(data).hexdigest() != artifact["sha256"]
+        ):
+            raise CatalogError(
+                "digest_mismatch", "Package does not match the catalog hash and size"
+            )
         root = Path(self.host.ROOT)
         temp_parent = root.parent if root.parent.is_dir() else None
         with tempfile.TemporaryDirectory(prefix=".framey-catalog-", dir=temp_parent) as tmp:
             extracted = Path(tmp) / "tree"
             await asyncio.to_thread(fy_pkg.safe_extract_zip, data, extracted, preserve_exec=True)
-            package = extracted.joinpath(*source["path"].split("/")) if source["path"] else extracted
+            package = (
+                extracted.joinpath(*source["path"].split("/")) if source["path"] else extracted
+            )
             if not package.is_dir() or package.is_symlink():
-                _fail("bad_package", "The selected package directory is missing")
+                raise CatalogError("bad_package", "The selected package directory is missing")
             try:
                 raw = await asyncio.to_thread((package / "plugin.json").read_bytes)
                 meta = _decode(raw, 65536)
             except OSError:
-                _fail("bad_package", "The selected package has no plugin manifest")
-            if not isinstance(meta, dict) or meta.get("id") != pid or meta.get("version") != row["version"]:
-                _fail("identity_mismatch", "Package identity or version does not match the reviewed catalog entry")
+                raise CatalogError("bad_package", "The selected package has no plugin manifest")
+            if (
+                not isinstance(meta, dict)
+                or meta.get("id") != pid
+                or meta.get("version") != row["version"]
+            ):
+                raise CatalogError(
+                    "identity_mismatch",
+                    "Package identity or version does not match the reviewed catalog entry",
+                )
             normalized = fy_pkg.normalize_manifest(meta)
             if not normalized["ok"]:
-                _fail("bad_package", "The package manifest is not valid")
+                raise CatalogError("bad_package", "The package manifest is not valid")
             if "privileged" in meta or pid == "fan":
-                _fail("protected", "Use Framey App for protected components")
-            compatibility = fy_pkg.decide(meta, self.host.VERSION, self.host.PLATFORM, getattr(self.host, "API_GENERATION", 1))
+                raise CatalogError("protected", "Use Framey App for protected components")
+            compatibility = fy_pkg.decide(
+                meta, self.host.VERSION, self.host.PLATFORM, getattr(self.host, "API_GENERATION", 1)
+            )
             if compatibility["state"] == "incompatible":
-                _fail("incompatible", compatibility["msg"])
+                raise CatalogError("incompatible", compatibility["msg"])
             if not (package / "main.js").is_file() and not (package / "backend.py").is_file():
-                _fail("bad_package", "The package has no frontend or backend")
+                raise CatalogError("bad_package", "The package has no frontend or backend")
             if source["path"]:
-                for name in ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING", "NOTICE", "NOTICE.md", "THIRD_PARTY_NOTICES"):
+                for name in (
+                    "LICENSE",
+                    "LICENSE.md",
+                    "LICENSE.txt",
+                    "COPYING",
+                    "NOTICE",
+                    "NOTICE.md",
+                    "THIRD_PARTY_NOTICES",
+                ):
                     notice = extracted / name
                     if notice.is_file() and not (package / name).exists():
                         shutil.copy2(notice, package / name)
             dest = Path(self.host.PLUGINS) / pid
-            before = self._row({k: v for k, v in row.items() if k in ENTRY_KEYS}, {"id": "stable", "label": "Stable", "url": DEFAULT_URL})
+            before = self._row(
+                {k: v for k, v in row.items() if k in ENTRY_KEYS},
+                {"id": "stable", "label": "Stable", "url": DEFAULT_URL},
+            )
             if not before["eligible"]:
-                _fail("not_eligible", before["reason"])
+                raise CatalogError("not_eligible", before["reason"])
             old = dest.with_name(".old-" + pid)
             if os.path.lexists(old) or (getattr(self.host, "pending", lambda _: None)(pid)):
-                _fail("pending", "Keep or restore the previous version before installing another")
+                raise CatalogError(
+                    "pending", "Keep or restore the previous version before installing another"
+                )
             if dest.exists():
                 existing = fy_store.read_json(dest / "plugin.json", {}, 65536)
                 if not isinstance(existing, dict) or "privileged" in existing:
-                    _fail("protected", "Use the module's protected update action")
+                    raise CatalogError("protected", "Use the module's protected update action")
             was_installed = dest.exists()
             for name in (".source", ".version", ".identity.json", ".catalog.json"):
                 (package / name).unlink(missing_ok=True)
@@ -687,9 +1052,23 @@ class Catalog:
             (package / "plugin.json").write_text(_json(meta) + "\n")
             (package / ".source").write_text(canonical + "\n")
             (package / ".version").write_text(source["commit"] + "\n")
-            fy_pkg.write_identity(package, fy_pkg.identity("commit", source=source["repository"], commit=source["commit"], digest=artifact["sha256"] if artifact else None))
-            fy_store.write_json_atomic(package / ".catalog.json", {"v": 1, "id": pid, "source": source, "identity": row["identity"]}, 8192)
-            await asyncio.to_thread(self.host.stage_swap, pid, lambda stage: shutil.copytree(package, stage), keep=True)
+            fy_pkg.write_identity(
+                package,
+                fy_pkg.identity(
+                    "commit",
+                    source=source["repository"],
+                    commit=source["commit"],
+                    digest=artifact["sha256"] if artifact else None,
+                ),
+            )
+            fy_store.write_json_atomic(
+                package / ".catalog.json",
+                {"v": 1, "id": pid, "source": source, "identity": row["identity"]},
+                8192,
+            )
+            await asyncio.to_thread(
+                self.host.stage_swap, pid, lambda stage: shutil.copytree(package, stage), keep=True
+            )
             try:
                 await _await(self.host.reload(pid))
                 check = getattr(self.host, "backend_check", None)
@@ -703,7 +1082,12 @@ class Catalog:
                     await asyncio.to_thread(shutil.rmtree, dest)
                 await _await(self.host.reload(pid))
                 raise
-        return {"ok": pid, "version": row["version"], "commit": source["commit"], "updated": was_installed}
+        return {
+            "ok": pid,
+            "version": row["version"],
+            "commit": source["commit"],
+            "updated": was_installed,
+        }
 
 
 def _service(host):
@@ -721,7 +1105,14 @@ def _method(name):
             return {"error": error.message, "code": error.code}
         except Exception:
             return {"error": "Catalog operation could not be completed", "code": "catalog_failed"}
+
     return invoke
 
 
-METHODS = {"catalog_list": _method("list"), "catalog_details": _method("details"), "catalog_install": _method("install"), "catalog_sources": _method("sources"), "catalog_assess": _method("assess")}
+METHODS = {
+    "catalog_list": _method("list"),
+    "catalog_details": _method("details"),
+    "catalog_install": _method("install"),
+    "catalog_sources": _method("sources"),
+    "catalog_assess": _method("assess"),
+}

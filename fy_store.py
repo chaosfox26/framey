@@ -39,7 +39,11 @@ def runtime_root(run="/run/user", uid=None):
         st = os.lstat(p)
     except OSError:
         return None
-    return p if stat.S_ISDIR(st.st_mode) and st.st_uid == uid and stat.S_IMODE(st.st_mode) == 0o700 else None
+    return (
+        p
+        if stat.S_ISDIR(st.st_mode) and st.st_uid == uid and stat.S_IMODE(st.st_mode) == 0o700
+        else None
+    )
 
 
 def dirs(pid, home=None, runtime_base=None):
@@ -153,7 +157,9 @@ def _sync_dir(d, strict=False):
 
 def write_json_atomic(path, obj, max_bytes=SETTINGS_MAX):
     try:
-        data = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        data = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode(
+            "utf-8"
+        )
     except (TypeError, ValueError, RecursionError) as e:
         raise ValueError("value is not serialisable") from e
     if len(data) > max_bytes:
@@ -298,6 +304,7 @@ class Log:
                 return
             self._count += 1
             from datetime import datetime, timezone
+
             stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             self._write(("%s %s %s" % (stamp, level, text))[:LINE_MAX])
             if self.stream is not None and level in ("WARNING", "ERROR"):
@@ -560,7 +567,10 @@ def _migrate_move(src, dst, overwrite):
             _rm(src)
             _sync_dir(src.parent)
     except OSError as e:
-        return {"moved": False, "reason": "error:" + (errno.errorcode.get(e.errno) or type(e).__name__)}
+        return {
+            "moved": False,
+            "reason": "error:" + (errno.errorcode.get(e.errno) or type(e).__name__),
+        }
     return {"moved": True, "reason": "ok"}
 
 
