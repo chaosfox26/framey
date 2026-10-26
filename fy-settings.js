@@ -4,11 +4,105 @@
   if (!K || !K.kit || K.settingsReady) return;
   K.settingsReady = true;
   const { T, call, tx, put, col, row, say, warn, obj, day, make, dmg, ui, GREY, GOOD, BAD, UP, WARN, TITLE, DANGER } = K.kit;
+  const panelModes = [
+    { id: "embedded", label: "Inside Steam" },
+    { id: "dashboard", label: "Beside Steam dashboard" },
+    { id: "floating", label: "Floating during games" },
+  ];
+  let stopPanelUpdates = null;
+  const leaveSettings = () => {
+    const stop = stopPanelUpdates;
+    stopPanelUpdates = null;
+    if (stop) stop();
+  };
 
   const settings = {
     render(box) {
+      leaveSettings();
       const k = make(box);
       const { btn, sw } = k;
+      const panelSection = tx("margin:20px 0");
+      panelSection.setAttribute("role", "group");
+      panelSection.setAttribute("aria-label", "Framey panel");
+      panelSection.tabIndex = -1;
+      let panelState = null, panelError = "", panelReport = null, panelBusy = true, panelMoving = false, panelAttempted = false, panelInFlight = false, panelSerial = 0, panelClosed = false;
+      const panelStatus = value => {
+        if (!value || typeof value !== "object" || Array.isArray(value) || !panelModes.some(mode => mode.id === value.mode) || typeof value.available !== "boolean" || typeof value.active !== "boolean") return null;
+        if (value.pending !== undefined && typeof value.pending !== "boolean" || value.pending === true && !panelModes.some(mode => mode.id === value.requested_mode)) return null;
+        if (value.error !== undefined && typeof value.error !== "string" || value.input_notice !== undefined && typeof value.input_notice !== "string") return null;
+        return { mode: value.mode, available: value.available, active: value.active, pending: value.pending === true, requested_mode: value.requested_mode, error: (value.error || "").slice(0, 240), input_notice: (value.input_notice || "").slice(0, 240) };
+      };
+      const panelProblem = reply => typeof reply.error === "string" && reply.error && !/^(unknown|unhandled\b)/i.test(reply.error)
+        ? reply.error.slice(0, 240) : "Panel controls are unavailable. Select Retry to check again.";
+      const paintPanel = () => {
+        if (panelClosed || !k.alive() || !panelSection.isConnected) return;
+        const focused = panelSection.contains(document.activeElement);
+        const choices = ui().list({
+          items: panelModes.map(mode => ({ ...mode, disabled: panelBusy || !panelState || mode.id !== "embedded" && !panelState.available })),
+          selected: panelState && panelState.mode,
+          onselect: mode => { if (!panelBusy && panelState && mode !== panelState.mode) requestPanel("panel_mode", { mode }, mode); },
+        });
+        choices.setAttribute("aria-label", "Framey panel mode");
+        choices.setAttribute("aria-busy", String(panelBusy));
+        const status = col(panelError ? WARN : GREY, panelMoving ? "Moving Framey panel…" : panelBusy ? T("c.loading") : panelError ? T("c.unavailable") : "", 18);
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        panelSection.replaceChildren(...[
+          tx("font-size:22px;font-weight:700;margin-bottom:10px", "Framey panel"),
+          choices,
+          status,
+          panelError && col(WARN, panelError, 18),
+          panelState && !panelState.available && col(GREY, "Native panel modes are unavailable. Inside Steam remains available.", 17),
+          col(GREY, "Floating panels remain visible after the Steam menu closes.", 17),
+          col(GREY, panelState && panelState.input_notice || "Controller pointers may interrupt game controls.", 17),
+          col(GREY, "Open Framey using its bottom-bar button through the Steam System menu in 2D or VR.", 17),
+          (panelError || panelMoving || panelState && !panelState.available) && row(btn(T("c.retry"), () => requestPanel("panel_status"), { disabled: panelInFlight }), panelError && k.reportButton(panelReport || { error: panelError, code: "panel_status_failed" })),
+        ].filter(Boolean));
+        if (focused) {
+          const target = panelBusy ? panelSection : panelSection.querySelector('[role="option"][aria-selected="true"][aria-disabled="false"]') || panelSection.querySelector('[role="option"][aria-disabled="false"]') || panelSection;
+          target.focus();
+        }
+      };
+      const requestPanel = (method, arg, requested) => {
+        if (panelClosed || !k.alive() || !panelSection.isConnected || panelInFlight) return;
+        const serial = ++panelSerial;
+        const wasMoving = panelMoving;
+        panelAttempted = panelInFlight = panelBusy = true;
+        if (method === "panel_mode") panelMoving = true;
+        panelError = "";
+        panelReport = null;
+        paintPanel();
+        let applied = false;
+        const accept = reply => {
+          if (panelClosed || !k.alive() || serial !== panelSerial || !panelSection.isConnected) return;
+          applied = true;
+          const actual = panelStatus(reply);
+          if (actual && (!actual.pending || !requested || actual.requested_mode === requested)) {
+            panelState = actual;
+            panelBusy = panelMoving = actual.pending;
+            panelError = actual.error || (!actual.pending && requested && actual.mode !== requested ? "The panel stayed in its previous mode. Select Retry to check its current state." : "");
+          } else {
+            panelBusy = panelMoving = method === "panel_status" && wasMoving;
+            panelError = reply.error ? panelProblem(reply) : "Framey did not confirm the panel mode. The last confirmed choice is shown; select Retry to check again.";
+          }
+          if (panelError) {
+            const mode = panelModes.find(mode => mode.id === (requested || actual && actual.requested_mode));
+            panelReport = supportError(panelError + (mode ? " Requested panel mode: " + mode.label + "." : ""), method + "_failed");
+          }
+          paintPanel();
+        };
+        const finishPanel = reply => {
+          if (panelClosed || serial !== panelSerial) return;
+          panelInFlight = false;
+          accept(reply);
+          if (!applied) {
+            panelBusy = panelMoving;
+            panelError = "Panel status is unavailable. Select Retry to check its current state.";
+            paintPanel();
+          }
+        };
+        return call(method, arg).then(finishPanel, error => finishPanel({ error: String((error && error.message) || T("c.noanswer")) }));
+      };
       let ld = {}, st = { prefs: {} }, auto = {}, mp = {}, ss = null, lres = null, cand = null, info = null, line = null;
       const saving = new Set();
       const supportContext = { error: "", code: "settings_support" };
@@ -190,6 +284,7 @@
           tx(TITLE, T("s.title")),
           dmg(k, ss, back),
           c,
+          panelSection,
           pref(T("s.auto"), "autocheck", p.autocheck === true, draw),
           col(GREY, autoText, 16),
           pref(T("s.notify_loader"), "notify_loader", p.notify_loader === true),
@@ -205,10 +300,33 @@
           col(GREY, T("s.trust"), 18),
           !line && state !== "error" && row(k.reportButton(supportContext)),
         );
+        paintPanel();
+        if (!panelAttempted) requestPanel("panel_status");
+      };
+      let unlisten = null;
+      try {
+        unlisten = K.listen("panel_mode", value => {
+          if (panelClosed || !k.alive() || !panelSection.isConnected) return;
+          const actual = panelStatus(value);
+          if (!actual) return;
+          panelSerial++;
+          panelAttempted = true;
+          panelInFlight = false;
+          panelState = actual;
+          panelBusy = panelMoving = actual.pending;
+          panelError = actual.error;
+          panelReport = panelError ? supportError(panelError, "panel_mode_failed") : null;
+          paintPanel();
+        });
+      } catch (error) { if (typeof K.diagnostic === "function") K.diagnostic("core.event_failed"); }
+      stopPanelUpdates = () => {
+        panelClosed = true;
+        panelSerial++;
+        if (typeof unlisten === "function") unlisten();
       };
       draw();
     },
   };
-  Object.defineProperty(FY.pages, "settings", { value: Object.freeze({ render: settings.render }), enumerable: true });
+  Object.defineProperty(FY.pages, "settings", { value: Object.freeze({ render: settings.render, leave: leaveSettings, dispose: leaveSettings }), enumerable: true });
   Object.freeze(FY.pages);
 })();

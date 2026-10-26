@@ -109,7 +109,7 @@ def _targets(v):
         return {}, True
     out = {}
     for k, x in v.items():
-        if isinstance(k, str) and TARGET.fullmatch(k) and isinstance(x, str) and 1 <= len(x) <= 120 and x.isprintable() and len(out) < 8:
+        if isinstance(k, str) and TARGET.fullmatch(k) and k != "panel" and isinstance(x, str) and 1 <= len(x) <= 120 and x.isprintable() and len(out) < 8:
             out[k] = x
     return out, len(out) != len(v)
 
@@ -165,6 +165,7 @@ PREFS = {
     "lang": (_lang, ""),
     "safe": (_flag, False),
     "workers_max": (_workers, 3),
+    "panel_mode": (_choice("embedded", "dashboard", "floating"), "embedded"),
     "file_roots": (_roots, []),
     "dev": (_group(DEV), {}),
 }

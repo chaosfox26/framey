@@ -10,6 +10,7 @@ const defaults = () => ({
   state_get: stateOf(),
   autocheck_status: { enabled: false, last: 0, next_ok: 0, fails: 0 },
   loader_check: () => checked(),
+  panel_status: { mode: "embedded", available: true, active: false },
 });
 const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r)); };
 
@@ -69,7 +70,7 @@ const t = (name, fn) => tests.push([name, fn]);
 t("shows installed identity from the runtime and the loader, and 'Not checked yet'", async () => {
   const c = boot();
   await c.open();
-  assert.deepEqual(c.calls.map(x => x.method).sort(), ["autocheck_status", "loader", "maint_prefs", "state_get", "status"]);
+  assert.deepEqual(c.calls.map(x => x.method).sort(), ["autocheck_status", "loader", "maint_prefs", "panel_status", "state_get", "status"]);
   assert.ok(c.text().includes("Installed: 1.1.0, commit 1234567"));
   assert.ok(c.text().includes("Not checked yet"));
   assert.ok(c.text().includes("Language: English. No other languages are available yet."));
@@ -567,6 +568,179 @@ t("both downgrade confirmations retain the exact checked release identity", asyn
   assert.deepEqual(c.sent("loader_update").map(x => x.arg), [false, true].map(confirm => ({ confirm, candidate: { tag: "v1.2.0", commit: "abcdef0123456789abcdef0123456789abcdef01" } })));
 });
 
+const panelSection = c => c.box.querySelector('[role="group"][aria-label="Framey panel"]');
+const selectedPanel = c => [...panelSection(c).querySelectorAll('[role="option"][aria-selected="true"]')].map(node => node.getAttribute("aria-label"));
+const panelEvent = (c, status) => c.env.event("_core", "panel_mode", status);
+
+t("Framey panel offers exactly three named single choices and the opening/input notice", async () => {
+  const c = boot();
+  await c.open();
+  const section = panelSection(c);
+  assert.deepEqual([...section.querySelectorAll('[role="option"]')].map(node => node.getAttribute("aria-label")), ["Inside Steam", "Beside Steam dashboard", "Floating during games"]);
+  assert.deepEqual(selectedPanel(c), ["Inside Steam"]);
+  assert.ok(section.textContent.includes("Floating panels remain visible after the Steam menu closes."));
+  assert.ok(section.textContent.includes("Controller pointers may interrupt game controls."));
+  assert.ok(section.textContent.includes("Steam System menu in 2D or VR"));
+  assert.equal(c.sent("panel_status").length, 1);
+  assert.equal(c.sent("panel_mode").length, 0);
+});
+
+t("an unavailable optional panel route keeps existing Settings usable without guessing a selected mode", async () => {
+  const c = boot({ panel_status: { error: "unknown" } });
+  await c.open();
+  assert.ok(c.has("Check for updates") && c.has("Tell me about module updates"));
+  assert.deepEqual(selectedPanel(c), []);
+  assert.ok(panelSection(c).textContent.includes("Unavailable"));
+  assert.ok(!panelSection(c).textContent.includes("unknown"));
+  assert.ok([...panelSection(c).querySelectorAll('[role="option"]')].every(node => node.getAttribute("aria-disabled") === "true"));
+  c.R.panel_status = { mode: "embedded", available: false, active: true };
+  await c.click("Retry");
+  assert.deepEqual(selectedPanel(c), ["Inside Steam"]);
+  assert.equal(c.sent("panel_mode").length, 0);
+});
+
+t("an optional panel read never blocks required Settings or an unrelated preference save", async () => {
+  let read;
+  const c = boot({ panel_status: () => new Promise(resolve => { read = resolve; }) });
+  c.R.prefs_set = () => stateOf({ notify_plugins: true });
+  await c.open();
+  assert.ok(c.has("Check for updates"));
+  await c.click("Tell me about module updates");
+  assert.equal(c.find("Tell me about module updates").getAttribute("aria-checked"), "true");
+  read({ mode: "dashboard", available: true, active: false });
+  await settle();
+  assert.deepEqual(selectedPanel(c), ["Beside Steam dashboard"]);
+  assert.equal(c.find("Tell me about module updates").getAttribute("aria-checked"), "true");
+});
+
+t("a pending panel selection keeps the confirmed choice and disables only the mode choices", async () => {
+  let finish;
+  const c = boot({ panel_mode: () => new Promise(resolve => { finish = resolve; }) });
+  await c.open();
+  await c.click("Floating during games");
+  assert.deepEqual(c.last("panel_mode").arg, { mode: "floating" });
+  assert.deepEqual(selectedPanel(c), ["Inside Steam"]);
+  assert.ok(panelSection(c).textContent.includes("Moving Framey panel"));
+  assert.ok([...panelSection(c).querySelectorAll('[role="option"]')].every(node => node.getAttribute("aria-disabled") === "true"));
+  assert.notEqual(c.find("Check for updates").getAttribute("aria-disabled"), "true");
+  assert.notEqual(c.find("Tell me about module updates").getAttribute("aria-disabled"), "true");
+  finish({ mode: "floating", available: true, active: false });
+  await settle();
+  assert.deepEqual(selectedPanel(c), ["Floating during games"]);
+  assert.equal(c.find("Floating during games").getAttribute("aria-disabled"), "false");
+});
+
+t("a failed panel selection preserves the last confirmed choice and exposes the error without retrying", async () => {
+  const c = boot({ panel_mode: { error: "The panel could not be moved. Try again." } });
+  await c.open();
+  await c.click("Beside Steam dashboard");
+  assert.deepEqual(selectedPanel(c), ["Inside Steam"]);
+  assert.ok(panelSection(c).textContent.includes("The panel could not be moved. Try again."));
+  assert.equal(c.find("Inside Steam").getAttribute("aria-disabled"), "false");
+  assert.equal(c.sent("panel_mode").length, 1);
+  assert.equal(c.sent("panel_status").length, 1);
+});
+
+t("unknown panel change replies never mark the requested choice as confirmed", async () => {
+  for (const reply of [{}, { ok: true }, { mode: "floating", active: true }, { mode: "invalid", active: false, available: true }]) {
+    const c = boot({ panel_mode: reply });
+    await c.open();
+    await c.click("Floating during games");
+    assert.deepEqual(selectedPanel(c), ["Inside Steam"]);
+    assert.ok(panelSection(c).textContent.includes("did not confirm"));
+    assert.equal(c.sent("panel_mode").length, 1);
+  }
+});
+
+t("native unavailability disables native modes while allowing confirmed embedded fallback", async () => {
+  const c = boot({ panel_status: { mode: "floating", available: false, active: false }, panel_mode: { mode: "embedded", available: false, active: true } });
+  await c.open();
+  assert.deepEqual(selectedPanel(c), ["Floating during games"]);
+  assert.equal(c.find("Inside Steam").getAttribute("aria-disabled"), "false");
+  assert.equal(c.find("Beside Steam dashboard").getAttribute("aria-disabled"), "true");
+  assert.equal(c.find("Floating during games").getAttribute("aria-disabled"), "true");
+  await c.click("Inside Steam");
+  assert.deepEqual(c.last("panel_mode").arg, { mode: "embedded" });
+  assert.deepEqual(selectedPanel(c), ["Inside Steam"]);
+});
+
+t("a valid actual fallback status with an error replaces the old selection honestly", async () => {
+  const c = boot({ panel_status: { mode: "dashboard", available: true, active: true }, panel_mode: { mode: "embedded", available: false, active: true, error: "The native panel stopped; Inside Steam was restored." } });
+  await c.open();
+  await c.click("Floating during games");
+  assert.deepEqual(selectedPanel(c), ["Inside Steam"]);
+  assert.ok(panelSection(c).textContent.includes("Inside Steam was restored"));
+  assert.equal(c.sent("panel_mode").length, 1);
+});
+
+t("a pending rehost reply keeps the old choice until a confirmed panel-mode event arrives", async () => {
+  const c = boot({ panel_mode: { mode: "embedded", requested_mode: "floating", pending: true, available: true, active: true } });
+  await c.open();
+  await c.click("Floating during games");
+  assert.deepEqual(selectedPanel(c), ["Inside Steam"]);
+  assert.ok(panelSection(c).textContent.includes("Moving Framey panel"));
+  assert.equal(c.find("Floating during games").getAttribute("aria-disabled"), "true");
+  panelEvent(c, { mode: "floating", available: true, active: false });
+  await settle();
+  assert.deepEqual(selectedPanel(c), ["Floating during games"]);
+  assert.equal(c.find("Floating during games").getAttribute("aria-disabled"), "false");
+  assert.equal(c.sent("panel_status").length, 1);
+});
+
+t("a pending rehost can be confirmed by one manual status Retry without polling", async () => {
+  const c = boot({ panel_mode: { mode: "embedded", requested_mode: "dashboard", pending: true, available: true, active: true } });
+  await c.open();
+  await c.click("Beside Steam dashboard");
+  c.R.panel_status = { mode: "dashboard", available: true, active: false };
+  await c.click("Retry");
+  assert.deepEqual(selectedPanel(c), ["Beside Steam dashboard"]);
+  assert.equal(c.sent("panel_status").length, 2);
+  c.env.clock.tick(60000);
+  await settle();
+  assert.equal(c.sent("panel_status").length, 2);
+});
+
+t("an optional status reply survives a same-Settings loader-check redraw", async () => {
+  let read;
+  const c = boot({ panel_status: () => new Promise(resolve => { read = resolve; }) });
+  await c.open();
+  await c.click("Check for updates");
+  read({ mode: "dashboard", available: true, active: false });
+  await settle();
+  assert.deepEqual(selectedPanel(c), ["Beside Steam dashboard"]);
+  assert.ok(!panelSection(c).textContent.includes("Unavailable"));
+});
+
+t("panel replies and events after leaving Settings cannot repaint the destination", async () => {
+  let finish;
+  const c = boot({ panel_mode: () => new Promise(resolve => { finish = resolve; }), list: [], store: [] });
+  await c.open();
+  await c.click("Floating during games");
+  c.FY.pages.settings.leave();
+  c.FY.pages.modules.render(c.box);
+  await settle();
+  const destination = c.text();
+  finish({ mode: "floating", available: true, active: true });
+  panelEvent(c, { mode: "dashboard", available: true, active: true });
+  await settle();
+  assert.equal(c.text(), destination);
+  assert.ok(c.text().includes("No modules installed"));
+});
+
+t("panel subscriptions are replaced on rerender and removed on leave/dispose", async () => {
+  const c = boot();
+  const baseline = c.FY.diag().subs;
+  await c.open();
+  assert.equal(c.FY.diag().subs, baseline + 1);
+  await c.open();
+  assert.equal(c.FY.diag().subs, baseline + 1);
+  c.FY.pages.settings.leave();
+  assert.equal(c.FY.diag().subs, baseline);
+  await c.open();
+  c.FY.pages.settings.dispose();
+  assert.equal(c.FY.diag().subs, baseline);
+});
+
 const captureReports = c => {
   const reports = [];
   c.w.__S.K.report = context => {
@@ -652,6 +826,32 @@ t("the existing Settings support action picks up a later save error without extr
   await c.click("Report to Framey");
   assert.deepEqual(reports, [{ error: "Settings write failed", code: "settings_save_failed" }]);
   assert.equal(c.find("Tell me about module updates").getAttribute("aria-checked"), "false");
+});
+
+t("panel failures populate the existing manual report only after explicit activation", async () => {
+  for (const actual of [false, true]) {
+    const message = "The native panel could not be moved; Inside Steam remains available.";
+    const reply = actual ? { mode: "embedded", available: false, active: true, error: message } : { error: message };
+    const c = boot({ panel_mode: reply });
+    const reports = captureReports(c);
+    await c.open();
+    await c.click("Floating during games");
+    assert.equal(reports.length, 0);
+    assert.ok(panelSection(c).querySelector('[aria-label="Report to Framey"]'));
+    assert.equal(c.all().filter(node => node.getAttribute("aria-label") === "Report to Framey").length, 2);
+    await c.click("Report to Framey");
+    assert.deepEqual(reports, [{ error: message + " Requested panel mode: Floating during games.", code: "panel_mode_failed" }]);
+    await c.click("Report to Framey", 1);
+    assert.deepEqual(reports[1], reports[0]);
+    assert.deepEqual(selectedPanel(c), ["Inside Steam"]);
+  }
+  const message = "Panel status could not be checked.";
+  const c = boot({ panel_status: { error: message } });
+  const reports = captureReports(c);
+  await c.open();
+  assert.equal(reports.length, 0);
+  await c.click("Report to Framey");
+  assert.deepEqual(reports, [{ error: message, code: "panel_status_failed" }]);
 });
 
 t("a failed optional restart-notice cache records a fixed diagnostic and keeps the success screen", async () => {

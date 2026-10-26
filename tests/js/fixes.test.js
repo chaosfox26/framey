@@ -532,7 +532,11 @@ t("no token-bound function is reachable from window.Framey: every reachable func
   const pages = w.Framey.pages;
   assert.ok(Object.isFrozen(pages) && Object.isFrozen(pages.modules) && Object.isFrozen(pages.settings) && Object.isFrozen(w.Framey.i18n));
   assert.deepStrictEqual(Object.keys(pages.modules), ["render"]);
-  assert.deepStrictEqual(Object.keys(pages.settings), ["render"]);
+  assert.deepStrictEqual(Object.keys(pages.settings), ["render", "leave", "dispose"]);
+  const cleanupCalls = e.calls.length;
+  pages.settings.leave("install", { url: marker });
+  pages.settings.dispose(marker);
+  assert.strictEqual(e.calls.length, cleanupCalls, "Settings cleanup cannot send a caller-chosen core operation");
   assert.strictEqual(w.Framey._k(marker), null);
   assert.strictEqual(Object.keys(w).filter(k => /fyt|tok/i.test(k)).length, 0);
 });

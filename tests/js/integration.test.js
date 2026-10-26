@@ -261,7 +261,7 @@ t("Modules and Settings delegate while missing catalog pages offer recovery", as
   const m = main();
   assert.ok(Object.isFrozen(m.FY.pages) && Object.isFrozen(m.FY.pages.modules) && Object.isFrozen(m.FY.pages.settings));
   assert.deepEqual(Object.keys(m.FY.pages.modules), ["render"]);
-  assert.deepEqual(Object.keys(m.FY.pages.settings), ["render"]);
+  assert.deepEqual(Object.keys(m.FY.pages.settings), ["render", "leave", "dispose"]);
   m.FY.toggle();
   await settle();
   m.goto("Modules");

@@ -20,6 +20,7 @@ REQUIRED = {
     "fy_updates": ("Updates",),
     "fy_catalog": ("METHODS",),
     "fy_report": ("METHODS",),
+    "fy_panel": ("METHODS", "get"),
     "fy_iso": ("mode", "Iso", "wanted"),
     "fy_store": ("dirs", "purge", "discard_held", "snapshot_settings", "drop_snapshot", "restore_snapshot", "Log", "read_locale", "clean_tmp"),
     "fy_net": ("hostcall", "sync_disk", "_target", "_resolve", "_connect"),
@@ -49,7 +50,7 @@ PRINCIPAL = "framey-release"
 HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 NOSETUP = "Protected updater not set up: run Install / Update in the Framey App once (it asks for your password a single time)"
 BUSY = {"busy": True, "error": "Busy: another check or update is running"}
-MANIFEST = ("framey.py", "inject.js", "bar.js", "icon.svg", "fy_proto.py", "fy_worker.py", "fy_supervisor.py", "fy_store.py", "fy_sdk.py", "fy_net.py", "fy_files.py", "fy_media.py", "fy_targets.py", "fy_state.py", "fy_pkg.py", "fy_updates.py", "fy_dev.py", "fy_diag.py", "fy_report.py", "fy_maint.py", "fy_iso.py", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-modules.js", "fy-settings.js", "fy-badge.js", "fy-picker.js", "fy-dev.js", "fy-strings-en.js", "fy-report.js", "fy_catalog.py", "fy_decky_catalog.py", "fy-catalog.js", "catalog/index.json")
+MANIFEST = ("framey.py", "inject.js", "bar.js", "icon.svg", "fy_proto.py", "fy_worker.py", "fy_supervisor.py", "fy_store.py", "fy_sdk.py", "fy_net.py", "fy_files.py", "fy_media.py", "fy_targets.py", "fy_state.py", "fy_pkg.py", "fy_updates.py", "fy_dev.py", "fy_diag.py", "fy_report.py", "fy_panel.py", "fy_overlay.py", "fy_overlay_browser.py", "fy_maint.py", "fy_iso.py", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-modules.js", "fy-settings.js", "fy-badge.js", "fy-picker.js", "fy-dev.js", "fy-strings-en.js", "fy-report.js", "fy_catalog.py", "fy_decky_catalog.py", "fy-catalog.js", "catalog/index.json")
 LEGACY = MANIFEST[:4]
 SMOKE = "import importlib.util as u,sys;s=u.spec_from_file_location('framey_smoke',sys.argv[1]);m=u.module_from_spec(s);s.loader.exec_module(m);print('framey-smoke-ok' if callable(getattr(m,'main',None)) and isinstance(getattr(m,'VERSION',None),str) else '')"
 PANEL_JS = ("inject.js", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-report.js", "fy-modules.js", "fy-catalog.js", "fy-settings.js", "fy-picker.js")
@@ -59,9 +60,9 @@ BIND = "function(i,t,m){return this.bind(i,t,m)}"
 RUN = "function(p){return this(p)}"
 DISPOSE = "function(p){return this.dispose(p)}"
 OWNER = {}
-for _mod, _names in (("fy_state", "state_get mod_order mod_sort mod_hide mod_freeze prefs_set"), ("fy_updates", "ver_list ver_install repair notes batch_plan batch_apply loader_check badge autocheck_status companion_fetch"), ("fy_targets", "target_add target_remove"), ("fy_net", "fetch"), ("fy_files", "files_list"), ("fy_media", "resource"), ("fy_dev", "dev_set dev_status devtools_info"), ("fy_diag", "diag"), ("fy_report", "report_draft report_link report_open"), ("fy_maint", "maint_get maint_refresh maint_prefs"), ("fy_catalog", "catalog_list catalog_details catalog_install catalog_sources catalog_assess")):
+for _mod, _names in (("fy_state", "state_get mod_order mod_sort mod_hide mod_freeze prefs_set"), ("fy_updates", "ver_list ver_install repair notes batch_plan batch_apply loader_check badge autocheck_status companion_fetch"), ("fy_targets", "target_add target_remove"), ("fy_net", "fetch"), ("fy_files", "files_list"), ("fy_media", "resource"), ("fy_dev", "dev_set dev_status devtools_info"), ("fy_diag", "diag"), ("fy_report", "report_draft report_link report_open"), ("fy_panel", "panel_status panel_mode"), ("fy_maint", "maint_get maint_refresh maint_prefs"), ("fy_catalog", "catalog_list catalog_details catalog_install catalog_sources catalog_assess")):
     OWNER.update(dict.fromkeys(_names.split(), _mod))
-LOCKED = frozenset(("catalog_install", "catalog_sources", "loader_check", "ver_install", "repair", "batch_apply", "companion_fetch"))
+LOCKED = frozenset(("panel_mode", "catalog_install", "catalog_sources", "loader_check", "ver_install", "repair", "batch_apply", "companion_fetch"))
 DEV_OFF = {"dev_status": {"enabled": False, "hot": [], "exposure": {"state": "unknown", "addresses": []}}}
 LOCK = None
 LIVE = {}
@@ -80,10 +81,13 @@ supervisor = updates = None
 MACHINE = {"amd64": "x86_64", "arm64": "aarch64"}
 stopping = False
 PANEL = False
+UI_SURFACE = "main"
+UI_RESTORE = None
+SURFACES = {}
 RM = "document.querySelectorAll('[data-fy]').forEach(e=>e.remove());"
 WIPE = RM + "delete window.Framey"
 WIPE_BAR = "window.FYBar&&window.FYBar.dispose&&window.FYBar.dispose();window.FYObs&&window.FYObs.disconnect();" + RM + "delete window.FYBar;delete window.FYObs"
-WIPES = {"main": WIPE, "bar": WIPE_BAR}
+WIPES = {"main": WIPE, "bar": WIPE_BAR, "panel": WIPE}
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 started_at = time.time()
@@ -597,8 +601,104 @@ async def call_core(f, fn, args):
         await f("Runtime.callFunctionOn", objectId=f.core, functionDeclaration=fn, arguments=[{"value": a} for a in args], returnByValue=True)
 
 
+def panel_overlay_url(url):
+    if not isinstance(url, str) or len(url) > 4096:
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        return parsed.scheme == "about" and parsed.path == "blank" and not parsed.netloc and overlay_key(url, "framey.panel")
+    except ValueError:
+        return False
+
+
+def ui_name():
+    return UI_SURFACE
+
+
+def ui_sender():
+    sender = LIVE.get(ui_name())
+    return sender if sender and getattr(sender, "ui", True) and getattr(sender, "accepting", True) else None
+
+
+def cleanup_request(req):
+    arg = req.get("arg")
+    return (req.get("plugin") == "_core" and req.get("id") == 0 and req.get("method") == "resource" and isinstance(arg, dict)
+            and isinstance(arg.get("revoke"), str) and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", arg["revoke"]))
+            and set(arg) <= {"pid", "revoke"})
+
+
+async def capture_panel_state():
+    sender = ui_sender()
+    if sender and getattr(sender, "core", None) and callable(getattr(sender, "query", None)):
+        result = await sender.query("function(){return {tab:this.tab()}}")
+        tab = result.get("tab") if isinstance(result, dict) else None
+        if isinstance(tab, str) and re.fullmatch(r"[#A-Za-z0-9_.:-]{1,100}", tab):
+            return {"open": PANEL, "tab": tab}
+    return {"open": PANEL, "tab": None}
+
+
+def start_surface_watches():
+    for name in ("main", "panel"):
+        if name == "panel" and ui_name() != "panel":
+            continue
+        if name in SURFACES and not SURFACES[name].done():
+            continue
+        key = "framey.panel" if name == "panel" else "valve.steam.gamepadui.main"
+        probe = "typeof window.Framey" if name == ui_name() else "typeof window.__framey_targets"
+        marker = panel_overlay_url if name == "panel" else lambda url, key=key: overlay_key(url, key)
+        SURFACES[name] = spawn(watch(name, marker, lambda name=name: main_code(name), probe))
+
+
+async def switch_panel_surface(name, state):
+    global UI_SURFACE, UI_RESTORE
+    if name not in ("main", "panel"):
+        raise ValueError("Invalid Framey surface")
+    old = ui_sender()
+    if old:
+        old.accepting = False
+        try:
+            if getattr(old, "core", None) and callable(getattr(old, "query", None)):
+                await asyncio.wait_for(old.query("function(){this.dispose(null);return true}"), 2)
+        except Exception:
+            log("old panel cleanup did not reply")
+        try:
+            if callable(getattr(old, "evaluate", None)):
+                await asyncio.wait_for(old.evaluate(WIPE), 2)
+        except Exception:
+            log("old panel window is reconnecting")
+    UI_SURFACE = name
+    UI_RESTORE = dict(state) if isinstance(state, dict) else {}
+    if old and callable(getattr(old, "close", None)):
+        old.close()
+    previous = list(SURFACES.values())
+    SURFACES.clear()
+    for task in previous:
+        task.cancel()
+    if previous:
+        await asyncio.gather(*previous, return_exceptions=True)
+    start_surface_watches()
+    end = mono() + 12
+    while mono() < end:
+        sender = ui_sender()
+        if sender and getattr(sender, "ui", False) and getattr(sender, "ready", False):
+            return {"ok": True}
+        await asyncio.sleep(0.05)
+    raise TimeoutError("Framey interface is reconnecting")
+
+
+async def panel_session_lost(name):
+    if not stopping and ui_name() == name and name not in LIVE:
+        await panel(False)
+
+
+async def ui_panel_visibility(on):
+    sender = ui_sender()
+    if sender:
+        await sender("Runtime.evaluate", expression="window.Framey&&Framey._panel(%s)" % json.dumps(on))
+
+
 def event_context(evs):
-    sender = LIVE.get("main")
+    sender = ui_sender()
     registrations = getattr(supervisor, "_ws", {})
     owners = {}
     for event in evs:
@@ -611,7 +711,7 @@ def event_context(evs):
 async def emit_all(evs, context=None):
     sender, core, active, owners = context if context is not None else event_context(evs)
     for e in evs:
-        if LIVE.get("main") is not sender or getattr(sender, "core", None) != core or supervisor is not active:
+        if ui_sender() is not sender or getattr(sender, "core", None) != core or supervisor is not active:
             break
         worker = getattr(active, "_ws", {}).get(e["plugin"])
         current = (worker, getattr(worker, "epoch", None), tuple(t for t, owner in TOKS.items() if owner == e["plugin"]))
@@ -621,7 +721,7 @@ async def emit_all(evs, context=None):
 
 
 async def notify_page(plugin, name, payload):
-    await call_core(LIVE.get("main"), EVENT, [plugin, name, payload, 0])
+    await call_core(ui_sender(), EVENT, [plugin, name, payload, 0])
 
 
 async def progress(job, event):
@@ -713,7 +813,7 @@ def plugin_args(m, keep=False):
 
 
 async def load_plugin(m, tok, src, pid=None, redraw=True):
-    f = LIVE.get("main")
+    f = ui_sender()
     if f and getattr(f, "plugin", None):
         await f.plugin(m, tok, src, pid, redraw)
 
@@ -750,11 +850,24 @@ def backend_ok(req):
     return same(t, CORE_TOK) or TOKS.get(t) == pid
 
 
-def main_code():
-    global CORE_TOK
+def main_code(name=None):
+    global CORE_TOK, UI_RESTORE
+    name = name or ui_name()
+    if name != ui_name():
+        return [(Main("window.__framey_targets=window.__framey_targets||Object.create(null)"), None)] + replay("main")
     CORE_TOK = os.urandom(16).hex()
     TOKS.clear()
-    built = [prelude()] + [js(f) for f in PANEL_JS if not (safe() and f == "fy-pages.js")]
+    prefix = prelude()
+    if name == "panel":
+        prefix += "document.documentElement.style.background='transparent';document.body.style.margin='0';document.body.style.background='transparent';\n"
+    if UI_RESTORE is not None:
+        state, UI_RESTORE = UI_RESTORE, None
+        if type(state.get("open")) is bool:
+            prefix += "sessionStorage.fyOpen=%s;\n" % json.dumps("1" if state["open"] else "")
+        tab = state.get("tab")
+        if isinstance(tab, str) and re.fullmatch(r"[#A-Za-z0-9_.:-]{1,100}", tab):
+            prefix += "sessionStorage.fyTab=%s;\n" % json.dumps(tab)
+    built = [prefix] + [js(f) for f in PANEL_JS if not (safe() and f == "fy-pages.js")]
     if conf_file("developer") is not None:
         built.append(js("fy-dev.js"))
     out = [(panel_js(built), "#core")]
@@ -768,7 +881,7 @@ def main_code():
                 out.append((plugin_args(m), m["id"]))
         except Exception as e:
             log("main.js", m["id"], "failed:", e)
-    return out + replay("main") + [("Framey.restore()", None)]
+    return out + (replay("main") if name == "main" else []) + [("Framey.restore()", None)]
 
 
 def bar_code():
@@ -779,13 +892,17 @@ async def panel(on):
     global PANEL
     PANEL = on
     await send("bar", "window.FYBar&&FYBar.set(%s)" % json.dumps(on))
-    await send("main", "window.Framey&&Framey._panel(%s)" % json.dumps(on))
+    controller = getattr(host, "panel_controller", None)
+    if controller is not None:
+        await controller.panel_changed(on)
+    else:
+        await ui_panel_visibility(on)
     if on and pref("autocheck") is True and upd():
         spawn(upd().on_panel_open())
 
 
 async def refresh():
-    send = LIVE.get("main")
+    send = ui_sender()
     if send:
         await send("Runtime.evaluate", expression=WIPE)
         await send.ping()
@@ -1328,7 +1445,7 @@ def info(m):
 
 
 async def page_reload(pid, redraw=True):
-    send, m = LIVE.get("main"), manifest(PLUGINS / pid) if ok_id(pid) else None
+    send, m = ui_sender(), manifest(PLUGINS / pid) if ok_id(pid) else None
     if send and m and pid not in settings()["disabled"] and not safe() and (PLUGINS / pid / "main.js").exists():
         await call_core(send, DISPOSE, [pid])
         await load_plugin(*plugin_args(m, True), pid=pid, redraw=redraw)
@@ -1753,6 +1870,9 @@ async def settled(method, arg):
 async def core(method, arg):
     global LOCK
     if method in JOBS or method in LOCKED or method in EDIT:
+        controller = getattr(host, "panel_controller", None)
+        if controller is not None and controller.status().get("pending"):
+            return BUSY
         LOCK = LOCK or asyncio.Lock()
         if LOCK.locked():
             return BUSY
@@ -1771,8 +1891,9 @@ async def run(method, arg):
         if len(TOGGLES) == 5 and t - TOGGLES[0] < 1:
             return None
         TOGGLES.append(t)
-        if "main" in LIVE:
-            await LIVE["main"]("Runtime.evaluate", expression="Framey.toggle()")
+        sender = ui_sender()
+        if sender:
+            await sender("Runtime.evaluate", expression="Framey.toggle()")
         return None
     if method == "panel":
         a = arg if isinstance(arg, dict) else {"open": arg is True}
@@ -1963,6 +2084,8 @@ async def session(name, tab, code, probe_expr, marker=None):
     probe_world = None
     load_epoch = 0
     held = False
+    ui = name == ui_name()
+    owns_surface = ui or name == "bar"
     todo = []
     iso = boot = mod = mode = None
     object_group = "framey-" + os.urandom(8).hex()
@@ -1985,7 +2108,7 @@ async def session(name, tab, code, probe_expr, marker=None):
         if method in ("Runtime.evaluate", "Runtime.callFunctionOn"):
             if LIVE.get(name) is not send:
                 raise ConnectionError("debugger session was replaced")
-            if (name not in WIPES or _main or _pid == "#core" or isinstance(_pid, tuple)) and not await matches():
+            if (not owns_surface or _main or _pid == "#core" or isinstance(_pid, tuple)) and not await matches():
                 ws.close()
                 raise ConnectionError("debugger target no longer matches")
         if p.get("expression") in WIPES.values():
@@ -2012,7 +2135,7 @@ async def session(name, tab, code, probe_expr, marker=None):
         waiters[i] = asyncio.get_running_loop().create_future()
         try:
             await ws.send({"id": i, "method": method, "params": p})
-            m = await asyncio.wait_for(waiters[i], mod.STEP)
+            m = await asyncio.wait_for(waiters[i], mod.STEP if mod else 5)
         finally:
             waiters.pop(i, None)
         if "error" in m:
@@ -2038,16 +2161,20 @@ async def session(name, tab, code, probe_expr, marker=None):
             ws.close()
             return
         await send("Runtime.addBinding", name="fyCall")
-        if name in WIPES:
+        if owns_surface:
             await send("Runtime.evaluate", expression=WIPES[name])
         else:
+            if name == "main":
+                await send("Runtime.evaluate", expression=WIPE, _main=True)
             target = getattr(host, "targets", None)
             if target and hasattr(target, "reconcile"):
                 await target.reconcile(name)
+                if name == "main":
+                    await send("Runtime.evaluate", expression="window.__framey_targets=window.__framey_targets||Object.create(null)", _main=True)
             else:
                 for expression, pid in code():
                     await send("Runtime.evaluate", _pid=pid, expression=expression)
-        if name == "main" and supervisor:
+        if ui and supervisor:
             supervisor.events.clear()
         await ping()
 
@@ -2072,7 +2199,7 @@ async def session(name, tab, code, probe_expr, marker=None):
         if iso and await iso.start():
             await send("Runtime.evaluate", expression=WIPES[name], _main=True)
             await send("Runtime.evaluate", expression=WIPES[name])
-            if name == "main" and supervisor:
+            if ui and supervisor:
                 supervisor.events.clear()
             await ping()
         elif mode is True or iso and iso.held:
@@ -2106,8 +2233,10 @@ async def session(name, tab, code, probe_expr, marker=None):
             if pid == "#core":
                 return
         target = getattr(host, "targets", None)
-        if name in WIPES and target and hasattr(target, "reconcile"):
+        if name in ("main", "bar") and target and hasattr(target, "reconcile"):
             await target.reconcile(name)
+        if ui and not any(isinstance(value[0], tuple) and value[1] == load_epoch for value in pending.values()):
+            send.ready = True
 
     async def registered(generation, world, who=None):
         current = (iso.ctx, getattr(iso, "epoch", None)) if iso and iso.on else None
@@ -2119,6 +2248,28 @@ async def session(name, tab, code, probe_expr, marker=None):
         elif who:
             await send("Runtime.evaluate", expression="window.Framey&&Framey.redraw(%s)" % json.dumps(who))
 
+    async def query(function):
+        if LIVE.get(name) is not send or not await matches() or not send.core:
+            return None
+        result = await rpc("Runtime.callFunctionOn", objectId=send.core, functionDeclaration=function, returnByValue=True)
+        return (result.get("result") or {}).get("value")
+
+    async def evaluate(expression):
+        if LIVE.get(name) is not send or not await matches():
+            raise ConnectionError("Framey surface changed")
+        params = {"expression": expression, "returnByValue": True}
+        if iso and iso.on:
+            if iso.ctx is None:
+                raise ConnectionError("Framey surface is reconnecting")
+            params["contextId"] = iso.ctx
+        return await rpc("Runtime.evaluate", **params)
+
+    send.query = query
+    send.evaluate = evaluate
+    send.close = ws.close
+    send.ui = ui
+    send.accepting = True
+    send.ready = False
     send.ping = ping
     send.main = lambda expression: send("Runtime.evaluate", expression=expression, _main=True)
     send.plugin = plug
@@ -2130,22 +2281,30 @@ async def session(name, tab, code, probe_expr, marker=None):
         try:
             if full:
                 raise RuntimeError("busy")
+            if not send.accepting and not cleanup_request(req):
+                return
             if req.get("plugin") == "_core":
                 allowed, arg = authorize(req)
+                if isinstance(req.get("t"), str) and same(req["t"], CORE_TOK) and (not ui or name != ui_name()):
+                    allowed = False
                 out = await core(req.get("method"), arg) if allowed else NOAUTH
             else:
-                out = await backend(req.get("plugin"), req.get("method"), req.get("arg")) if backend_ok(req) else NOAUTH
+                out = await backend(req.get("plugin"), req.get("method"), req.get("arg")) if ui and name == ui_name() and LIVE.get(name) is send and backend_ok(req) else NOAUTH
             json.dumps(out)
         except Exception as e:
             out = {"error": str(e) or "failed"}
         i, gen = req.get("id"), req.get("gen")
-        if i and isinstance(i, int) and isinstance(gen, str):
+        if send.accepting and LIVE.get(name) is send and i and isinstance(i, int) and isinstance(gen, str):
             try:
                 await call_core(send, REPLY, [gen, i, out])
             except Exception as e:
                 log("reply failed:", str(e)[:200])
         if req.get("plugin") == "_core" and isinstance(out, dict):
             method = req.get("method")
+            if method == "panel_mode" and out.get("pending") is True:
+                controller = getattr(host, "panel_controller", None)
+                if controller is not None:
+                    spawn(controller.apply_pending())
             if out.get("restart"):
                 await asyncio.sleep(1)
                 try:
@@ -2169,7 +2328,7 @@ async def session(name, tab, code, probe_expr, marker=None):
 
     t = None
     try:
-        mode = name in WIPES and isolation()
+        mode = owns_surface and isolation()
         mod = mode and use("fy_iso")
         iso = mod.Iso(rpc, log) if mod else None
         if iso:
@@ -2204,18 +2363,20 @@ async def session(name, tab, code, probe_expr, marker=None):
                     v = "undefined" if act == "inject" else None
                 if v == "undefined" and not stopping:
                     target = getattr(host, "targets", None)
-                    if name not in WIPES and target and hasattr(target, "reconcile"):
+                    if not owns_surface and target and hasattr(target, "reconcile"):
                         await target.reconcile(name)
+                        if name == "main":
+                            await send("Runtime.evaluate", expression="window.__framey_targets=window.__framey_targets||Object.create(null)", _main=True)
                     else:
                         load_epoch += 1
-                        todo[:] = [(expression, pid) for expression, pid in code() if name not in WIPES or not isinstance(expression, Main)]
+                        todo[:] = [(expression, pid) for expression, pid in code() if not owns_surface or not isinstance(expression, Main)]
                         send.core = None
                         await step()
             elif m.get("id") in pending:
                 pid, generation, world = pending.pop(m["id"])
                 res = m.get("result") or {}
                 current_world = (iso.ctx, getattr(iso, "epoch", None)) if iso and iso.on else None
-                if generation != load_epoch or world != current_world:
+                if not send.accepting or generation != load_epoch or world != current_world:
                     await release((res.get("result") or {}).get("objectId"), *(pid[2:] if isinstance(pid, tuple) and pid[0] in ("#bind", "#run") else []))
                     continue
                 if pid == "#core":
@@ -2275,15 +2436,20 @@ async def session(name, tab, code, probe_expr, marker=None):
         except Exception:
             pass
         ws.close()
-        if owns_session and name == "main" and not stopping:
-            await panel(False)
+        if owns_session and ui and name == ui_name() and not stopping:
+            controller = getattr(host, "panel_controller", None)
+            if controller is not None and controller.mode != "embedded":
+                spawn(panel_session_lost(name))
+            else:
+                await panel(False)
 
 
 async def watch(name, marker, code, probe_expr):
     last = None
     while True:
         try:
-            tab = next((t for t in await tabs() if marker(t["url"])), None)
+            candidates = [t for t in await tabs() if marker(t.get("url", ""))]
+            tab = candidates[0] if candidates and (name != "panel" or len(candidates) == 1) else None
             if tab:
                 await session(name, tab, code, probe_expr, marker)
         except Exception as e:
@@ -2299,7 +2465,8 @@ async def down():
         updates.disarm()
     if MODS.get("fy_dev"):
         MODS["fy_dev"].shutdown(host)
-    steps = [x for x in (t and t.remove_all(), supervisor and supervisor.shutdown(1.5), media and media.close()) if x]
+    controller = getattr(host, "panel_controller", None)
+    steps = [x for x in (controller and controller.close(), t and t.remove_all(), supervisor and supervisor.shutdown(1.5), media and media.close()) if x]
     await asyncio.wait_for(asyncio.gather(*steps, return_exceptions=True), 6)
 
 
@@ -2321,8 +2488,14 @@ async def main():
             log("startup", step.__name__, "failed:", e)
     stop = asyncio.Event()
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
+    controller = use("fy_panel")
+    if controller:
+        try:
+            await controller.get(host).start()
+        except Exception:
+            log("separate panel startup unavailable; using Steam panel")
+    start_surface_watches()
     work = asyncio.gather(
-        watch("main", lambda u: overlay_key(u, "valve.steam.gamepadui.main"), main_code, "typeof window.Framey"),
         watch("bar", lambda u: overlay_key(u, "valve.steam.gamepadui.bar"), bar_code, "typeof window.FYBar"),
     )
     try:

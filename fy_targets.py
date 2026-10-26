@@ -90,7 +90,7 @@ class Targets:
             return {}
         out = {}
         for name, part in islice(table.items(), MAX_ITEMS):
-            if (isinstance(name, str) and NAME.match(name) and name not in KNOWN
+            if (isinstance(name, str) and NAME.match(name) and name not in KNOWN and name != "panel"
                     and isinstance(part, str) and 1 <= len(part) <= 120 and part.isprintable()):
                 out[name] = part
         return out

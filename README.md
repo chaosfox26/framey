@@ -14,6 +14,7 @@ Version 1.0.2. The experimental branch has automated checks and partial live Ste
 
 - Runs as a user service on the headset. It needs Python 3 and uses only the standard library.
 - Adds a Framey icon to Steam's bottom bar. The panel has one page per installed plugin, plus Modules, Store, Decky Store and Settings on the experimental branch. [Store](docs/catalog.md) discovers and installs Framey-native modules; the separate [Decky Store](docs/catalog.md#decky-store) browses upstream Decky entries and inspects selected archives without installing or running them. Older installed builds may still show the Store placeholder.
+- Offers three [panel modes](docs/panels.md) in Settings: **Inside Steam** (default and fallback), **Beside Steam dashboard**, and **Floating during games**. The separate modes are experimental and reuse Steam's browser host. Gameplay input and physical VR comfort still need validation.
 - Plugins (called modules in the panel) can be enabled, disabled, reordered, hidden, frozen, updated, repaired, rolled back and removed from the headset.
 - Shows whether a module's upstream project still looks maintained. This is information only.
 - Updates Framey and signed Fan Control releases from inside the headset.

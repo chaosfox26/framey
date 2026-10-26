@@ -2,7 +2,7 @@
 
 This guide describes the experimental branch of Framey, currently reporting version 1.0.2. An installed stable build can have different features; the version number alone does not identify its source. Check the installed commit in Settings before comparing its panel with this guide. Editing or checking out this branch does not update the running service. See [Verification status](#verification-status) for the limits of device testing.
 
-Contents: [Install](#install) · [The icon and panel](#the-icon-and-panel) · [Catalog](catalog.md) · [Managing modules](#managing-modules) · [Report to Framey](#report-to-framey) · [Updates](#updates) · [Upstream project status](#upstream-project-status) · [Configuration files](#configuration-files) · [Developer mode](#developer-mode-and-diagnostics) · [Backend workers](#backend-workers-and-failure-containment) · [Resource limits](#resource-limits) · [Recovery](#recovery) · [Fan Control](#fan-control) · [Known limitations](#known-limitations) · [Verification status](#verification-status)
+Contents: [Install](#install) · [The icon and panel](#the-icon-and-panel) · [Panel placement](#panel-placement) · [Catalog](catalog.md) · [Managing modules](#managing-modules) · [Report to Framey](#report-to-framey) · [Updates](#updates) · [Upstream project status](#upstream-project-status) · [Configuration files](#configuration-files) · [Developer mode](#developer-mode-and-diagnostics) · [Backend workers](#backend-workers-and-failure-containment) · [Resource limits](#resource-limits) · [Recovery](#recovery) · [Fan Control](#fan-control) · [Known limitations](#known-limitations) · [Verification status](#verification-status)
 
 ## Install
 
@@ -48,16 +48,30 @@ If the icon does not appear, check the service log with `journalctl --user -u fr
 
 ## The icon and panel
 
-- **Icon.** Framey's icon is added to Steam's bottom bar, labelled "Framey". Tap it to open or close the panel. If `icon.svg` cannot be read, a built-in circle icon is used. The icon shows a small badge with the number of updates available, counting enabled, unfrozen modules and Framey itself, from the last recorded check (`fy_updates.py` `badge`). The badge is refreshed after a batch update, a version install, a repair, a single-module Update and a Framey update check.
+- **Icon.** Framey's icon is added to Steam's bottom bar, labelled "Framey". When Steam exposes its System menu during 2D or VR use, open it and select this button to open or close Framey. This does not add a universal controller shortcut. If `icon.svg` cannot be read, a built-in circle icon is used. The icon shows a small badge with the number of updates available, counting enabled, unfrozen modules and Framey itself, from the last recorded check (`fy_updates.py` `badge`). The badge is refreshed after a batch update, a version install, a repair, a single-module Update and a Framey update check.
 - **Side menu.** One entry per module that is not hidden, then Modules, Store, Decky Store and Settings. The panel's own wording calls Framey plugins "modules".
 - **Modules.** Every installed module as a card, described in [Managing modules](#managing-modules) and [Updates](#updates).
 - **Store.** Browse and search the experimental Framey-native module catalog, inspect details and review an installation before starting it. See [Finding modules and browsing the Decky Store](catalog.md) for sources, compatibility and saved catalog data. Older installed builds may still show "Coming soon".
 - **Decky Store.** A separate tab for upstream Decky listings and version details, with an explicit **Inspect compatibility** action that downloads a selected archive for read-only checks. It does not install Decky packages. **Not compatible** identifies the need for a Framey port; **ARM64: Not checked** identifies missing processor evidence. Even an archive containing ARM64 code still needs its interface, backend and hardware behavior ported and tested for Steam Frame's VR environment. See [Decky Store](catalog.md#decky-store).
-- **Settings.** The Framey version and its update, the automatic-check and notification switches, the activity window, the worker limit, the read-only update channel, safe mode and developer mode, and Reload modules.
+- **Settings.** Panel placement, the Framey version and its update, the automatic-check and notification switches, the activity window, the worker limit, the read-only update channel, safe mode and developer mode, and Reload modules.
 - The panel's last page and whether it was open are kept in the page's session storage. They can reset when Steam's interface restarts.
 - Framey checks every 5 seconds whether Steam's interface is still attached. When Steam reloads its interface, Framey reattaches and injects its pages again.
 
 Framey is independent of Decky Loader and is not affiliated with or endorsed by it. Decky-related compatibility is experimental and varies by plugin. Decky and plugin authors are not expected to support Framey-specific failures. The Decky Store currently browses and inspects upstream packages; it does not install them or run their frontend/backend code. Separately adapted Framey-native ports run through Framey's normal module lifecycle and need their own compatibility evidence.
+
+### Panel placement
+
+Settings > **Framey panel** offers three placements, keeping Framey's existing 520-pixel layout:
+
+| Choice | Behavior |
+|---|---|
+| **Inside Steam** | The default and recovery mode, inside Steam's interface. |
+| **Beside Steam dashboard** | Framey's own panel beside Steam while the Steam menu is open. It hides when the menu closes. |
+| **Floating during games** | Framey's own panel can remain visible after the Steam menu closes, until you close Framey. |
+
+The separate-panel modes follow Steam's dashboard placement while the menu is open. Floating mode keeps the last world position when the menu closes. Controller pointers may interrupt game controls while the floating panel is visible.
+
+The separate modes are experimental and may be unavailable; **Inside Steam** remains the fallback. During a switch, Settings shows **Moving Framey panel…** and keeps the last confirmed choice selected. **Retry** refreshes the reported state once, letting you try a separate mode again; selecting that mode checks its availability. See [Panel modes](panels.md) for availability, recovery, game-input cautions and verification limits.
 
 ## Managing modules
 
@@ -163,7 +177,7 @@ Loader configuration is under `~/.config/framey/`. The page cannot change the fi
 | `developer` | You | Its existence turns developer mode on. Its JSON object may hold a `targets` key (extra injection targets, developer mode only). A file that cannot be parsed, or is over 4 KB, still turns developer mode on, and its `targets` are ignored. |
 | `safe` | You | Its existence turns safe mode on. |
 | `isolation` | You | Fallback value for `isolation`, read only when `loader.json` does not exist. |
-| `settings.json` | Framey | Disabled modules, order, hidden, frozen, preferences, last update results. Written to a temporary file and then renamed. Invalid parts are dropped one at a time. |
+| `settings.json` | Framey | Disabled modules, order, hidden, frozen, panel placement, preferences and last update results. Written to a temporary file and then renamed. Invalid parts are dropped one at a time. |
 | `maint.json` | Framey | Upstream status cache. |
 | `catalog.json` | Framey | Selected catalog source, custom URL and up to two saved catalog snapshots. |
 | `decky-catalog.json` | Framey | Saved upstream Decky catalog metadata. The Decky source choice itself is held in the page's session storage. |
