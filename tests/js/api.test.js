@@ -1051,7 +1051,7 @@ t("types/framey.d.ts members exist on a registered api and on Framey", async () 
   check("runtime", api.runtime, iface("FrameyRuntime"));
   const declared = new Set(apiMembers.map(m => m.name));
   Object.keys(api).filter(k => k !== "_clear" && k !== "_diag" && k !== "_n").forEach(k => assert.ok(declared.has(k), "undeclared api." + k));
-  const typeOf = { id: "string", visible: "boolean", lang: "string", runtime: "object", events: "object", i18n: "object", ui: "object", pages: "object", global: "object" };
+  const typeOf = { id: "string", visible: "boolean", lang: "string", runtime: "object", steam: "object", compat: "object", events: "object", i18n: "object", ui: "object", pages: "object", global: "object" };
   apiMembers.filter(m => !m.fn).forEach(m => assert.strictEqual(typeof api[m.name], typeOf[m.name], m.name));
   assert.deepStrictEqual(Object.keys(api.runtime).sort(), iface("FrameyRuntime").map(m => m.name).sort());
   const diagKeys = Object.keys(F.diag());

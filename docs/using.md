@@ -49,29 +49,29 @@ If the icon does not appear, check the service log with `journalctl --user -u fr
 ## The icon and panel
 
 - **Icon.** Framey's icon is added to Steam's bottom bar, labelled "Framey". When Steam exposes its System menu during 2D or VR use, open it and select this button to open or close Framey. This does not add a universal controller shortcut. If `icon.svg` cannot be read, a built-in circle icon is used. The icon shows a small badge with the number of updates available, counting enabled, unfrozen modules and Framey itself, from the last recorded check (`fy_updates.py` `badge`). The badge is refreshed after a batch update, a version install, a repair, a single-module Update and a Framey update check.
-- **Side menu.** One entry per module that is not hidden, then Modules, Store, Decky Store and Settings. The panel's own wording calls Framey plugins "modules".
+- **Launcher.** The bottom-bar icon opens a small accordion launcher above itself. Installed plugin shortcuts, Framey Store, Decky catalog and Options appear as icon-only buttons with tooltips. The compact tray matches Steam's dark bar, with square framed buttons and blue/magenta icons. Buttons depress into the tray when pressed. The launcher rises from the original Framey button and expands sideways. Selecting a button collapses it inward and slides it down, then opens that page in Framey's separate side window. Larger shortcut lists use page buttons. The current source preserves the magenta, blue, black and white palette.
+- **Navigation.** Left/right arrows in the accordion reveal different tool and Options-category shortcuts. A chosen screen opens alone in the 800 × 720 side window with its own title and Close. Switching tools returns through the accordion. Fan Control’s main controls and readings fit together without scrolling; large collections remain searchable and complete details open in context.
 - **Modules.** Every installed module as a card, described in [Managing modules](#managing-modules) and [Updates](#updates).
 - **Store.** Browse and search the experimental Framey-native module catalog, inspect details and review an installation before starting it. See [Finding modules and browsing the Decky Store](catalog.md) for sources, compatibility and saved catalog data. Older installed builds may still show "Coming soon".
-- **Decky Store.** A separate tab for upstream Decky listings and version details, with an explicit **Inspect compatibility** action that downloads a selected archive for read-only checks. It does not install Decky packages. **Not compatible** identifies the need for a Framey port; **ARM64: Not checked** identifies missing processor evidence. Even an archive containing ARM64 code still needs its interface, backend and hardware behavior ported and tested for Steam Frame's VR environment. See [Decky Store](catalog.md#decky-store).
+- **Decky Store.** Upstream Decky listings and version details, with an explicit **Inspect compatibility** action for read-only archive checks. Builds with the experimental runtime also offer **Review experimental import**, followed by a separate confirmation. Import supports a limited package profile and does not establish full functionality. **ARM64: Not checked** identifies missing processor evidence. Even ARM64 code still needs runtime and VR testing. See [Decky Store](catalog.md#decky-store).
 - **Settings.** Panel placement, the Framey version and its update, the automatic-check and notification switches, the activity window, the worker limit, the read-only update channel, safe mode and developer mode, and Reload modules.
 - The panel's last page and whether it was open are kept in the page's session storage. They can reset when Steam's interface restarts.
 - Framey checks every 5 seconds whether Steam's interface is still attached. When Steam reloads its interface, Framey reattaches and injects its pages again.
 
-Framey is independent of Decky Loader and is not affiliated with or endorsed by it. Decky-related compatibility is experimental and varies by plugin. Decky and plugin authors are not expected to support Framey-specific failures. The Decky Store currently browses and inspects upstream packages; it does not install them or run their frontend/backend code. Separately adapted Framey-native ports run through Framey's normal module lifecycle and need their own compatibility evidence.
+Framey is independent of Decky Loader and is not affiliated with or endorsed by it. Decky-related compatibility is experimental and varies by plugin. Decky and plugin authors are not expected to support Framey-specific failures. Browsing and inspecting upstream packages do not execute their code. Confirmed experimental imports and separately adapted Framey-native ports enter Framey's trusted module lifecycle and need their own compatibility evidence. Older builds without the runtime retain browse-and-inspect behavior.
 
 ### Panel placement
 
-Settings > **Framey panel** offers three placements, keeping Framey's existing 520-pixel layout:
+The launcher and selected page have separate roles:
 
 | Choice | Behavior |
 |---|---|
-| **Inside Steam** | The default and recovery mode, inside Steam's interface. |
-| **Beside Steam dashboard** | Framey's own panel beside Steam while the Steam menu is open. It hides when the menu closes. |
-| **Floating during games** | Framey's own panel can remain visible after the Steam menu closes, until you close Framey. |
+| **Launcher** | Opens immediately above the existing bottom-bar icon. Its visible strip expands as shortcuts are added. |
+| **Selected page** | Opens in Framey's own window to the right of the Steam host window. It is not embedded in Steam's content. |
 
-The separate-panel modes follow Steam's dashboard placement while the menu is open. Floating mode keeps the last world position when the menu closes. Controller pointers may interrupt game controls while the floating panel is visible.
+Current source validates Steam target geometry while the audited app-focus fields are empty; dashboard visibility controls when Framey is shown. A focused 2D app with no verified overlay mapping is reported as unavailable; Framey does not silently call that Steam placement app tracking. Arbitrary 2D app anchoring and physical-controller acceptance remain open work.
 
-The separate modes are experimental and may be unavailable; **Inside Steam** remains the fallback. During a switch, Settings shows **Moving Framey panel…** and keeps the last confirmed choice selected. **Retry** refreshes the reported state once, letting you try a separate mode again; selecting that mode checks its availability. See [Panel modes](panels.md) for availability, recovery, game-input cautions and verification limits.
+The old three-choice placement control is no longer part of ordinary Options. **Support > Panel status** provides read-only diagnostics and Retry. Existing placement values remain accepted internally for compatibility. The launcher and Fan Control route were directly installed and inspected on a headset on October 27, 2026; physical controller acceptance remains incomplete. See [Panel placement](panels.md) for lifecycle and verification limits.
 
 ## Managing modules
 
@@ -79,7 +79,7 @@ Each card on the Modules page shows the name, version, installed commit, an Enab
 
 - **Enabled.** Turning a module off stops its page and backend. The state is kept in `settings.json`. Turning it on starts it again.
 - **Order and sort.** **Move up** and **Move down** set the order. **Sort** switches between Custom and Name (display name, then id).
-- **Hide.** Removes the module's tab from the side menu. The module keeps running. **Show** brings the tab back.
+- **Hide.** Removes the module's shortcut from ordinary navigation. The module keeps running. **Show** brings the shortcut back.
 - **Freeze.** Records the installed version ("Frozen at v..."). Batch updates and automatic checks skip frozen modules. A manual update asks you to unfreeze first.
 - **Remove.** Two taps. The module's folder is deleted. Its settings and data are kept. **Remove and delete data** also deletes its settings, data, runtime and log folders (see [Configuration files](#configuration-files)); a partial deletion is reported. A linked module (a symlink in `plugins/`) is only unlinked. For a module with protected system components, use its dedicated uninstaller first. Removing its Framey interface does not restore system settings or undo changes elsewhere on the system.
 - **Reload.** Reloads only that module. A module that failed to load, render or answer shows a red row with the message, the time, **Disable** and **Reload**.

@@ -12,9 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import fy_decky_catalog as decky
-
-
+from decky_runtime import catalog as decky
 def bundle(version):
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as archive:

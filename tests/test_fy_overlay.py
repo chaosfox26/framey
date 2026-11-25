@@ -183,15 +183,89 @@ class NativeOverlayTests(unittest.TestCase):
         self.assertIn(("coordinates", 101, 1, (0.5, 0.5)), self.runtime.calls)
         width, transform = self.runtime.writes
         self.assertEqual(width[:2], ("set_width", 201))
-        self.assertAlmostEqual(width[2], 0.542, places=6)
+        self.assertAlmostEqual(width[2], 0.8, places=6)
         self.assertEqual(transform[:3], ("transform", 201, 1))
-        expected = [[1, 0, 0, 2.951], [0, 1, 0, 3], [0, 0, 1, 4]]
+        expected = [[1, 0, 0, 3.08], [0, 1, 0, 3], [0, 0, 1, 4]]
         for actual, want in zip(transform[3], expected):
             for a, b in zip(actual, want):
                 self.assertAlmostEqual(a, b, places=6)
         self.assertEqual(rows(self.runtime.pose), before)
         self.assertEqual(self.runtime.width, 1.28)
         self.assertTrue(all(item[1] == 201 for item in self.runtime.writes))
+
+    def test_position_right_uses_the_named_application_instead_of_steam(self):
+        self.runtime.handles[b"application.window"] = 301
+        self.runtime.keys[301] = b"application.window"
+        self.assertTrue(self.native.position_right(b"application.window")["ok"])
+        self.assertIn(("coordinates", 301, 1, (0.5, 0.5)), self.runtime.calls)
+        self.assertNotIn(("find", fo.STEAM_KEY), self.runtime.calls)
+        self.assertTrue(all(item[1] == 201 for item in self.runtime.writes))
+
+    def test_compact_panel_is_above_the_bar_top_edge_with_a_world_space_gap(self):
+        bar_key = b"valve.steam.gamepadui.bar"
+        self.runtime.handles[bar_key] = 401
+        self.runtime.keys[401] = bar_key
+        before = rows(self.runtime.pose)
+        self.assertTrue(self.native.position_above_bar()["ok"])
+        self.assertIn(("coordinates", 401, 1, (0.5, 1.0)), self.runtime.calls)
+        width, transform = self.runtime.writes
+        self.assertAlmostEqual(width[2], 0.382, places=6)
+        self.assertEqual(transform[:3], ("transform", 201, 1))
+        self.assertAlmostEqual(transform[3][0][3], 2, places=6)
+        self.assertAlmostEqual(transform[3][1][3], 3.08, places=6)
+        self.assertAlmostEqual(transform[3][2][3], 4, places=6)
+        self.assertEqual(rows(self.runtime.pose), before)
+        self.assertTrue(all(item[1] == 201 for item in self.runtime.writes))
+
+    def test_above_bar_uses_local_up_with_scale_removed(self):
+        pose = matrix(((0, -0.5, 0, 2), (0.5, 0, 0, 3), (0, 0, 0.5, 4)))
+        width, positioned = fo._above_pose(pose, 2.56)
+        self.assertAlmostEqual(width, 0.382, places=6)
+        self.assertAlmostEqual(positioned.m[0][3], 1.92, places=6)
+        self.assertAlmostEqual(positioned.m[1][3], 3, places=6)
+        self.assertEqual(list(positioned.m[2])[:3], [0, 0, 1])
+
+    def test_invalid_or_owned_target_keys_do_not_load_the_native_library(self):
+        for key in (fo.OWN_KEY, b"", b"bad\x00key", b"x" * 128, None, 101):
+            with self.subTest(key=key):
+                self.assertFalse(self.native.position_right(key)["ok"])
+        self.loader.assert_not_called()
+
+    def test_missing_bar_or_stale_application_key_never_positions_framey(self):
+        self.assertFalse(self.native.position_above_bar()["ok"])
+        self.runtime.handles[b"application.window"] = 301
+        self.runtime.keys[301] = b"reused.window"
+        self.assertFalse(self.native.position_right(b"application.window")["ok"])
+        self.assertEqual(self.runtime.writes, [])
+
+    def test_launcher_uses_the_actual_bar_icon_anchor(self):
+        self.runtime.handles[b"valve.steam.gamepadui.bar"] = 401
+        self.runtime.keys[401] = b"valve.steam.gamepadui.bar"
+        self.assertTrue(self.native.position_above_bar(0.75)["ok"])
+        self.assertIn(("coordinates", 401, 1, (0.75, 1.0)), self.runtime.calls)
+
+    def test_expanded_launcher_keeps_its_height_and_bar_gap(self):
+        width, positioned = fo._above_pose(matrix(), 1.28, 662)
+        self.assertAlmostEqual(width, 0.662, places=6)
+        self.assertAlmostEqual(positioned.m[1][3], 3.08, places=6)
+
+    def test_invalid_launcher_width_never_initializes_native_connection(self):
+        for width in (True, 381, 663, 500.5, "542", None):
+            with self.subTest(width=width):
+                self.assertFalse(self.native.position_above_bar(0.5, width)["ok"])
+        self.loader.assert_not_called()
+
+    def test_invalid_launcher_anchor_never_initializes_native_connection(self):
+        for anchor in (True, -0.1, 1.1, float("nan"), float("inf"), "0.5", None):
+            with self.subTest(anchor=anchor):
+                self.assertFalse(self.native.position_above_bar(anchor)["ok"])
+        self.loader.assert_not_called()
+
+    def test_steam_visibility_reads_only_the_verified_steam_handle(self):
+        self.runtime.visible = True
+        self.assertTrue(self.native.steam_visible())
+        self.assertIn(("visible", 101), self.runtime.calls)
+        self.assertEqual(self.runtime.writes, [])
 
     def test_rotated_poses_offset_along_column_not_world_x(self):
         rotations = (
@@ -204,9 +278,9 @@ class NativeOverlayTests(unittest.TestCase):
                 pose = matrix([list(row) + [r + 2] for r, row in enumerate(rotation)])
                 before = rows(pose)
                 width, got = fo._right_pose(pose, 1.28)
-                self.assertAlmostEqual(width, 0.542, places=6)
+                self.assertAlmostEqual(width, 0.8, places=6)
                 for r in range(3):
-                    self.assertAlmostEqual(got.m[r][3], before[r][3] + 0.951 * rotation[r][0], places=6)
+                    self.assertAlmostEqual(got.m[r][3], before[r][3] + 1.08 * rotation[r][0], places=6)
                     self.assertEqual(list(got.m[r])[:3], before[r][:3])
                 self.assertEqual(rows(pose), before)
 
@@ -218,10 +292,10 @@ class NativeOverlayTests(unittest.TestCase):
         before = rows(self.runtime.pose)
         self.assertTrue(self.native.position_right()["ok"])
         width, transform = self.runtime.writes
-        self.assertAlmostEqual(width[2], 0.41671458707, places=6)
+        self.assertAlmostEqual(width[2], 0.615076881287, places=6)
         positioned = transform[3]
         delta = [positioned[r][3] - before[r][3] for r in range(3)]
-        for actual, expected in zip(delta, (0.64727573712, 0, 0.35951930383)):
+        for actual, expected in zip(delta, (0.73398011356, 0, 0.40767790947)):
             self.assertAlmostEqual(actual, expected, places=6)
         for a in range(3):
             for b in range(3):
@@ -251,8 +325,8 @@ class NativeOverlayTests(unittest.TestCase):
         scale = 0.369
         pose = matrix(((0, -scale, 0, 2), (scale, 0, 0, 3), (0, 0, scale, 4)))
         width, positioned = fo._right_pose(pose, 1.28)
-        self.assertAlmostEqual(width, 0.199998, places=6)
-        self.assertAlmostEqual(positioned.m[1][3] - 3, 0.376159, places=6)
+        self.assertAlmostEqual(width, 0.2952, places=6)
+        self.assertAlmostEqual(positioned.m[1][3] - 3, 0.42376, places=6)
         self.assertAlmostEqual(positioned.m[1][3] - 3 - 1.28 * scale / 2 - width / 2, 0.04, places=6)
 
     def test_invalid_width_and_nonrigid_pose_never_write(self):

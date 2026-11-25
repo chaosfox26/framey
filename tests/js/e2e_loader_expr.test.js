@@ -3,6 +3,7 @@ const assert = require("assert");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { ROOT } = require("./harness");
+const { pagedControl, pagedText, findShortcut } = require("./panel-navigation-helpers");
 
 const { JSDOM } = require(process.env.FRAMEY_JSDOM ? require.resolve("jsdom", { paths: [process.env.FRAMEY_JSDOM] }) : "jsdom");
 
@@ -171,8 +172,15 @@ const boot = (spy = false) => {
 };
 
 const rail = w => w.document.querySelector("[role=tablist]");
-const tileNamed = (w, text) => [...rail(w).children].find(x => x.textContent.trim() === text);
-const body = w => w.document.body.textContent;
+const tileNamed = (w, text) => {
+  const root = ["Settings", "Browse", "Plugins"].includes(text) ? null : ["Store", "Decky Store"].includes(text) ? "Browse" : "Plugins";
+  if (root) [...rail(w).children].find(x => x.textContent === root).click();
+  const label = { Modules: "Manage plugins", Store: "Framey Store", "Decky Store": "Decky catalog" }[text] || text;
+  return [...rail(w).children].find(x => x.textContent === label) || findShortcut(w.document.querySelector('[role="region"][aria-label="Framey"]'), label);
+};
+const surface = w => w.document.querySelector('[role="region"][aria-label="Framey"]');
+const control = (w, label) => pagedControl(surface(w), label);
+const body = w => w.document.querySelector('[role="dialog"]') ? w.document.body.textContent : pagedText(surface(w));
 
 const results = [];
 const check = async (name, fn) => {
@@ -237,18 +245,18 @@ const check = async (name, fn) => {
     assert.ok(w.Framey.plugins.find(p => p.id === "beta"), "beta did not register");
   });
 
-  await check("the panel opens and the rail shows Modules, Store, Decky Store, Settings in order", async () => {
+  await check("the panel opens and the destinations show Plugins, Browse, Settings in order", async () => {
     w.Framey.toggle();
     await sleep(60);
     const labels = [...rail(w).children].map(x => x.textContent.trim());
-    const at = ["Modules", "Store", "Decky Store", "Settings"].map(n => labels.indexOf(n));
-    assert.ok(at.every(i => i >= 0) && at[0] < at[1] && at[1] < at[2] && at[2] < at[3], "rail was " + JSON.stringify(labels));
+    assert.deepEqual(labels, ["Plugins", "Browse", "Settings"]);
   });
 
   await check("Modules renders its list from the canned list reply and the maintenance chip", async () => {
     tileNamed(w, "Modules").click();
     await sleep(80);
     assert.ok(body(w).includes("Fan"), "module row missing");
+    control(w, "Fan").click();
     assert.ok(body(w).includes("Recent activity"), "maintenance chip missing");
     assert.ok(!body(w).includes("Modules is not available"), "modules page not built");
     assert.ok(sent.some(m => m.plugin === "_core" && m.method === "list"), "list was not requested");
@@ -257,6 +265,7 @@ const check = async (name, fn) => {
   await check("Settings renders its page", async () => {
     tileNamed(w, "Settings").click();
     await sleep(80);
+    control(w, "Updates").click();
     assert.ok(body(w).includes("Check for updates"), "settings page not built");
     assert.ok(sent.some(m => m.plugin === "_core" && m.method === "loader"), "loader was not requested");
   });
@@ -265,7 +274,7 @@ const check = async (name, fn) => {
     tileNamed(w, "Store").click();
     await sleep(40);
     assert.ok(body(w).includes("Demo"), "catalog entry missing");
-    assert.ok(body(w).includes("Search"), "catalog search missing");
+    assert.ok(control(w, "Search"), "catalog search missing");
     assert.ok(sent.some(m => m.plugin === "_core" && m.method === "catalog_list"), "catalog_list was not requested");
   });
 
@@ -275,22 +284,33 @@ const check = async (name, fn) => {
     assert.ok(body(w).includes("Example Decky plugin"), "Decky community entry missing");
     assert.ok(body(w).includes("Framey is independent") && body(w).includes("not affiliated with or endorsed by Decky Loader"), "community ownership notice missing");
     assert.ok(body(w).includes("Experimental compatibility; results vary"), "experimental compatibility notice missing");
-    assert.ok(body(w).includes("only browses and inspects original packages; it cannot install or run them"), "browse-only capability notice missing");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(w.FY_RUNTIME.decky_compat)), { profile: 1, import: true }, "generated loader did not advertise its installed compatibility helpers");
+    assert.ok(body(w).includes("Partial compatibility profile") && body(w).includes("Installation does not mean full Steam plugin functionality"), "experimental profile limits missing");
     assert.ok(body(w).includes("Report Framey issues to Framey, not Decky or plugin authors"), "Framey-owned support guidance missing");
-    assert.ok(body(w).includes("Not compatible") && body(w).includes("needs a Framey version before it can run here"), "port requirement missing");
+    assert.ok(body(w).includes("Experimental profile") && body(w).includes("Full Steam features are not verified"), "unverified experimental compatibility was not stated");
     assert.ok(body(w).includes("ARM64: Not checked"), "unverified architecture was not stated");
     assert.ok(sent.some(m => m.plugin === "_core" && m.method === "catalog_list" && isDecky(m.arg)), "Decky source was not requested");
     assert.ok(!sent.some(m => m.method === "catalog_sources" && isDecky(m.arg)), "browsing Decky changed the saved Framey source");
-    const details = [...w.document.querySelectorAll('[role="button"]')].find(x => x.getAttribute("aria-label") === "Details: Example Decky plugin");
+    const details = control(w, "Details: Example Decky plugin");
     assert.ok(details, "Decky details control missing");
     details.click();
     await sleep(50);
     assert.ok(body(w).includes("By Example maintainer"), "upstream author attribution missing");
-    assert.ok(body(w).includes("Decky plugins cannot be installed in Framey"), "read-only port explanation missing");
-    assert.ok([...w.document.querySelectorAll('[role="button"]')].some(x => x.getAttribute("aria-label") === "Inspect compatibility"), "explicit archive inspection is unavailable");
-    assert.ok(![...w.document.querySelectorAll('[role="button"]')].some(x => /^(Install|Review installation)$/.test(x.getAttribute("aria-label") || "")), "Decky package offered direct installation");
+    assert.ok(body(w).includes("Partial compatibility profile") && body(w).includes("New imports only; upgrades are not supported"), "experimental import limits missing");
+    const importReview = control(w, "Review experimental import");
+    assert.ok(importReview && importReview.getAttribute("aria-disabled") === "false", "generated capability did not expose experimental import review");
+    assert.ok(!sent.some(m => m.method === "catalog_import"), "browsing or opening details automatically imported a package");
+    importReview.click();
+    await sleep(20);
+    assert.ok(control(w, "Import experimental profile"), "experimental review did not expose a separate confirmation");
+    assert.ok(body(w).includes(DECKY_VERSION.hash), "experimental review omitted the selected archive hash");
+    assert.ok(!sent.some(m => m.method === "catalog_import"), "reviewing without confirmation imported a package");
+    control(w, "Cancel").click();
+    await sleep(20);
+    assert.ok(control(w, "Inspect compatibility"), "explicit archive inspection is unavailable");
+    assert.ok(!control(w, "Install") && !control(w, "Review installation"), "Decky package offered direct installation");
     assert.ok(!sent.some(m => m.method === "catalog_assess"), "opening details automatically inspected an archive");
-    [...w.document.querySelectorAll('[role="button"]')].find(x => x.getAttribute("aria-label") === "Inspect compatibility").click();
+    control(w, "Inspect compatibility").click();
     await sleep(40);
     const inspections = sent.filter(m => m.method === "catalog_assess");
     assert.equal(inspections.length, 1, "an explicit inspection must issue one request");
@@ -298,7 +318,8 @@ const check = async (name, fn) => {
     assert.deepStrictEqual(inspections[0].arg, { id: DECKY_ROW.id, identity: DECKY_ROW.identity, version_identity: DECKY_VERSION.identity, confirm: true, source: "decky_stable" });
     assert.ok(body(w).includes("Archive SHA-256 verified."), "verified fixture assessment was not rendered");
     assert.ok(body(w).includes("ARM64: Not checked"), "unknown architecture became a compatibility claim");
-    assert.ok(!sent.some(m => m.method === "catalog_install"), "read-only Decky flow installed a package");
+    assert.ok(!sent.some(m => m.method === "catalog_install"), "Decky flow used the legacy native install operation");
+    assert.ok(!sent.some(m => m.method === "catalog_import"), "read-only archive inspection automatically imported a package");
     tileNamed(w, "Store").click();
     await sleep(50);
     assert.ok(body(w).includes("Demo"), "Framey catalog did not return");

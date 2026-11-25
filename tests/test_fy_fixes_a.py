@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import io
 import json
 import os
@@ -151,12 +152,28 @@ class AuthorizationTests(Base):
         loader = await self.start()
         fy = loader.fy
         page, _ = await self.attach(loader)
-        net, files, store, targets = (fy.use(m) for m in ("fy_net", "fy_files", "fy_store", "fy_targets"))
+        net, files, store, targets, browser, steam, manager = (fy.use(m) for m in ("fy_net", "fy_files", "fy_store", "fy_targets", "fy_browser", "fy_steam", "fy_decky_runtime"))
+        from test_fy_decky_runtime import payload
+
+        package = H.REPO / "decky_runtime"
+        archive, release = payload(
+            entry=(package / "runtime.py").read_text(),
+            extra={name: (package / name).read_bytes() for name in ("code.py", "http.py")},
+        )
+        loader.net.routes[manager.METADATA_URL] = json.dumps(release).encode()
+        loader.net.routes[release["archive"]["url"]] = archive
+        state = await manager.set_enabled(fy.host, True)
+        self.assertTrue(state["enabled"], state)
+        handle = manager.acquire(fy.host)
+        self.assertTrue(manager.current(fy.host, handle))
+        # Exercise real core admission and the package's real dispatch. Only the
+        # effectful handlers are spies; no listener, original or network runs.
+        code = importlib.import_module(handle.namespace + ".code")
         seen = {}
 
         def spy(name, result=None):
             async def run(*a, **k):
-                seen.setdefault(name, []).append(a[0] if name == "fetch" else a[1])
+                seen.setdefault(name, []).append(a[1]["pid"] if name in ("open_url", "steam_read", "decky_code_issue", "decky_code_touch", "decky_code_revoke") else a[0] if name == "fetch" else a[1])
                 return result
 
             return run
@@ -170,6 +187,11 @@ class AuthorizationTests(Base):
         forged = {"pid": "b", "id": "b"}
         sends = [
             ("fetch", {"url": "https://example.com/"}, mock.patch.object(net, "fetch_plugin", spy("fetch", {"status": 200}))),
+            ("open_url", {"url": "https://example.com/"}, mock.patch.dict(browser.METHODS, {"open_url": spy("open_url", {"requested": True})})),
+            ("steam_read", {"operation": "focus"}, mock.patch.dict(steam.METHODS, {"steam_read": spy("steam_read", {"ok": False, "available": False, "code": "target_unavailable"})})),
+            ("decky_code_issue", {}, mock.patch.object(code, "decky_code_issue", spy("decky_code_issue", {"error": "unavailable", "code": "code_unavailable"}))),
+            ("decky_code_touch", {"token": "a" * 64}, mock.patch.object(code, "decky_code_touch", spy("decky_code_touch", {"renewed": True, "ttl": 600}))),
+            ("decky_code_revoke", {"token": "a" * 64}, mock.patch.object(code, "decky_code_revoke", spy("decky_code_revoke", {"revoked": True}))),
             ("files_list", {"root": "data"}, None),
             ("resource", {"root": "data", "path": "x"}, None),
             ("locale", {"lang": "en"}, None),

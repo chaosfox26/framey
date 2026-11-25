@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import fy_files
-import fy_decky_catalog
+from decky_runtime import catalog as fy_decky_catalog
 import fy_net
 import fy_store
 

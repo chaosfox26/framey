@@ -1,6 +1,7 @@
 "use strict";
 const assert = require("assert");
 const { makeDom } = require("./harness");
+const { pagedControl, pagedText } = require("./panel-navigation-helpers");
 
 const FILES = ["fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-modules.js", "fy-catalog.js", "fy-settings.js"];
 const DEFER = Symbol("deferred reply");
@@ -38,7 +39,7 @@ const boot = (overrides = {}) => {
   }, overrides);
   const env = makeDom({
     before(w) {
-      w.FY_RUNTIME = { version: "1.1.0", api: 1, platform: "linux-aarch64", lang: "en", trusted_input: "off" };
+      w.FY_RUNTIME = { version: "1.1.0", api: 1, platform: "linux-aarch64", lang: "en", trusted_input: "off", panel_layout: "compact" };
       w.fyCall = raw => {
         const call = JSON.parse(raw);
         calls.push(call);
@@ -53,16 +54,16 @@ const boot = (overrides = {}) => {
   });
   const FY = env.window.Framey;
   const panel = env.document.querySelector('[role="region"][aria-label="Framey"]');
-  const box = () => panel.firstElementChild.firstElementChild;
+  const box = () => panel.querySelector('[role="tabpanel"]').firstElementChild;
   const controls = () => [...box().querySelectorAll('[role="button"],[role="switch"],button,select,input')];
   const find = label => {
-    const found = controls().find(node => (node.getAttribute("aria-label") || node.textContent) === label);
+    const found = pagedControl(panel, label);
     assert.ok(found, "missing control " + label);
     return found;
   };
   return {
     env, FY, replies, box, controls, find, calls,
-    text: () => box().textContent,
+    text: () => pagedText(panel),
     sent: method => calls.filter(call => call.method === method),
     last: method => calls.filter(call => call.method === method).at(-1),
     open: async id => { FY.open(id); await settle(); },
@@ -77,6 +78,7 @@ const test = (name, run) => tests.push([name, run]);
 test("a pending Settings check cannot repaint the real Decky Store destination", async () => {
   const c = boot({ loader_check: DEFER });
   await c.open("#settings");
+  await c.click("Updates");
   await c.click("Check for updates");
   const pending = c.last("loader_check");
   await c.open("#decky-store");
@@ -90,6 +92,7 @@ test("a pending Settings check cannot repaint the real Decky Store destination",
 test("a pending Settings write cannot change the Decky page and a revisit reads confirmed settings", async () => {
   const c = boot({ prefs_set: DEFER });
   await c.open("#settings");
+  await c.click("Preferences");
   await c.click("Tell me about module updates");
   const pending = c.last("prefs_set");
   await c.open("#decky-store");
@@ -97,6 +100,7 @@ test("a pending Settings write cannot change the Decky page and a revisit reads 
   await c.answer(pending, { error: "Could not save this setting" });
   assert.equal(c.text(), destination);
   await c.open("#settings");
+  await c.click("Preferences");
   assert.equal(c.find("Tell me about module updates").getAttribute("aria-checked"), "false");
 });
 
@@ -111,6 +115,7 @@ test("Decky testing selection never changes the Framey release channel", async (
   assert.equal(c.last("catalog_list").arg.source, "decky_testing");
   assert.ok(!c.sent("catalog_sources").some(call => call.arg && call.arg.source));
   await c.open("#settings");
+  await c.click("Updates");
   assert.ok(c.text().includes("Update channel: stable."));
   assert.equal(c.sent("prefs_set").length, 0);
   assert.equal(c.sent("loader_update").length, 0);
@@ -130,6 +135,7 @@ test("the checked loader identity is still pinned after a Decky Store visit", as
   const c = boot();
   await c.open("#decky-store");
   await c.open("#settings");
+  await c.click("Updates");
   await c.click("Update");
   assert.equal(c.sent("loader_check").length, 1);
   assert.equal(c.sent("loader_update").length, 0);

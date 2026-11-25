@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import fy_decky_catalog as decky
+from decky_runtime import catalog as decky
 import fy_pkg
 
 

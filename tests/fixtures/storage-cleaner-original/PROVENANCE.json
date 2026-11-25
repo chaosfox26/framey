@@ -1,0 +1,31 @@
+{
+  "original_plugin": {
+    "name": "Storage Cleaner",
+    "author": "Matt Carlucci",
+    "api_version": 1,
+    "flags": [],
+    "publish": {
+      "tags": [
+        "storage",
+        "cleaner",
+        "shader",
+        "cache",
+        "compatdata",
+        "compatibility",
+        "data",
+        "disk",
+        "utility",
+        "other"
+      ],
+      "description": "Quickly visualize, select and clear shader cache and compatibility data.",
+      "image": "https://raw.githubusercontent.com/mcarlucci/decky-storage-cleaner/main/assets/Screenshot-1.png"
+    }
+  },
+  "original_package_name": "decky-storage-cleaner",
+  "original_package_version": "1.4.0",
+  "original_package_author": "Matt Carlucci <matt@uxdev.io>",
+  "original_package_license": "GNU",
+  "original_archive_sha256": "1afa1a6f129c5d419de0e0bf0f6db8d8e50385a5659179346e996031ea372591",
+  "source": "Unmodified decky-storage-cleaner/main.py and LICENSE from original Storage Cleaner1.4.0 archive; main.py is compiled for registry contract tests, never executed by host tests.",
+  "main_sha256": "6fd4d012568edae22ba421495455b3c02899155e4c7484f5aa5be6ce9b14dd5f"
+}

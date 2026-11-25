@@ -1,6 +1,6 @@
 # Porting Decky-style source to Framey
 
-Framey does not run arbitrary compiled Decky plugins. The optional
+This source-port helper does not run arbitrary compiled Decky plugins. The optional
 [`compat/decky-source.js`](../compat/decky-source.js) helper offers a small,
 independently authored source-port surface. An author must adapt the frontend,
 backend and manifest, then rebuild a Framey plugin. It is not the `@decky/api`
@@ -17,8 +17,16 @@ it. Source-port compatibility is experimental and varies by plugin. Report
 Framey compatibility problems to [Framey](https://github.com/chaosfox26/framey/issues),
 rather than expecting Decky maintainers or plugin authors to support
 Framey-specific failures. Review and remove private details before submitting a
-public issue. The Decky Store currently browses and inspects original packages;
-it does not install or run them.
+public issue. Browsing and inspecting the Decky Store do not execute plugins;
+confirmed experimental import is a separate capability on builds with the runtime.
+
+For the separate, independently implemented original-package runtime and Store import flow, see [Experimental Decky package compatibility](decky-runtime.md). Its supported profile and runtime evidence are distinct from this source-port helper. Current development source in that runtime includes a bounded, provenance-verified native ESM path for supported multi-file packages; this source-port helper does not provide it. Original single-file and legacy runtime paths remain separate, and adding module delivery does not establish whole-plugin or headset UI compatibility. That runtime also has a fixed, source-and-runtime-fingerprinted Framey repair registry; it preserves vendor files and provides no configurable patch API through this source-port helper.
+
+The runtime's [reviewed host and event corrections](decky-runtime.md#reviewed-host-and-event-corrections) cover bounded notification actions, provider method receivers, timer ownership and one audited Terminal event-name family. They apply to fresh imports/regenerated wrappers; automatic refresh of existing installed wrappers remains pending. Their synthetic adapter evidence adds no original-method, whole-plugin or device compatibility claim and does not extend this source-port helper.
+
+The separate runtime also has a bounded [legacy fetch and TLS helper profile](decky-runtime.md#legacy-fetch-and-tls-helper-profile): ordinary JSON requests and filtered response envelopes for legacy callers, plus a fresh verified platform-trust Python context. Modern/realm fetch retains its existing `Response` path. These runtime additions apply to fresh imports/regenerated wrappers; installed-wrapper refresh is pending. They do not add a fetch proxy or backend helpers to this source-port surface, establish upstream aiohttp/certifi parity, or add original-plugin/device coverage.
+
+For current plugin readiness and bounded entry totals, see the [generated status page](decky-status.md). The runtime's dated [Stage 9 evidence](decky-runtime.md#stage-9-bounded-method-evidence) added eight metadata/logging/settings/counter entries from ScreenshotUploader 0.0.3 and MagicBlack 2.0.2, with explicit argument, filesystem-digest, lifecycle and authorization-record qualifications. That local backend evidence does not extend this source-port helper or establish complete methods/plugins, UI or device compatibility.
 
 ## Package assessments and source ports
 

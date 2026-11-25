@@ -64,13 +64,28 @@ const boot = (over = {}) => {
     loadFiles: FILES,
   });
   const FY = env.window.Framey;
+  const K = FY._k(TOK);
+  let navigation = null;
+  const setNavigation = K.setPageNavigation;
+  const clearNavigation = K.clearPageNavigation;
+  K.setPageNavigation = value => { navigation = value; return setNavigation(value); };
+  K.clearPageNavigation = () => { navigation = null; return clearNavigation(); };
   const box = FY.el("");
   env.document.body.append(box);
   const sent = m => calls.filter(c => c.method === m);
   const last = m => sent(m).slice(-1)[0];
   const all = () => [...box.querySelectorAll('[role="button"],[role="switch"],[role="option"],[role="slider"]')];
   const find = (label, n = 0) => {
-    const hit = all().filter(e => e.getAttribute("aria-label") === label);
+    let hit = all().filter(e => e.getAttribute("aria-label") === label);
+    const start = navigation;
+    if (!hit[n] && start) {
+      for (let i = 0; i < start.count; i++) {
+        start.onPage(i);
+        hit = all().filter(e => e.getAttribute("aria-label") === label);
+        if (hit[n]) break;
+      }
+      if (!hit[n]) start.onPage(start.index);
+    }
     if (!hit[n]) throw new Error("no control '" + label + "' in: " + all().map(e => e.getAttribute("aria-label")).join(" | "));
     return hit[n];
   };
@@ -83,7 +98,14 @@ const boot = (over = {}) => {
     FY.pages[which || "modules"].render(box, {});
     await settle();
   };
-  const text = () => box.textContent;
+  const text = () => {
+    const start = navigation;
+    if (!start) return box.textContent;
+    const screens = [];
+    for (let i = 0; i < start.count; i++) { start.onPage(i); screens.push(box.textContent); }
+    start.onPage(start.index);
+    return screens.join(" ");
+  };
   const chips = () => [...box.querySelectorAll('[data-mt="label"]')].map(e => e.textContent);
   return { env, FY, w: env.window, d: env.document, box, calls, R, sent, last, open, find, has, click, text, all, chips };
 };
@@ -348,6 +370,7 @@ t("an unavailable maintenance module degrades silently: no chips, no errors, the
   assert.equal(c.find("Update", 0).getAttribute("aria-disabled"), "false");
   const s = boot({ maint_prefs: { error: "fy_maint unavailable" } });
   await s.open("settings");
+  await s.click("Maintenance");
   assert.ok(s.text().includes("Project maintenance status is unavailable."));
   assert.ok(!s.has("Check project maintenance in the background"));
 });
@@ -400,12 +423,13 @@ t("Settings: the background toggle reads maint_prefs, saves one key and reverts 
   c.R.autocheck_status = { enabled: false, last: 0, next_ok: 0, fails: 0 };
   c.R.loader = { commit: "1234567", kept: false };
   await c.open("settings");
-  const sw = c.find("Check project maintenance in the background");
-  assert.equal(sw.getAttribute("aria-checked"), "false");
+  await c.click("Maintenance");
   assert.ok(c.text().includes("Off by default."));
   assert.ok(c.text().includes("with the automatic update check"));
   assert.ok(c.text().includes("A manual Check for updates also asks GitHub for maintenance information"));
   assert.ok(c.text().includes("GitHub sees your IP address"));
+  const sw = c.find("Check project maintenance in the background");
+  assert.equal(sw.getAttribute("aria-checked"), "false");
   sw.click();
   await settle();
   assert.deepEqual(c.sent("maint_prefs").filter(x => x.arg).map(x => x.arg), [{ "maint.enabled_background": true }]);
@@ -427,6 +451,7 @@ t("Settings: the activity window is shown as 365 days and changes through maint_
   c.R.loader = { commit: "1234567", kept: false };
   c.R.maint_prefs = a => ({ "maint.enabled_background": false, "maint.window_days": a && a["maint.window_days"] ? a["maint.window_days"] : 365 });
   await c.open("settings");
+  await c.click("Maintenance");
   const slider = c.find("Activity window");
   assert.equal(slider.getAttribute("aria-valuetext"), "365 days");
   assert.equal(slider.getAttribute("aria-valuemin"), "30");

@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-import fy_decky_catalog as decky
+from decky_runtime import catalog as decky
 import fy_net
 from test_fy_net import Base, PUBLIC, local_opener, read_head, serve_script
 

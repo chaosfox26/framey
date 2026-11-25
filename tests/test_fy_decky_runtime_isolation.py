@@ -14,7 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import fy_decky_catalog as decky
+from decky_runtime import catalog as decky
 import fy_worker
 
 
@@ -110,7 +110,7 @@ class RuntimeImportBlocker:
         if fullname in blocked:
             raise AssertionError('inspection imported runtime module: ' + fullname)
 sys.meta_path.insert(0, RuntimeImportBlocker())
-import fy_decky_catalog
+from decky_runtime import catalog as fy_decky_catalog
 data = sys.stdin.buffer.read()
 result = fy_decky_catalog.inspect_archive(data, hashlib.sha256(data).hexdigest())
 assert not blocked.intersection(sys.modules)

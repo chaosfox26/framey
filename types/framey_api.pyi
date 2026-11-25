@@ -90,6 +90,18 @@ log: _Log
 events: _Events
 migrate: _Migrate
 
+class _CompatBackend:
+    async def start(self) -> Any: ...
+    async def call(self, method: str, arg: Any) -> Any: ...
+    async def stop(self) -> Any: ...
+
+class _Compat:
+    def backend(
+        self, *, original_root: _PathInput, profile: int = ..., rpc_result_version: int = ...
+    ) -> _CompatBackend: ...
+
+compat: _Compat
+
 class FrameyApiError(Exception):
     code: str
     message: str

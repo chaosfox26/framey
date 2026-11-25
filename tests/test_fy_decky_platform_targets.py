@@ -102,6 +102,7 @@ class CatalogTargetSessionBoundary(unittest.IsolatedAsyncioTestCase):
     async def test_catalog_metadata_cannot_override_authenticated_plugin_owner(self):
         loader = await self.loader()
         fy = loader.fy
+        loader.plugin("owner")
         token = fy.new_tok("owner")
         forged = {"pid": "other", "id": "other", "target": "main", "kind": "css", "key": "k", "code": "x",
                   "source": "decky_stable", "frameId": "foreign", "webSocketDebuggerUrl": "ws://catalog.invalid"}

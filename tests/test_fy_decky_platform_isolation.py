@@ -10,7 +10,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "fixtures" / "j"))
 sys.path.insert(0, str(HERE.parent))
 
-import fy_decky_catalog
+from decky_runtime import catalog as fy_decky_catalog
 import jharness as H
 
 
@@ -123,11 +123,11 @@ class StoreSessionOwnership(unittest.IsolatedAsyncioTestCase):
 
 
 class StoreMetadataProjection(unittest.IsolatedAsyncioTestCase):
-    async def test_inspection_route_rejects_unconfirmed_requests_before_network(self):
+    async def test_disabled_runtime_rejects_inspection_requests_before_network(self):
         loader = H.Loader()
         self.addAsyncCleanup(loader.close)
         result = await loader.core("catalog_assess", {"source": "decky_stable", "id": "decky-1", "confirm": False})
-        self.assertEqual(result.get("code"), "confirmation_required", result)
+        self.assertEqual(result.get("code"), "runtime_unavailable", result)
         self.assertEqual(loader.net.calls, [])
 
     async def test_unknown_upstream_claims_never_establish_runtime_or_arm64_support(self):

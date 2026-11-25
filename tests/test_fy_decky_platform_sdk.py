@@ -15,7 +15,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import fy_decky_catalog
+from decky_runtime import catalog as fy_decky_catalog
 import fy_pkg
 import fy_sdk
 import fy_store

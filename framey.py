@@ -14,6 +14,7 @@ import urllib.parse
 
 VERSION = "1.0.2"
 API_GENERATION = API_VERSION = 1
+NATIVE_CORE_LAYOUT = 1
 ROOT = pathlib.Path(__file__).parent
 PLUGINS = ROOT / "plugins"
 STORE = ROOT / "store"
@@ -42,6 +43,9 @@ REQUIRED = {
     "fy_updates": ("Updates",),
     "fy_catalog": ("METHODS",),
     "fy_report": ("METHODS",),
+    "fy_browser": ("METHODS", "shutdown"),
+    "fy_steam": ("METHODS", "invalidate", "invalidate_targets", "shutdown"),
+    "fy_decky_runtime": ("METHODS", "allowed", "status", "shutdown"),
     "fy_panel": ("METHODS", "get"),
     "fy_iso": ("mode", "Iso", "wanted"),
     "fy_store": (
@@ -65,14 +69,30 @@ REQUIRED = {
 }
 EDIT = ("install", "add", "enable", "disable", "uninstall", "reload", "settings_repair")
 UPDATED = ("update", "rollback", "retry", "ver_install", "repair", "batch_apply")
-RELOAD = EDIT + ("finish", "catalog_install")
+RELOAD = EDIT + ("finish", "catalog_install", "catalog_import")
 SCOPED = frozenset(
-    ("fetch", "files_list", "resource", "log", "locale", "target_add", "target_remove")
+    (
+        "fetch",
+        "files_list",
+        "resource",
+        "log",
+        "locale",
+        "target_add",
+        "target_remove",
+        "open_url",
+        "steam_read",
+        "decky_code_issue",
+        "decky_code_touch",
+        "decky_code_revoke",
+    )
 )
 PAGE_FORBIDDEN = ("file_roots", "safe", "channel")
 NOAUTH = {"error": "not authorized"}
 CORE_TOK = os.urandom(16).hex()
 TOKS = {}
+CALLER_EPOCH = 0
+CALLER_GENERATIONS = collections.Counter()
+STEAM_SURFACE_TARGETS = set()
 ZERO = (0, 0, 0, 0)
 LOADER = "https://github.com/chaosfox26/framey"
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -119,8 +139,15 @@ MANIFEST = (
     "fy-dev.js",
     "fy-strings-en.js",
     "fy-report.js",
+    "fy_browser.py",
+    "fy_steam.py",
+    "fy_steam_data.py",
+    "fy_steam_transport.py",
     "fy_catalog.py",
-    "fy_decky_catalog.py",
+    "fy_decky_runtime.py",
+    "fy_core_layout.py",
+    "fy-optional.js",
+    "core-files.txt",
     "fy-catalog.js",
     "catalog/index.json",
 )
@@ -128,6 +155,7 @@ LEGACY = MANIFEST[:4]
 SMOKE = "import importlib.util as u,sys;s=u.spec_from_file_location('framey_smoke',sys.argv[1]);m=u.module_from_spec(s);s.loader.exec_module(m);print('framey-smoke-ok' if callable(getattr(m,'main',None)) and isinstance(getattr(m,'VERSION',None),str) else '')"
 PANEL_JS = (
     "inject.js",
+    "fy-optional.js",
     "fy-api.js",
     "fy-ui.js",
     "fy-pages.js",
@@ -157,15 +185,27 @@ for _mod, _names in (
     ("fy_dev", "dev_set dev_status devtools_info"),
     ("fy_diag", "diag"),
     ("fy_report", "report_draft report_link report_open"),
-    ("fy_panel", "panel_status panel_mode"),
+    ("fy_browser", "open_url"),
+    ("fy_steam", "steam_read"),
+    (
+        "fy_decky_runtime",
+        "decky_code_issue decky_code_touch decky_code_revoke decky_runtime_frontend "
+        "decky_runtime_status decky_runtime_enable decky_runtime_remove",
+    ),
+    ("fy_panel", "panel_status panel_mode panel_launch"),
     ("fy_maint", "maint_get maint_refresh maint_prefs"),
-    ("fy_catalog", "catalog_list catalog_details catalog_install catalog_sources catalog_assess"),
+    (
+        "fy_catalog",
+        "catalog_list catalog_details catalog_install catalog_sources catalog_assess catalog_import",
+    ),
 ):
     OWNER.update(dict.fromkeys(_names.split(), _mod))
 LOCKED = frozenset(
     (
         "panel_mode",
+        "panel_launch",
         "catalog_install",
+        "catalog_import",
         "catalog_sources",
         "loader_check",
         "ver_install",
@@ -230,6 +270,105 @@ class Host:
 
 
 host = Host()
+
+
+def runtime_allows(meta):
+    if "decky_compat" not in meta and meta.get("_framey_decky_managed") is not True:
+        return True
+    service = use("fy_decky_runtime")
+    return bool(service and service.allowed(host, meta))
+
+
+def enabled(pid):
+    if not ok_id(pid) or pid in settings()["disabled"]:
+        return False
+    meta = manifest(PLUGINS / pid)
+    return bool(meta and runtime_allows(meta))
+
+
+def invalidate_callers(pid=None):
+    """Retire caller generations synchronously before their handles can change."""
+    global CALLER_EPOCH
+    if pid is None:
+        CALLER_EPOCH += 1
+        CALLER_GENERATIONS.clear()
+    else:
+        CALLER_GENERATIONS[pid] += 1
+    for name in ("fy_steam", "fy_decky_runtime"):
+        service = MODS.get(name)
+        if service and hasattr(service, "invalidate"):
+            service.invalidate(host, pid)
+
+
+def steam_revoke_targets():
+    service = MODS.get("fy_steam")
+    if service:
+        service.invalidate_targets(host)
+
+
+def caller_identity(pid):
+    """Private identity only; never return this lease through RPC or diagnostics."""
+    try:
+        if not ok_id(pid) or not enabled(pid):
+            return None
+        tokens = tuple(sorted(t for t, owner in TOKS.items() if owner == pid))
+        entries = [m for m in manifests() if m.get("id") == pid]
+        if not tokens or len(entries) != 1:
+            return None
+        root = PLUGINS / pid
+        stats = []
+        for path in (root, root / "plugin.json", root / "main.js"):
+            current = path.stat()
+            stats.append((current.st_dev, current.st_ino, current.st_mtime_ns, current.st_size))
+        return (
+            CALLER_EPOCH,
+            CALLER_GENERATIONS[pid],
+            tokens,
+            json.dumps(entries[0], sort_keys=True, separators=(",", ":"), allow_nan=False),
+            tuple(stats),
+        )
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def steam_caller(pid):
+    return caller_identity(pid)
+
+
+def steam_target_allowed(tab):
+    """Select existing Steam pages, never Framey or developer injection surfaces."""
+    try:
+        if (
+            not isinstance(tab, dict)
+            or tab.get("type") != "page"
+            or not isinstance(tab.get("id"), str)
+            or not tab["id"]
+            or tab["id"] in STEAM_SURFACE_TARGETS
+            or len(STEAM_SURFACE_TARGETS) >= 4096
+            or not cdp_owner_ok()
+        ):
+            return False
+        url = tab.get("url")
+        if not isinstance(url, str) or len(url) > 8192 or not url.isprintable():
+            return False
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != "https" or parsed.netloc != "steamloopback.host":
+            return False
+        if any(
+            overlay_key(url, key)
+            for key in ("valve.steam.gamepadui.main", "valve.steam.gamepadui.bar", "framey.panel")
+        ) or any(getattr(sender, "target_id", None) == tab["id"] for sender in LIVE.values()):
+            return False
+        dev = settings().get("prefs", {}).get("dev", {})
+        if isinstance(dev, dict) and dev.get("enabled") is True:
+            parts = dev.get("targets")
+            if not isinstance(parts, dict):
+                return False
+            if any(isinstance(part, str) and part and part in url for part in parts.values()):
+                return False
+        return True
+    except (OSError, TypeError, ValueError, AttributeError):
+        return False
 
 
 def log(*a):
@@ -313,6 +452,20 @@ def manifest(d):
         log("skipping plugin", d.name, e)
         return None
     m["id"] = d.name
+    for record_name in (".catalog.json", "decky-provenance.json"):
+        record_path = d / record_name
+        try:
+            if not _link(record_path) and record_path.is_file():
+                raw = read(record_path, 524289)
+                record = parse(raw) if len(raw.encode("utf-8")) <= 524288 else {}
+                if isinstance(record, dict) and (
+                    record.get("format") == "decky"
+                    or isinstance(record.get("original_files"), dict)
+                    and isinstance(record.get("sha256"), str)
+                ):
+                    m["_framey_decky_managed"] = True
+        except (OSError, ValueError):
+            pass
     m.setdefault("name", d.name)
     dv = m.get("data_version")
     m["data_version"] = dv if type(dv) is int and dv >= 0 else 0
@@ -410,6 +563,8 @@ def settings_state():
 
 
 def save(s):
+    invalidate_callers()
+    steam_revoke_targets()
     st = use("fy_state")
     if st:
         return st.save(CONF, s)
@@ -513,8 +668,20 @@ def forget(pid, keep):
 
 def loader_ok(d):
     try:
-        compile((d / "framey.py").read_bytes(), "framey.py", "exec")
-    except (OSError, ValueError, SyntaxError):
+        import fy_core_layout
+
+        if _link(d):
+            return False
+        source = (d / "framey.py").read_bytes()
+        compile(source, "framey.py", "exec")
+        selected = fy_core_layout.core_files(source, (d / "core-files.txt").read_bytes())
+        for name in selected:
+            path = d / name
+            if not path.is_file() or any(
+                _link(part) for part in (path, *path.parents) if part != d.parent
+            ):
+                return False
+    except (OSError, ValueError, SyntaxError, ImportError):
         return False
     return True
 
@@ -667,6 +834,9 @@ hostcalls = {
 
 
 async def backend(pid, method, arg):
+    meta = manifest(PLUGINS / pid) if ok_id(pid) else None
+    if meta and not runtime_allows(meta):
+        raise LookupError("backend not loaded")
     s = sup()
     if not s:
         raise RuntimeError("fy_supervisor unavailable")
@@ -683,6 +853,9 @@ async def backend(pid, method, arg):
 
 
 async def backend_check(pid):
+    meta = manifest(PLUGINS / pid) if ok_id(pid) else None
+    if meta and not runtime_allows(meta):
+        return "Decky compatibility is unavailable"
     if not (supervisor and pid in supervisor.status()):
         return ""
     try:
@@ -694,6 +867,80 @@ async def backend_check(pid):
     return ""
 
 
+def backend_admitted(pid):
+    meta = manifest(PLUGINS / pid) if ok_id(pid) else None
+    return bool(meta and runtime_allows(meta))
+
+
+def backend_runtime(pid):
+    meta = manifest(PLUGINS / pid) if ok_id(pid) else None
+    if not meta or not ("decky_compat" in meta or meta.get("_framey_decky_managed")):
+        return None
+    service = use("fy_decky_runtime")
+    if not service or not service.allowed(host, meta):
+        raise RuntimeError("Decky compatibility is unavailable")
+    return service.worker_descriptor(host)
+
+
+async def decky_runtime_stop():
+    ids = [m["id"] for m in manifests() if "decky_compat" in m or m.get("_framey_decky_managed")]
+    for pid in ids:
+        drop_tok(pid)
+    service = use("fy_decky_runtime")
+    state = service.status(host) if service else {"enabled": False}
+
+    async def stop_worker(pid):
+        await supervisor.stop(pid, "disable")
+        supervisor.forget(pid)
+
+    invalidation = (
+        "function(s,ids){if(this.optionalRuntime)this.optionalRuntime.invalidate(s);"
+        "for(const id of ids)this.dispose(id);return true}"
+    )
+    cleanup = [refresh_decky_surfaces(invalidation, [state, ids])]
+    if supervisor:
+        cleanup.extend(stop_worker(pid) for pid in ids)
+    cleanup.extend(drop(pid) for pid in ids)
+    outcomes = await asyncio.gather(*cleanup, return_exceptions=True)
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
+
+
+async def refresh_decky_surfaces(function, args):
+    async def refresh(name, sender):
+        result = await asyncio.wait_for(sender.query(function, args), 2)
+        if result is not True and LIVE.get(name) is sender and sender.core:
+            raise RuntimeError("Framey surface did not acknowledge Decky runtime state")
+
+    outcomes = await asyncio.gather(
+        *(
+            refresh(name, sender)
+            for name, sender in tuple(LIVE.items())
+            if getattr(sender, "ui", False) and getattr(sender, "core", None)
+        ),
+        return_exceptions=True,
+    )
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
+
+
+async def decky_runtime_start():
+    service = use("fy_decky_runtime")
+    if not service:
+        return
+    state = service.status(host)
+    await refresh_decky_surfaces(
+        "function(s){if(this.optionalRuntime)this.optionalRuntime.invalidate(s);return true}",
+        [state],
+    )
+    for meta in manifests():
+        if ("decky_compat" in meta or meta.get("_framey_decky_managed")) and enabled(meta["id"]):
+            load_backends(meta["id"])
+            await load_plugin(*plugin_args(meta), pid=meta["id"])
+
+
 def load_backends(only=None):
     if safe() or unreadable():
         return
@@ -702,6 +949,7 @@ def load_backends(only=None):
         if (
             only in (None, m["id"])
             and m["id"] not in off
+            and runtime_allows(m)
             and (PLUGINS / m["id"] / "backend.py").exists()
             and sup()
         ):
@@ -722,6 +970,8 @@ async def drop(only):
 async def reload(only=None, reason="reload"):
     if reason in ("disable", "uninstall") and only:
         drop_tok(only)
+    else:
+        invalidate_callers(only)
     if supervisor:
         ids = [k for k in supervisor.status() if only in (None, k)]
         await asyncio.gather(*(supervisor.stop(k, reason) for k in ids))
@@ -821,11 +1071,17 @@ def ui_sender():
 
 def cleanup_request(req):
     arg = req.get("arg")
+    if req.get("plugin") != "_core" or req.get("id") != 0 or not isinstance(arg, dict):
+        return False
+    if req.get("method") == "decky_code_revoke":
+        return (
+            set(arg) == {"pid", "token"}
+            and ok_id(arg["pid"])
+            and isinstance(arg["token"], str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", arg["token"]))
+        )
     return (
-        req.get("plugin") == "_core"
-        and req.get("id") == 0
-        and req.get("method") == "resource"
-        and isinstance(arg, dict)
+        req.get("method") == "resource"
         and isinstance(arg.get("revoke"), str)
         and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", arg["revoke"]))
         and set(arg) <= {"pid", "revoke"}
@@ -840,6 +1096,20 @@ async def capture_panel_state():
         if isinstance(tab, str) and re.fullmatch(r"[#A-Za-z0-9_.:-]{1,100}", tab):
             return {"open": PANEL, "tab": tab}
     return {"open": PANEL, "tab": None}
+
+
+async def launcher_width():
+    sender = ui_sender()
+    if sender and getattr(sender, "core", None) and callable(getattr(sender, "query", None)):
+        try:
+            width = await sender.query(
+                "function(){return this.launcherWidth?this.launcherWidth():382}"
+            )
+            if type(width) is int and 382 <= width <= 662:
+                return width
+        except Exception:
+            pass
+    return 382
 
 
 def start_surface_watches():
@@ -858,9 +1128,10 @@ def start_surface_watches():
 
 async def switch_panel_surface(name, state):
     global UI_SURFACE, UI_RESTORE
-    if name not in ("main", "panel"):
+    if name not in ("main", "panel", "none"):
         raise ValueError("Invalid Framey surface")
     old = ui_sender()
+    invalidate_callers()
     if old:
         old.accepting = False
         try:
@@ -884,6 +1155,8 @@ async def switch_panel_surface(name, state):
     if previous:
         await asyncio.gather(*previous, return_exceptions=True)
     start_surface_watches()
+    if name == "none":
+        return {"ok": True}
     end = mono() + 12
     while mono() < end:
         sender = ui_sender()
@@ -904,6 +1177,41 @@ async def ui_panel_visibility(on):
         await sender(
             "Runtime.evaluate", expression="window.Framey&&Framey._panel(%s)" % json.dumps(on)
         )
+
+
+def panel_route_allowed(route):
+    if not isinstance(route, str):
+        return False
+    if route in ("#plugins", "#modules", "#discover", "#decky-store", "#settings") or route in (
+        "#settings:preferences",
+        "#settings:updates",
+        "#settings:maintenance",
+        "#settings:worker",
+        "#settings:support",
+    ):
+        return True
+    if route == "#developer":
+        return dev_on()
+    match = re.fullmatch(r"([a-z0-9_-]{1,32})(?::[A-Za-z0-9_.-]{1,40})?", route)
+    if not match:
+        return False
+    pid = match[1]
+    return pid not in settings()["disabled"] and any(item["id"] == pid for item in manifests())
+
+
+async def ui_panel_route(route):
+    sender = ui_sender()
+    if sender is None:
+        return False
+    if route is None:
+        await call_core(sender, "function(){this.closePanel()}", [])
+        return True
+    if route != "#launcher" and not panel_route_allowed(route):
+        return False
+    await sender(
+        "Runtime.evaluate", expression="window.Framey&&Framey.open(%s)" % json.dumps(route)
+    )
+    return True
 
 
 def event_context(evs):
@@ -1023,11 +1331,21 @@ def prelude():
         "lang": pref("lang", ""),
         "trusted_input": trusted_input(),
         "report_repository": LOADER,
+        "panel_navigation": "launcher" if ui_name() == "panel" else "legacy",
+        "panel_layout": "compact"
+        if getattr(getattr(host, "panel_controller", None), "mode", None) == "compact"
+        else "window",
     }
+    runtime = use("fy_decky_runtime")
+    state = runtime.status(host) if runtime else {"enabled": False, "installed": False}
+    rt["decky_runtime"] = state
+    if state.get("enabled") is True:
+        rt["decky_compat"] = {"profile": 1, "import": True}
     return "window.FY_ICON_URL=%s;window.FY_RUNTIME=%s;\n" % (json.dumps(url), json.dumps(rt))
 
 
 def drop_tok(pid):
+    invalidate_callers(pid)
     for t in [t for t, p in TOKS.items() if p == pid]:
         del TOKS[t]
 
@@ -1050,6 +1368,8 @@ def panel_js(parts):
 
 
 def plugin_args(m, keep=False):
+    if not runtime_allows(m):
+        raise ValueError("Decky compatibility is unavailable; enable it in Settings")
     tok = next((t for t, p in TOKS.items() if keep and p == m["id"]), None) or new_tok(m["id"])
     return m, tok, (PLUGINS / m["id"] / "main.js").read_text()
 
@@ -1083,7 +1403,7 @@ def authorize(req):
     if same(t, CORE_TOK):
         return method not in SCOPED, req.get("arg")
     pid = TOKS.get(t)
-    if pid and method in SCOPED:
+    if pid and enabled(pid) and (method in SCOPED or method == "decky_runtime_frontend"):
         a = {**(req.get("arg") if isinstance(req.get("arg"), dict) else {}), "pid": pid, "id": pid}
         return method != "files_list" or page_root_ok(a), a
     return method == "toggle", req.get("arg")
@@ -1093,7 +1413,7 @@ def backend_ok(req):
     t, pid = req.get("t"), req.get("plugin")
     if not isinstance(t, str) or not isinstance(pid, str):
         return False
-    return same(t, CORE_TOK) or TOKS.get(t) == pid
+    return enabled(pid) and (same(t, CORE_TOK) or TOKS.get(t) == pid)
 
 
 def main_code(name=None):
@@ -1104,12 +1424,15 @@ def main_code(name=None):
             (Main("window.__framey_targets=window.__framey_targets||Object.create(null)"), None)
         ] + replay("main")
     CORE_TOK = os.urandom(16).hex()
+    invalidate_callers()
     TOKS.clear()
     prefix = prelude()
     if name == "panel":
         prefix += "document.documentElement.style.background='transparent';document.body.style.margin='0';document.body.style.background='transparent';\n"
     if UI_RESTORE is not None:
         state, UI_RESTORE = UI_RESTORE, None
+        if state.get("layout") in ("compact", "window"):
+            prefix += "window.FY_RUNTIME.panel_layout=%s;\n" % json.dumps(state["layout"])
         if type(state.get("open")) is bool:
             prefix += "sessionStorage.fyOpen=%s;\n" % json.dumps("1" if state["open"] else "")
         tab = state.get("tab")
@@ -1125,7 +1448,7 @@ def main_code(name=None):
     for m in [] if safe() or unreadable() else manifests():
         try:
             f = PLUGINS / m["id"] / "main.js"
-            if m["id"] not in off and f.exists():
+            if m["id"] not in off and runtime_allows(m) and f.exists():
                 out.append((plugin_args(m), m["id"]))
         except Exception as e:
             log("main.js", m["id"], "failed:", e)
@@ -1271,10 +1594,59 @@ def fix_identity(stage):
         f.unlink(missing_ok=True)
 
 
-def stage_swap(pid, fill, dest=None, keep=False):
+def stage_swap(pid, fill, dest=None, keep=False, new_only=False):
     dest = dest or PLUGINS / pid
     stage = dest.with_name(".stage-" + dest.name)
     old = dest.with_name(".old-" + dest.name)
+    if new_only:
+
+        def occupied():
+            return any(os.path.lexists(path) for path in (dest, stage, old))
+
+        def owned(path, identity):
+            try:
+                current = path.lstat()
+                return (current.st_dev, current.st_ino) == identity
+            except FileNotFoundError:
+                return False
+
+        if occupied() or pending(pid):
+            raise OSError("new module staging path is occupied")
+        stage.mkdir()
+        current = stage.lstat()
+        stage_identity = (current.st_dev, current.st_ino)
+        reserved = None
+        try:
+            fill(stage)
+            if (
+                not owned(stage, stage_identity)
+                or os.path.lexists(dest)
+                or os.path.lexists(old)
+                or pending(pid)
+            ):
+                raise OSError("new module paths changed during staging")
+            if hasattr(os, "sync"):
+                os.sync()
+            if pending(pid):
+                raise OSError("new module operation became pending")
+            # Reserve exclusively, so even an empty directory introduced during staging is kept.
+            dest.mkdir()
+            current = dest.lstat()
+            reserved = (current.st_dev, current.st_ino)
+            if (
+                not owned(stage, stage_identity)
+                or not owned(dest, reserved)
+                or os.path.lexists(old)
+            ):
+                raise OSError("new module paths changed during staging")
+            stage.rename(dest)
+            reserved = None
+        finally:
+            if owned(stage, stage_identity):
+                rmtree(stage)
+            if reserved is not None and owned(dest, reserved):
+                dest.rmdir()
+        return stage_identity
     sweep(stage)
     sweep(old)
     try:
@@ -1811,6 +2183,7 @@ async def page_reload(pid, redraw=True):
         send
         and m
         and pid not in settings()["disabled"]
+        and runtime_allows(m)
         and not safe()
         and (PLUGINS / pid / "main.js").exists()
     ):
@@ -2126,11 +2499,20 @@ async def install_loader(tag, sha):
     def fill(stage):
         if base + ".framey-stage" in infos:
             raise ValueError("package uses a reserved staging marker")
-        unpack(z, infos, base)(stage)
-        for k in ("plugins", "store"):
-            rmtree(stage / k)
-            if (stage / k).exists():
-                raise ValueError("unexpected package layout")
+        import fy_core_layout
+
+        if base + "core-files.txt" not in infos:
+            raise ValueError("the package has no native core file list")
+        source = z.read(infos[base + "framey.py"])
+        wire = z.read(infos[base + "core-files.txt"])
+        selected = fy_core_layout.core_files(source, wire)
+        for name in selected:
+            info = infos.get(base + name)
+            if info is None:
+                raise ValueError("the core package has no " + name)
+            path = stage / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(z.read(info))
         (stage / ".version").write_text(sha)
         src = (stage / "framey.py").read_text()
         compile(src, "framey.py", "exec")
@@ -2237,6 +2619,8 @@ async def loader_roll(_):
     bak = sib(".bak")
     if not bak.is_dir():
         return {"error": "nothing to roll back"}
+    if not loader_ok(bak):
+        return {"error": "The backup predates the native core layout or is incomplete"}
     try:
         back(ROOT.resolve(), bak)
     except OSError as e:
@@ -2345,6 +2729,11 @@ async def run(method, arg):
         if len(TOGGLES) == 5 and t - TOGGLES[0] < 1:
             return None
         TOGGLES.append(t)
+        if isinstance(arg, dict) and "anchor_x" in arg:
+            controller = use("fy_panel")
+            if controller:
+                return await controller.get(host).toggle_launcher(arg["anchor_x"])
+            return {"error": "Framey's launcher is unavailable."}
         sender = ui_sender()
         if sender:
             await sender("Runtime.evaluate", expression="Framey.toggle()")
@@ -2365,6 +2754,16 @@ async def run(method, arg):
             {
                 **m,
                 "enabled": m["id"] not in off,
+                **(
+                    {
+                        "decky_runtime_available": runtime_allows(m),
+                        "decky_runtime_reason": ""
+                        if runtime_allows(m)
+                        else "Enable Decky compatibility in Settings; legacy imports may need refreshing",
+                    }
+                    if "decky_compat" in m or m.get("_framey_decky_managed")
+                    else {}
+                ),
                 "linked": (PLUGINS / m["id"]).is_symlink(),
                 **info(m),
             }
@@ -2458,6 +2857,27 @@ async def run(method, arg):
     return {"ok": True, "purge_failed": left} if method == "uninstall" and left else {"ok": True}
 
 
+async def close_writer(writer):
+    """Release an owned TCP writer even if shutdown cancels the caller again."""
+    writer.close()
+    wait = getattr(writer, "wait_closed", None)
+    if not callable(wait):
+        return
+    cleanup = asyncio.ensure_future(wait())
+    cancelled = False
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            break
+    if not cleanup.cancelled():
+        cleanup.exception()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 class WS:
     def __init__(self, reader, writer):
         self.r, self.w = reader, writer
@@ -2481,7 +2901,7 @@ class WS:
             if b" 101 " not in head.split(b"\r\n")[0]:
                 raise ConnectionError("handshake refused")
         except BaseException:
-            w.close()
+            await close_writer(w)
             raise
         return cls(r, w)
 
@@ -2531,12 +2951,15 @@ class WS:
 def cdp_owner_ok(path="/proc/net/tcp"):
     if not sys.platform.startswith("linux"):
         return True
+    if CDP[0] != "127.0.0.1" or type(CDP[1]) is not int or not 1 <= CDP[1] <= 65535:
+        return False
+    listener = "0100007F:%04X" % CDP[1]
     try:
         with open(path) as f:
             rows = [r.split() for r in f.readlines()[1:]]
     except OSError:
         return False
-    owners = [int(r[7]) for r in rows if len(r) > 7 and r[1] == "0100007F:1F90" and r[3] == "0A"]
+    owners = [int(r[7]) for r in rows if len(r) > 7 and r[1] == listener and r[3] == "0A"]
     return bool(owners) and all(u == os.getuid() for u in owners)
 
 
@@ -2551,14 +2974,25 @@ async def tabs():
             r.readexactly(int(re.search(rb"Content-Length:\s*(\d+)", head, re.I)[1])), 3
         )
     finally:
-        w.close()
+        await close_writer(w)
     return json.loads(body)
 
 
 async def session(name, tab, code, probe_expr, marker=None):
+    # Reserve before the first await. Injection teardown cannot certify that
+    # third-party code restored Steam's globals, so exclusion lasts this process.
+    target = tab.get("id")
+    if isinstance(target, str) and target:
+        STEAM_SURFACE_TARGETS.add(target)
+    steam_revoke_targets()
+    return await _surface_session(name, tab, code, probe_expr, marker)
+
+
+async def _surface_session(name, tab, code, probe_expr, marker=None):
     ws = await WS.open(tab["webSocketDebuggerUrl"])
     ids = iter(range(1, 1 << 30))
     pending = {}
+    source_tokens = {}
     waiters = {}
     probe = missed = 0
     probe_world = None
@@ -2572,6 +3006,7 @@ async def session(name, tab, code, probe_expr, marker=None):
 
     async def release(*objects):
         for oid in set(x for x in objects if isinstance(x, str)):
+            source_tokens.pop(oid, None)
             try:
                 await send("Runtime.releaseObject", objectId=oid)
             except Exception:
@@ -2723,6 +3158,8 @@ async def session(name, tab, code, probe_expr, marker=None):
         )
 
     async def plug(manifest, token, source, pid, redraw=True):
+        if not enabled(pid) or TOKS.get(token) != pid:
+            return
         await send(
             "Runtime.evaluate",
             _pid=("#src", pid, token, manifest, redraw),
@@ -2768,13 +3205,14 @@ async def session(name, tab, code, probe_expr, marker=None):
                 "Runtime.evaluate", expression="window.Framey&&Framey.redraw(%s)" % json.dumps(who)
             )
 
-    async def query(function):
+    async def query(function, args=()):
         if LIVE.get(name) is not send or not await matches() or not send.core:
             return None
         result = await rpc(
             "Runtime.callFunctionOn",
             objectId=send.core,
             functionDeclaration=function,
+            arguments=[{"value": arg} for arg in args],
             returnByValue=True,
         )
         return (result.get("result") or {}).get("value")
@@ -2789,6 +3227,7 @@ async def session(name, tab, code, probe_expr, marker=None):
             params["contextId"] = iso.ctx
         return await rpc("Runtime.evaluate", **params)
 
+    send.target_id = tab.get("id")
     send.query = query
     send.evaluate = evaluate
     send.close = ws.close
@@ -2840,7 +3279,7 @@ async def session(name, tab, code, probe_expr, marker=None):
                 log("reply failed:", str(e)[:200])
         if req.get("plugin") == "_core" and isinstance(out, dict):
             method = req.get("method")
-            if method == "panel_mode" and out.get("pending") is True:
+            if method in ("panel_mode", "panel_launch") and out.get("pending") is True:
                 controller = getattr(host, "panel_controller", None)
                 if controller is not None:
                     spawn(controller.apply_pending())
@@ -2949,6 +3388,11 @@ async def session(name, tab, code, probe_expr, marker=None):
                         todo.clear()
                     continue
                 if isinstance(pid, tuple):
+                    admitted_token = token if stage == "#src" else source_tokens.get(source_object)
+                    if not enabled(who) or TOKS.get(admitted_token) != who:
+                        await release(result_object, source_object, api_object)
+                        await registered(generation, world)
+                        continue
                     d = res.get("exceptionDetails")
                     if d or not send.core or (stage != "#run" and not result_object):
                         await fail_load(who, d)
@@ -2956,6 +3400,7 @@ async def session(name, tab, code, probe_expr, marker=None):
                         await registered(generation, world)
                     elif stage == "#src":
                         source_object = result_object
+                        source_tokens[source_object] = token
                         await send(
                             "Runtime.callFunctionOn",
                             _pid=("#bind", who, source_object, redraw),
@@ -3018,9 +3463,7 @@ async def session(name, tab, code, probe_expr, marker=None):
             t.cancel()
         if boot:
             boot.cancel()
-        owns_session = LIVE.get(name) is send
-        if owns_session:
-            LIVE.pop(name, None)
+        owns_session = retire_surface(name, send)
         try:
             await asyncio.wait_for(send("Runtime.releaseObjectGroup", objectGroup=object_group), 1)
         except Exception:
@@ -3032,6 +3475,16 @@ async def session(name, tab, code, probe_expr, marker=None):
                 spawn(panel_session_lost(name))
             else:
                 await panel(False)
+
+
+def retire_surface(name, sender):
+    """Only the owning frontend may retire grants when its session disconnects."""
+    if LIVE.get(name) is not sender:
+        return False
+    if getattr(sender, "ui", False) and name == ui_name():
+        invalidate_callers()
+    LIVE.pop(name, None)
+    return True
 
 
 async def watch(name, marker, code, probe_expr):
@@ -3053,6 +3506,9 @@ async def watch(name, marker, code, probe_expr):
 
 async def down():
     t, media = getattr(host, "targets", None), MODS.get("fy_media")
+    browser = MODS.get("fy_browser")
+    steam = MODS.get("fy_steam")
+    code = MODS.get("fy_decky_runtime")
     if updates:
         updates.disarm()
     if MODS.get("fy_dev"):
@@ -3061,6 +3517,9 @@ async def down():
     steps = [
         x
         for x in (
+            browser and browser.shutdown(host),
+            steam and steam.shutdown(host),
+            code and code.shutdown(host),
             controller and controller.close(),
             t and t.remove_all(),
             supervisor and supervisor.shutdown(1.5),
@@ -3082,6 +3541,9 @@ async def main():
     import signal
 
     global stopping
+    runtime = use("fy_decky_runtime")
+    if runtime:
+        await runtime.resume(host)
     for step in (recover, load_backends, start_optional):
         try:
             step()

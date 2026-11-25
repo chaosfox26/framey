@@ -2,7 +2,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { makeDom, ROOT } = require("./harness");
+const { makeDom, ROOT, TOK } = require("./harness");
 
 const FILES = ["fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-modules.js", "fy-settings.js"];
 const mod = (id, name, extra) => Object.assign({ id, name, version: "1.0.0", commit: id + "abc123".slice(0, 6), enabled: true, nosource: "", pending: false, compat: { badge: "ok", msg: "" }, fail: null, stuck: false, linked: false }, extra);
@@ -1116,9 +1116,17 @@ t("a module update completion cannot replace the separate Decky Store tab", asyn
   await c.open("modules");
   await c.click("Update");
   await c.click("Install");
+  const K = c.FY._k(TOK);
+  let navigation;
+  const setNavigation = K.setPageNavigation;
+  K.panelLayout = () => "compact";
+  K.setPageNavigation = value => { navigation = value; return setNavigation(value); };
+  const optionalStore = require("./optional-store-fixture.cjs");
+  optionalStore.install(c.env);
+  c.R.decky_runtime_status = optionalStore.status;
   await c.open("decky_store");
   const shown = c.text();
-  assert.equal(c.box.querySelector('[role="heading"]').textContent, "Decky Store");
+  assert.equal(navigation.title, "Decky Store");
   release({ ok: "a", version: "2.0.0" });
   await settle();
   assert.equal(c.text(), shown);
@@ -1324,7 +1332,7 @@ t("an isolated UI extension failure keeps other controls and records no exceptio
 t("strings: every key used by the pages exists in the English table, none is unused", async () => {
   const c = boot();
   const used = new Set();
-  ["fy-modules.js", "fy-settings.js"].forEach(f => {
+  ["fy-modules.js", "fy-settings.js", "fy-catalog.js"].forEach(f => {
     const src = fs.readFileSync(path.join(ROOT, f), "utf8");
     for (const m of src.matchAll(/"((?:[cmpvs]|mt)\.[a-z_]+)"/g)) used.add(m[1]);
   });
@@ -1383,6 +1391,201 @@ t("plugin code cannot replace, delete or add to the built-in Modules and Setting
   await open("modules");
   assert.ok(all().length > 0, "the built-in Modules page still renders");
   assert.ok(text().length > 0);
+});
+
+t("bounded pages keep each compact control reachable with original input state", async () => {
+  const c = boot();
+  const K = c.FY._k(TOK);
+  const pages = [];
+  K.panelLayout = () => "compact";
+  K.setPageNavigation = nav => { pages.push(nav); return true; };
+  const k = K.kit.make(c.box);
+  const input = c.d.createElement("input");
+  input.value = "https://example.test/plugin";
+  let installs = 0;
+  const action = k.btn("Install", () => { installs++; });
+  k.pages("Install plugin", [input, action]);
+  assert.equal(c.box.querySelector("input"), input);
+  assert.equal(c.has("Install"), false);
+  assert.equal(pages.at(-1).count, 2);
+  pages.at(-1).onPage(1);
+  await c.click("Install");
+  assert.equal(installs, 1);
+  pages.at(-1).onPage(0);
+  assert.equal(c.box.querySelector("input"), input);
+  assert.equal(input.value, "https://example.test/plugin");
+});
+
+t("bounded page turns preserve asynchronous work guards and ignore stale navigation", async () => {
+  const c = boot();
+  const K = c.FY._k(TOK);
+  let nav;
+  K.panelLayout = () => "compact";
+  K.setPageNavigation = value => { nav = value; return true; };
+  const k = K.kit.make(c.box);
+  k.pages("Review", [k.btn("First", () => {}), k.btn("Second", () => {})]);
+  let completed = false;
+  const finish = k.guard(() => { completed = true; });
+  const stale = nav;
+  nav.onPage(1);
+  finish();
+  assert.equal(completed, true);
+  k.show(K.kit.col("#fff", "New screen"));
+  stale.onPage(0);
+  assert.equal(c.text(), "New screen");
+});
+
+t("compact management separates plugin selection from management controls", async () => {
+  const c = boot();
+  c.d.querySelector('[role="tabpanel"]').append(c.box);
+  const K = c.FY._k(TOK);
+  let nav;
+  K.panelLayout = () => "compact";
+  K.setPageNavigation = value => { nav = value; return true; };
+  await c.open("modules");
+  assert.equal(c.box.querySelectorAll('[role="button"],[role="switch"]').length, 1);
+  const seen = new Set();
+  for (let i = 0; i < nav.count; i++) {
+    nav.onPage(i);
+    c.all().forEach(e => seen.add(e.getAttribute("aria-label")));
+  }
+  assert.ok(seen.has("Alpha"));
+  assert.ok(seen.has("Beta"));
+  assert.ok(seen.has("Manage plugins"));
+  assert.equal(seen.has("Remove"), false);
+});
+
+t("compact work retains measured live status and exposes completion actions", async () => {
+  const c = boot();
+  c.d.querySelector('[role="tabpanel"]').append(c.box);
+  const K = c.FY._k(TOK);
+  let nav;
+  K.panelLayout = () => "compact";
+  K.setPageNavigation = value => { nav = value; return true; };
+  const k = K.kit.make(c.box);
+  k.bounded = true;
+  let release;
+  const work = k.work("Installing", () => new Promise(r => { release = r; }), (r, out) => k.result(out, r, "Installed", () => k.show(K.kit.col("#fff", "Home"))));
+  c.progress({ job: 1, stage: "download", index: 2, total: 3, label: "Download", state: "running", measured: { done: 1, total: 2 } });
+  assert.ok(c.text().includes("Download"));
+  assert.ok(c.text().includes("50%"));
+  release({ ok: true });
+  await work;
+  assert.ok(c.text().includes("Installed"));
+  assert.equal(typeof nav.onBack, "function");
+  nav.onBack();
+  assert.ok(c.text().includes("Home"));
+});
+
+t("reviewing progress history preserves the active job and exposes failed stage text", async () => {
+  const c = boot();
+  const K = c.FY._k(TOK);
+  let nav;
+  K.panelLayout = () => "compact";
+  K.setPageNavigation = value => { nav = value; return true; };
+  const k = K.kit.make(c.box);
+  k.bounded = true;
+  let release;
+  const work = k.work("Installing", () => new Promise(r => { release = r; }), (r, out) => k.result(out, r, "Installed", () => {}));
+  c.progress({ job: 1, stage: "verify", index: 2, total: 3, label: "Verify", state: "fail", error: "Digest mismatch" });
+  nav.onPage(1);
+  await c.click("Progress details");
+  assert.ok(c.text().includes("Digest mismatch"));
+  nav.onBack();
+  assert.ok(c.text().includes("Verify"));
+  release({ ok: true });
+  await work;
+  assert.ok(c.text().includes("Installed"));
+});
+
+t("long management action labels remain readable in steps with a reachable original action", async () => {
+  const c = boot();
+  const K = c.FY._k(TOK);
+  let nav;
+  K.panelLayout = () => "compact";
+  K.setPageNavigation = value => { nav = value; return true; };
+  const k = K.kit.make(c.box);
+  const label = "Long plugin " + "z".repeat(220);
+  let activated = false;
+  const button = k.btn(label, () => { activated = true; });
+  k.pages("Plugins", [button]);
+  let readable = "";
+  for (let i = 0; i < nav.count; i++) {
+    nav.onPage(i);
+    if (!c.box.contains(button)) readable += c.text();
+    assert.ok(c.text().length <= 64);
+  }
+  assert.equal(readable, label);
+  assert.equal(c.box.contains(button), true);
+  button.click();
+  assert.equal(activated, true);
+});
+
+t("compact plugin disclosure preserves controller focus on its replacement control", async () => {
+  const c = boot();
+  const panel = c.FY.el("");
+  panel.className = "fy-panel";
+  c.d.body.append(panel);
+  panel.append(c.box);
+  const K = c.FY._k(TOK);
+  let nav;
+  K.panelLayout = () => "compact";
+  K.setPageNavigation = value => { nav = value; return true; };
+  await c.open("modules");
+  await c.click("Alpha");
+  for (let i = 0; i < nav.count && !c.has("More"); i++) nav.onPage(i);
+  c.find("More").focus();
+  assert.equal(c.d.activeElement.getAttribute("aria-label"), "More");
+  await c.click("More");
+  assert.equal(c.d.activeElement.getAttribute("aria-label"), "Less");
+  assert.equal(c.has("Less"), true);
+});
+
+t("management layout changes keep the focused action on its corresponding grouped screen", async () => {
+  const c = boot();
+  const K = c.FY._k(TOK);
+  let nav, layout = "compact";
+  K.panelLayout = () => layout;
+  K.setPageNavigation = value => { nav = value; return true; };
+  const k = K.kit.make(c.box);
+  const buttons = Array.from({ length: 8 }, (_, i) => k.btn("Action " + (i + 1), () => {}));
+  k.pages("Manage", buttons);
+  nav.onPage(2);
+  buttons[2].focus();
+  layout = "window";
+  nav.onLayout();
+  assert.equal(c.box.contains(buttons[2]), true);
+  assert.equal(c.d.activeElement, buttons[2]);
+  assert.equal(nav.index, 0);
+  assert.equal(nav.count, 2);
+});
+
+t("multiline management text preserves every line across readable compact steps", async () => {
+  const c = boot();
+  const K = c.FY._k(TOK);
+  let nav;
+  K.panelLayout = () => "compact";
+  K.setPageNavigation = value => { nav = value; return true; };
+  const k = K.kit.make(c.box);
+  const notes = Array.from({ length: 16 }, () => "- ok").join("\n");
+  k.pages("Release notes", [K.kit.col("#fff", notes, 19)]);
+  let complete = "";
+  for (let i = 0; i < nav.count; i++) {
+    nav.onPage(i);
+    assert.ok(c.text().split("\n").filter(Boolean).length <= 3);
+    complete += c.text();
+  }
+  assert.equal(complete, notes);
+});
+
+t("runtime-blocked imported plugins retain their requested enable state and explain availability", async () => {
+  const c = boot({ list: [mod("imported", "Imported fixture", { enabled: true, decky_runtime_available: false, decky_runtime_reason: "Decky compatibility is off" })] });
+  await c.open("modules");
+  assert.equal(c.find("Enabled").value, true);
+  assert.match(c.text(), /Decky compatibility is off/);
+  assert.equal(c.sent("disable").length, 0);
+  assert.equal(c.sent("enable").length, 0);
+  c.env.window.close();
 });
 
 (async () => {

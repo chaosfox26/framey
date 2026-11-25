@@ -406,11 +406,16 @@ async def _await(value):
     return await value if inspect.isawaitable(value) else value
 
 
+def decky_import_available(host):
+    import fy_decky_runtime
+
+    return fy_decky_runtime.status(host).get("enabled") is True
+
+
 class Catalog:
     def __init__(self, host, fetcher=None, archive_fetcher=None):
         self.host, self.fetcher = host, fetcher
         self.archive_fetcher = archive_fetcher
-        self.decky = None
         self.path = (
             Path(getattr(host, "CONF", Path(host.HOME) / ".config/framey/settings.json")).parent
             / "catalog.json"
@@ -560,7 +565,7 @@ class Catalog:
         if not effective and self.state["source"] == "testing" and not self.developer():
             effective["source"] = "stable"
         selection = self._selection(effective)
-        from fy_decky_catalog import SOURCES as decky_sources
+        decky_sources = await self._decky_sources()
 
         return {
             "source": selection,
@@ -573,15 +578,41 @@ class Catalog:
                 for k, label in SOURCES.items()
             ],
             "custom_url": self.state["custom_url"],
-            "decky_sources": [dict(x) for x in decky_sources.values()],
+            "decky_sources": decky_sources,
         }
 
-    def _decky(self):
-        if self.decky is None:
-            from fy_decky_catalog import DeckyCatalog
+    async def _decky_sources(self):
+        import fy_decky_runtime
 
-            self.decky = DeckyCatalog(self.host, self.fetcher, self.archive_fetcher)
-        return self.decky
+        if not fy_decky_runtime.status(self.host).get("enabled"):
+            return []
+        try:
+            result = await self._decky_dispatch("sources", {})
+        except Exception:
+            return []
+        return result if isinstance(result, list) else []
+
+    async def _decky_dispatch(self, operation, arg):
+        import fy_decky_runtime
+
+        try:
+            lease = fy_decky_runtime.acquire(self.host)
+        except Exception:
+            raise CatalogError(
+                "runtime_unavailable", "Enable Decky compatibility in Settings"
+            ) from None
+        result = await lease.entry.catalog_dispatch(
+            self.host,
+            operation,
+            arg,
+            lease,
+            fetcher=self.fetcher,
+            archive_fetcher=self.archive_fetcher,
+            install_lock=self.install_lock,
+        )
+        if not fy_decky_runtime.current(self.host, lease):
+            raise CatalogError("runtime_unavailable", "Decky compatibility was disabled")
+        return result
 
     async def _download(self, url):
         if self.fetcher is not None:
@@ -839,7 +870,7 @@ class Catalog:
     async def list(self, arg=None):
         arg = arg if isinstance(arg, dict) else {}
         if arg.get("source") in ("decky_stable", "decky_testing"):
-            return await self._decky().list(arg)
+            return await self._decky_dispatch("list", arg)
         query = _text(arg.get("query", ""), 120, "search query").casefold()
         category = arg.get("category", "all")
         sort = arg.get("sort", "name")
@@ -895,7 +926,7 @@ class Catalog:
     async def details(self, arg):
         arg = arg if isinstance(arg, dict) else {}
         if arg.get("source") in ("decky_stable", "decky_testing"):
-            return await self._decky().details(arg)
+            return await self._decky_dispatch("details", arg)
         pid = arg.get("id")
         if not isinstance(pid, str) or not fy_pkg.ID.fullmatch(pid):
             raise CatalogError("bad_arg", "Choose a catalog module")
@@ -960,7 +991,12 @@ class Catalog:
         arg = arg if isinstance(arg, dict) else {}
         if arg.get("source") not in ("decky_stable", "decky_testing"):
             raise CatalogError("bad_source", "Choose a plugin in Decky Store to inspect")
-        return await self._decky().assess(arg)
+        return await self._decky_dispatch("assess", arg)
+
+    @_safe
+    async def import_decky(self, arg=None):
+        arg = arg if isinstance(arg, dict) else {}
+        return await self._decky_dispatch("import", arg)
 
     async def _install(self, row):
         source, pid = row["source"], row["id"]
@@ -1115,4 +1151,5 @@ METHODS = {
     "catalog_install": _method("install"),
     "catalog_sources": _method("sources"),
     "catalog_assess": _method("assess"),
+    "catalog_import": _method("import_decky"),
 }

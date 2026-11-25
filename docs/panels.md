@@ -1,62 +1,29 @@
-# Choosing where Framey appears
+# Launcher and side-page placement
 
-Open **Settings > Framey panel** to choose where the panel appears. **Inside
-Steam** is the default and the fallback when a separate panel is unavailable.
-When Framey is open:
+Click the existing Framey icon on Steam's bottom bar to open the small launcher directly above it. Installed plugin shortcuts, Framey Store, Decky catalog and Options appear as tiles. Selecting a tile collapses and fades the launcher, then opens the chosen page in Framey's separate window to the right of the host window. The page is not embedded in Steam's content.
 
-| Mode | With the Steam menu open | After the Steam menu closes |
-| --- | --- | --- |
-| **Inside Steam** | Framey opens inside Steam's interface. | Framey is visible only with Steam's interface. |
-| **Beside Steam dashboard** | Framey opens as its own panel to the right of Steam. | The separate panel is hidden. |
-| **Floating during games** | Framey opens to the right of Steam and follows its position. | An open Framey panel remains at its last position in the VR world. |
+The icon-only launcher matches Steam’s dark bar, with square framed buttons, blue/magenta icons and tooltips. Its left/right arrows reveal at most four shortcuts at a time; it rises and expands when opened, then collapses inward and slides down after selection. Reduced motion skips the transition.
 
-The separate modes keep Framey's existing 520-pixel interface and navigation.
-They use an owned popup in Steam's existing browser host. Framey transfers its
-single active frontend between surfaces. A surface change reloads plugin
-frontends; their saved settings remain available, while arbitrary in-memory
-view state is recreated.
+Each selected tool has one focused window with its own title and Close. Choose another tool or Options category from the accordion rather than Plugins/Browse/Settings tabs. Fan Control places presets, tuning, graph editing, actions and live readings together. Constant, Ramp and Graph change the editor in place. Owned catalog and management collections retain search and direct result selection; complete long details are contextual. Older embedded consumers retain their legacy navigation, and third-party plugin layouts remain their own responsibility.
 
-## Open and close the panel
+## Current native scope
 
-If Steam's System menu is available while a 2D or VR game is running, open it
-and use the existing **Framey** button on its bottom bar. That button opens or closes Framey in the
-selected mode. In **Floating during games**, close the Steam menu to leave the
-open Framey panel visible. To dismiss it, return to the Steam menu and use the
-Framey button again, or return to **Inside Steam** in Framey's Settings.
+Current source supports the Steam host path when the audited focus fields are empty and the Steam target has valid native geometry. Arbitrary 2D app-to-overlay mapping remains unfinished. A focused app without a verified mapping produces an unavailable result rather than silently moving the page beside Steam and claiming app tracking.
 
-Framey does not take over the Steam/System button or provide a guaranteed global
-controller shortcut. **Controller pointers may interrupt game controls while
-the floating panel is visible.** A visible panel does not guarantee that a game
-pauses or stops receiving input. Close Framey when you want to resume ordinary
-game controls.
+The launcher uses the actual bottom-bar icon's normalized horizontal position. It samples the bar's top edge and accounts for physical scale. Native operations change only Framey's owned overlay; the target window is read, not moved. There is one active frontend, transferred between the launcher and page presentations. Recreating the popup temporarily suspends frontend injection so a page does not flash inside Steam during the handoff.
 
-While Steam's menu is open, the separate panel follows Steam's position on its
-right. Framey accounts for Steam's physical scale when positioning it. In
-floating mode, closing the menu holds the last world position; this is not an
-always-following head-locked panel.
+The launcher browser surface is 462 by 140 pixels, with a 72-pixel visible tray. The native full window is 800 by 720 pixels, with a 778 by 698 pixel interface. The native adapter retains bounded launcher-width compatibility for existing callers. Popup dimensions and native geometry are changed together. A surface change reloads plugin frontends; saved settings remain available, while arbitrary in-memory DOM state is recreated.
 
-## Availability and recovery
+## Lifecycle and recovery
 
-The separate modes are experimental. They depend on Steam's private popup API
-and the OpenVR features available in the installed Steam Frame runtime. A Steam
-update, missing interface or failed native operation can make them unavailable.
-**Inside Steam** remains the recovery path; **Retry** in **Settings > Framey
-panel** refreshes the reported state and lets you try a separate mode again.
-Selecting the mode performs its availability checks. After a failed move, use
-the last confirmed choice shown in Settings rather than assuming the requested
-mode took effect.
+Use the bottom-bar icon through Steam's System menu when it is available. This does not add a universal controller shortcut or claim that a game pauses. The ordinary flow does not leave a permanently floating page visible after the Steam menu closes.
 
-Returning to **Inside Steam** closes Framey's own popup and releases its native
-overlay connection. It does not close Steam's dashboard or another application's
-windows. Mode changes retain Framey's selected page and open state when the
-interface can be transferred successfully.
+The source retains legacy placement values internally, but ordinary Options no longer offers the old Inside Steam/Beside Steam/Floating chooser. Support > Panel status contains read-only diagnostics and Retry. A failed move preserves the saved requested placement. Launcher selection errors keep a bounded Retry/Back path; after a native connection failure, use the bottom-bar icon to try opening the launcher again.
 
-For plugin authors, there is one active Framey frontend surface. The separate
-panel is internal to the loader, not a new public injection target or developer
-target name. Existing `main` and `bar` injections still refer to Steam's original
-surfaces; they do not become aliases for the separate panel.
+Steam's private popup host and the installed OpenVR interfaces can change. The launcher/page flow was installed directly on a headset on October 27, 2026. The launcher and Fan Control route rendered, and native readback verified the side-window position. Closing and recreating the popup can temporarily change Steam's visibility flag; target selection therefore uses audited app focus and native geometry, while dashboard visibility controls display. Physical controller acceptance remains incomplete. Automatic separate-panel restoration after SteamVR restart remains unverified; the earlier manual recovery below applies to the previously deployed layout.
 
-## Verification and resource limits
+## Earlier device verification and resource limits
+
 
 Commit `4641a14` was deployed on an ARM64 Steam Frame running SteamOS VR 0.5.6.
 Trusted browser-debugger clicks on the actual Settings controls verified **Inside

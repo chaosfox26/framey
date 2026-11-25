@@ -3,6 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { makeDom, ROOT, TOK, registerAs } = require("./harness");
+const { findShortcut, shortcutLabels, pagedControl, pagedText } = require("./panel-navigation-helpers");
 
 const FILES = ["fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-modules.js", "fy-settings.js"];
 const CATALOG_FILES = FILES.flatMap(file => file === "fy-settings.js" ? ["fy-catalog.js", file] : [file]);
@@ -31,17 +32,21 @@ const boot = (options = {}) => {
   env.answers = answers;
   env.FY = env.window.Framey;
   env.K = () => env.window.Framey._k(TOK);
-  env.panel = () => [...env.document.body.children].find(c => c.style.width === "520px");
-  env.content = () => env.panel().children[0];
+  env.panel = () => [...env.document.body.children].find(c => c.classList.contains("fy-panel"));
+  env.content = () => env.panel().querySelector('[role="tabpanel"]');
   env.rail = () => env.panel().children[1];
   env.tabs = () => [...env.rail().children];
-  env.tab = name => env.tabs().find(t => t.textContent === name);
+  env.tab = name => env.tabs().find(t => t.textContent === name) || findShortcut(env.panel(), { Modules: "Manage plugins" }[name] || name);
+  env.goto = name => {
+    env.tab("Plugins").click();
+    env.tab(name).click();
+  };
   env.key = (el, k, extra) => {
     const ev = new env.window.KeyboardEvent("keydown", Object.assign({ key: k, bubbles: true, cancelable: true }, extra));
     el.dispatchEvent(ev);
     return ev;
   };
-  env.control = label => [...env.content().querySelectorAll("[aria-label]")].find(e => e.getAttribute("aria-label") === label);
+  env.control = label => pagedControl(env.panel(), label);
   return env;
 };
 
@@ -203,29 +208,29 @@ t("redraw: another plugin registering a page does not replace the displayed Modu
   const e = boot();
   const F = e.FY;
   e.plugin("a");
-  F.toggle();
-  e.tab("Modules").click();
+  e.FY.toggle();
+  e.goto("Modules");
   await settle();
   const marker = e.content().firstChild;
   const other = e.plugin("b");
   other.pages.register({ id: "p", title: "Extra", render() {} });
   assert.strictEqual(e.content().firstChild, marker);
-  assert.ok(e.tab("Extra"));
+  assert.ok(e.FY.panelPages().some(page => page.name === "Extra"));
   other.pages.register({ id: "q", title: "More", render() {} });
   assert.strictEqual(e.content().firstChild, marker);
-  e.tab("Extra").click();
+  e.goto("Extra");
   const shown = e.content().firstChild;
   other.pages.register({ id: "r", title: "Third", render() {} });
   assert.strictEqual(e.content().firstChild, shown);
 });
 
-t("rail: tiles are focusable tabs with roving tabindex, aria-selected and Enter, Space and arrow keys", async () => {
+t("destinations: focusable tabs use roving tabindex, selection and Enter, Space and arrow keys", async () => {
   const e = boot();
   e.plugin("a");
   e.FY.toggle();
   await settle();
   const tabs = e.tabs();
-  assert.ok(tabs.length >= 4);
+  assert.equal(tabs.length, 3);
   assert.strictEqual(e.rail().getAttribute("role"), "tablist");
   tabs.forEach(x => assert.strictEqual(x.getAttribute("role"), "tab"));
   assert.strictEqual(tabs.filter(x => x.tabIndex === 0).length, 1);
@@ -233,22 +238,22 @@ t("rail: tiles are focusable tabs with roving tabindex, aria-selected and Enter,
   assert.strictEqual(e.document.activeElement.getAttribute("aria-selected"), "true");
   const first = tabs[0];
   first.focus();
-  e.key(first, "ArrowDown");
+  e.key(first, "ArrowRight");
   assert.strictEqual(e.document.activeElement, tabs[1]);
   assert.strictEqual(tabs[1].tabIndex, 0);
   assert.strictEqual(first.tabIndex, -1);
   e.key(tabs[1], "End");
   assert.strictEqual(e.document.activeElement, tabs[tabs.length - 1]);
-  e.key(tabs[tabs.length - 1], "ArrowDown");
+  e.key(tabs[tabs.length - 1], "ArrowRight");
   assert.strictEqual(e.document.activeElement, tabs[tabs.length - 1]);
   e.key(tabs[tabs.length - 1], "Home");
   assert.strictEqual(e.document.activeElement, tabs[0]);
-  const modules = e.tab("Modules");
+  const modules = e.tab("Browse");
   modules.focus();
   e.key(modules, "Enter");
   await settle();
-  assert.ok(e.tab("Modules").getAttribute("aria-selected") === "true");
-  assert.strictEqual(e.document.activeElement.textContent, "Modules");
+  assert.ok(e.tab("Browse").getAttribute("aria-selected") === "true");
+  assert.strictEqual(e.document.activeElement.textContent, "Browse");
   const settings = e.tab("Settings");
   settings.focus();
   e.key(settings, " ");
@@ -262,14 +267,14 @@ t("rail: tiles are focusable tabs with roving tabindex, aria-selected and Enter,
   assert.strictEqual(e.calls.length, repeats);
 });
 
-t("keyboard: Escape closes the panel, ArrowLeft goes into the page and ArrowRight comes back", async () => {
+t("keyboard: Escape closes the panel, ArrowDown goes into the page and ArrowRight comes back", async () => {
   const e = boot();
   e.FY.toggle();
-  e.tab("Modules").click();
+  e.goto("Modules");
   await settle();
-  const tab = e.tab("Modules");
+  const tab = e.tab("Plugins");
   tab.focus();
-  e.key(tab, "ArrowLeft");
+  e.key(tab, "ArrowDown");
   assert.ok(e.content().contains(e.document.activeElement));
   e.key(e.content(), "ArrowRight");
   assert.strictEqual(e.document.activeElement.getAttribute("aria-selected"), "true");
@@ -281,8 +286,9 @@ t("keyboard: Escape closes the panel, ArrowLeft goes into the page and ArrowRigh
 t("Modules: Escape closes the open sub-screen first, the panel only at the top, and focus never drops to the body", async () => {
   const e = boot();
   e.FY.toggle();
-  e.tab("Modules").click();
+  e.goto("Modules");
   await settle();
+  e.control("Alpha").click();
   const more = e.control("More");
   more.focus();
   more.click();
@@ -299,25 +305,30 @@ t("Modules: Escape closes the open sub-screen first, the panel only at the top, 
   e.key(e.document.activeElement === e.document.body ? e.content() : e.document.activeElement, "Escape");
   await settle();
   assert.strictEqual(e.FY.panelOpen, true);
-  assert.ok(e.control("Update all"));
+  assert.ok(e.control("Less") || e.control("More"));
   assert.notStrictEqual(e.document.activeElement, e.document.body);
+  e.key(e.document.activeElement, "Escape");
+  assert.strictEqual(e.FY.panelOpen, true);
+  assert.ok(e.control("Manage plugins"));
   e.key(e.document.activeElement, "Escape");
   assert.strictEqual(e.FY.panelOpen, false);
 });
 
-t("sizing: no scale transform, the rail scrolls and every tile and control is at least 48 px", async () => {
+t("sizing: paged content avoids scrolling, fixed destinations and controls are at least 48 px", async () => {
   const e = boot();
   e.FY.toggle();
   const style = e.panel().style;
   assert.ok(!/transform/.test(style.cssText));
-  assert.ok(/overflow-y:\s*auto/.test(e.rail().style.cssText));
-  assert.ok(/max-height/.test(e.rail().style.cssText));
+  assert.equal(e.rail().style.overflowY, "");
+  assert.equal(e.content().style.overflow, "hidden");
+  assert.ok(/max-height/.test(e.panel().style.cssText));
   e.tabs().forEach(x => assert.ok(parseInt(x.style.height, 10) >= 48));
   assert.ok(/min-height:48px/.test(read("fy-ui.js")));
   const many = [];
   for (let i = 0; i < 12; i++) many.push(e.plugin("p" + i));
   e.FY.redraw();
-  assert.ok(e.tabs().length >= 15);
+  assert.equal(e.tabs().length, 3);
+  assert.equal(shortcutLabels(e.panel()).length, 13);
 });
 
 t("toasts: at most 4 at once, oldest dropped, text cut, status role, no pointer events", () => {
@@ -555,12 +566,12 @@ t("update result: the event is stored, shown after the panel was wiped and re-in
   const e = boot();
   const w = e.window;
   e.FY.toggle();
-  e.tab("Modules").click();
+  e.goto("Modules");
   await settle();
   e.FY._k(TOK).event("_core", "update_result", eventPayload(), 0);
   await settle();
-  assert.ok(e.content().textContent.includes("1 updated, 2 failed"));
-  assert.ok(e.content().textContent.includes("Beta"));
+  assert.ok(pagedText(e.panel()).includes("1 updated, 2 failed"));
+  assert.ok(pagedText(e.panel()).includes("Beta"));
   const stored = JSON.parse(w.sessionStorage.fyRes);
   assert.ok(stored.rows.length === 4 && stored.rows.some(r => r[0] === "failed"));
   assert.ok(JSON.stringify(stored).length < 8000);
@@ -571,7 +582,7 @@ t("update result: the event is stored, shown after the panel was wiped and re-in
     w.eval("Framey.restore()");
     await settle();
     assert.strictEqual(w.Framey.panelOpen, true);
-    const text = w.document.body.textContent;
+    const text = pagedText(e.panel());
     assert.ok(text.includes("Last update result"), "round " + round);
     assert.ok(text.includes("download failed") && text.includes("start failed"));
     assert.ok(text.includes("Updated Alpha") || text.includes("Alpha"));
@@ -611,20 +622,22 @@ t("update result: without a panel the event raises a toast and keeps the result 
   e.FY._k(TOK).event("_core", "update_result", eventPayload(), 0);
   assert.ok(e.document.querySelector('[role="status"]').textContent.includes("1 updated, 2 failed"));
   e.FY.toggle();
-  e.tab("Modules").click();
+  e.goto("Modules");
   await settle();
-  assert.ok(e.content().textContent.includes("Last update result"));
+  assert.ok(pagedText(e.panel()).includes("Last update result"));
   e.FY._k(TOK).event("_core", "update_result", eventPayload({ ok: 3, failed: 0, results: [{ id: "a", name: "A", state: "ok", to: "1" }] }), 0);
-  assert.ok(e.content().textContent.includes("3 updated, 0 failed"));
+  assert.ok(pagedText(e.panel()).includes("3 updated, 0 failed"));
 });
 
 t("update result: the reply screen of a successful update is persisted and its Back clears it", async () => {
   const e = boot({ answers: { update: { ok: true, version: "1.2.0" }, check: { checked: { alpha: { state: "update", latest: "1.2.0" } } } } });
   e.FY.toggle();
-  e.tab("Modules").click();
+  e.goto("Modules");
   await settle();
+  e.control("Manage plugins").click();
   e.control("Check for updates").click();
   await settle();
+  e.control("Alpha").click();
   e.control("Update").click();
   await settle();
   e.control("Install").click();
@@ -653,7 +666,7 @@ t("restore opens Modules when a result is waiting and the panel was open", async
 t("versions: a failed page is not skipped on retry and the error clears after a success", async () => {
   const e = boot();
   e.FY.toggle();
-  e.tab("Modules").click();
+  e.goto("Modules");
   await settle();
   let pages = 0;
   const seen = [];
@@ -663,6 +676,7 @@ t("versions: a failed page is not skipped on retry and the error clears after a 
     if (pages === 2) return { error: "network" };
     return { versions: [{ tag: "v" + pages, version: "1." + pages, published: "2026-10-01" }], more: true };
   };
+  e.control("Alpha").click();
   e.control("More").click();
   await flush();
   e.control("Versions").click();
@@ -681,9 +695,12 @@ t("the settings page shows channel, safe mode and developer mode as read-only te
   e.FY.toggle();
   e.tab("Settings").click();
   await settle();
-  assert.ok(e.content().textContent.includes("~/.config/framey/loader.json"));
-  assert.ok(e.content().textContent.includes("~/.config/framey/safe"));
-  assert.ok(e.content().textContent.includes("~/.config/framey/developer"));
+  e.control("Updates").click();
+  assert.ok(pagedText(e.panel()).includes("~/.config/framey/loader.json"));
+  e.control("Back").click();
+  e.control("Preferences").click();
+  assert.ok(pagedText(e.panel()).includes("~/.config/framey/safe"));
+  assert.ok(pagedText(e.panel()).includes("~/.config/framey/developer"));
   assert.strictEqual(e.sent("prefs_set").length, 0);
 });
 
@@ -697,7 +714,7 @@ t("independently authored legacy-style fixture: render and backend calls stay bo
     }
   });`;
   e.window.eval("(function(Framey){" + fixture + "\n})(window.__bindFramey(\"fan\", \"tok-fan-00000000\", {id: \"fan\", name: \"Legacy fixture\", short: \"Fan\", version: \"1.0.0\"}))");
-  e.FY.toggle();
+  e.FY.open("fan");
   await settle();
   assert.strictEqual(e.FY.plugins.find(p => p.id === "fan").short, "Fan");
   assert.ok(e.document.body.textContent.includes("Temperature sensor"));
@@ -911,6 +928,7 @@ t("catalog isolation: switching native and Decky stores preserves peers and hide
   await settle();
   e.FY.open("#decky-store");
   await settle();
+  e.FY.open("#plugins");
   assert.ok(!e.tab("a"));
   assert.ok(!e.tab("Hidden"));
   assert.ok(e.tab("b"));

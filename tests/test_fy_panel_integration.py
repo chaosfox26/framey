@@ -218,6 +218,26 @@ class PanelIntegrationTests(unittest.IsolatedAsyncioTestCase):
         expression = self.fy.main_code("panel")[0][0]
         self.assertNotIn("TRANSFER_EXECUTED", expression)
         self.assertNotIn("sessionStorage.fyTab=", expression)
+
+    async def test_compact_preference_survives_validation_and_reaches_the_selected_surface(self):
+        state = self.fy.use("fy_state")
+        persisted, _ = state.validate({"prefs": {"panel_mode": "compact"}})
+        self.assertEqual(persisted["prefs"]["panel_mode"], "compact")
+        self.fy.host.panel_controller = types.SimpleNamespace(mode="compact")
+        self.assertIn('"panel_layout": "compact"', self.fy.prelude())
+
+    async def test_surface_handoff_applies_only_validated_layout_before_frontend_starts(self):
+        self.fy.UI_SURFACE = "panel"
+        self.fy.UI_RESTORE = {"open": True, "tab": "#plugins", "layout": "compact"}
+        expression = self.fy.main_code("panel")[0][0]
+        self.assertTrue(
+            'window.FY_RUNTIME.panel_layout="compact";' in expression,
+            "The transferred layout must be applied before the frontend starts",
+        )
+        self.fy.UI_RESTORE = {"layout": "');window.LAYOUT_EXECUTED=1;//"}
+        expression = self.fy.main_code("panel")[0][0]
+        self.assertNotIn("LAYOUT_EXECUTED", expression)
+        self.assertNotIn("window.FY_RUNTIME.panel_layout=", expression)
         self.assertNotIn("sessionStorage.fyOpen=", expression)
         self.fy.LIVE.clear()
 
@@ -238,6 +258,69 @@ class PanelIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(applied.wait(), 2)
         self.assertEqual(replies_at_apply, [["switch", 12, {"mode": "embedded", "pending": True, "requested_mode": "floating"}]])
         controller.request.assert_awaited_once_with({"mode": "floating"})
+
+    async def test_launcher_route_is_acknowledged_before_its_surface_is_replaced(self):
+        page = await self.attach("main")
+        applied = asyncio.Event()
+        received = []
+        ack = {"ok": True, "mode": "compact", "pending": True, "requested_mode": "window"}
+
+        async def apply_pending():
+            received.extend(page.replies())
+            applied.set()
+
+        controller = types.SimpleNamespace(
+            status=mock.Mock(return_value={"pending": False}),
+            launch=mock.AsyncMock(return_value=ack),
+            apply_pending=apply_pending,
+            close=mock.AsyncMock(),
+            panel_changed=mock.AsyncMock(),
+        )
+        self.fy.host.panel_controller = controller
+        page.bind(id=13, gen="launch", plugin="_core", method="panel_launch", arg={"route": "sample"})
+        await self.settled(lambda: bool(page.replies()))
+        self.assertEqual(page.replies()[0][2], ack)
+        await asyncio.wait_for(applied.wait(), 2)
+        self.assertEqual(received, [["launch", 13, ack]])
+        controller.launch.assert_awaited_once_with("sample")
+
+    async def test_anchored_bar_toggle_uses_the_launcher_controller(self):
+        controller = types.SimpleNamespace(toggle_launcher=mock.AsyncMock(return_value={"mode": "compact"}))
+        self.fy.host.panel_controller = controller
+        await self.fy.core("toggle", {"anchor_x": 0.75})
+        controller.toggle_launcher.assert_awaited_once_with(0.75)
+
+    async def test_launcher_width_reads_only_a_bounded_integer_from_the_owned_frontend(self):
+        sender = types.SimpleNamespace(core="core", query=mock.AsyncMock(return_value=662))
+        self.fy.LIVE["main"] = sender
+        self.assertEqual(await self.fy.launcher_width(), 662)
+        for value in (True, 381, 663, 500.5, "542", {"width": 542}, None):
+            sender.query.return_value = value
+            self.assertEqual(await self.fy.launcher_width(), 382)
+        sender.query.side_effect = RuntimeError("fixture query disconnected")
+        self.assertEqual(await self.fy.launcher_width(), 382)
+
+    async def test_suspended_handoff_has_no_active_frontend_inside_the_main_window(self):
+        sender = types.SimpleNamespace(
+            core="core", query=mock.AsyncMock(return_value=True),
+            evaluate=mock.AsyncMock(), close=mock.Mock(), ui=True, accepting=True,
+        )
+        self.fy.LIVE["main"] = sender
+        with mock.patch.object(self.fy, "start_surface_watches"):
+            result = await self.fy.switch_panel_surface("none", {"open": False})
+        self.assertTrue(result["ok"])
+        self.assertIsNone(self.fy.ui_sender())
+        self.assertEqual(self.fy.ui_name(), "none")
+        self.assertFalse(any(pid == "#core" for _, pid in self.fy.main_code("main")))
+        sender.close.assert_called_once()
+
+    async def test_launcher_routes_are_limited_to_enabled_installed_pages(self):
+        for route in ("#plugins", "#modules", "#discover", "#decky-store", "#settings", "#settings:preferences", "#settings:updates", "#settings:maintenance", "#settings:worker", "#settings:support", "sample", "sample:detail"):
+            self.assertTrue(self.fy.panel_route_allowed(route))
+        for route in (None, [], "other", "#launcher", "#developer", "#settings:unknown", "#settings:updates:bad", "sample:'bad()", "sample:" + "x" * 41):
+            self.assertFalse(self.fy.panel_route_allowed(route))
+        with mock.patch.object(self.fy, "settings", return_value={"disabled": ["sample"]}):
+            self.assertFalse(self.fy.panel_route_allowed("sample"))
 
     async def test_panel_marker_accepts_only_bounded_blank_owned_overlay_urls(self):
         valid = "about:blank?vrOverlayKey=framey.panel"

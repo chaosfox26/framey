@@ -60,7 +60,7 @@ class FrontendTypesTests(unittest.TestCase):
         self.assertNotIn("dest", interface_members(self.source, "FrameyFetchOptions"))
 
     def test_catalog_inspection_is_a_loader_ui_operation(self):
-        catalog_ui = (ROOT / "fy-catalog.js").read_text()
+        catalog_ui = (ROOT / "decky_runtime" / "frontend" / "store.js").read_text()
         self.assertRegex(catalog_ui, r'call\("catalog_assess", request\)')
         for interface in ("FrameyApi", "FrameyBinding", "FrameyGlobal"):
             members = interface_members(self.source, interface)
@@ -68,7 +68,7 @@ class FrontendTypesTests(unittest.TestCase):
                              f"{interface} must not promise a plugin catalog API")
 
     def test_decky_assessment_types_match_offline_inspection_evidence(self):
-        import fy_decky_catalog as decky
+        from decky_runtime import catalog as decky
 
         def literals(alias):
             match = re.search(rf"type {alias} = ([^;]+);", self.source)
@@ -116,8 +116,8 @@ class FrontendTypesTests(unittest.TestCase):
                     self.assertIn(binary["format"], literals("FrameyDeckyBinaryFormat"))
                     self.assertIn(binary["architecture"], literals("FrameyDeckyBinaryArchitecture"))
 
-    def test_decky_assessment_reply_matches_current_core_producer(self):
-        tree = ast.parse((ROOT / "fy_decky_catalog.py").read_text())
+    def test_decky_assessment_reply_matches_optional_package_producer(self):
+        tree = ast.parse((ROOT / "decky_runtime" / "catalog.py").read_text())
         assess = next(node for node in ast.walk(tree)
                       if isinstance(node, ast.AsyncFunctionDef) and node.name == "_assess")
         replies = [node for node in ast.walk(assess) if isinstance(node, ast.Dict)]
@@ -126,12 +126,12 @@ class FrontendTypesTests(unittest.TestCase):
                             for key in value.keys))
         fields = {key.value for key in reply.keys if isinstance(key, ast.Constant)}
         self.assertEqual(fields, interface_members(self.source, "FrameyDeckyAssessmentReply"))
-        import fy_decky_catalog as decky
+        from decky_runtime import catalog as decky
         for source in decky.SOURCES.values():
             self.assertEqual(set(source), interface_members(self.source, "FrameyDeckyCatalogSource"))
             self.assertIn(source["id"], ("decky_stable", "decky_testing"))
             self.assertEqual(source["format"], "decky")
-        catalog_ui = (ROOT / "fy-catalog.js").read_text()
+        catalog_ui = (ROOT / "decky_runtime" / "frontend" / "store.js").read_text()
         for status in ("compatible", "incompatible", "unverified"):
             self.assertIn(f'"{status}"', catalog_ui)
         self.assertIn('"Not checked"', catalog_ui)

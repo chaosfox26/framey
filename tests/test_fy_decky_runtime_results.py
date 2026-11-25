@@ -8,9 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import fy_decky_catalog
-
-
+from decky_runtime import catalog as fy_decky_catalog
 class DeckyRuntimeClassificationTests(unittest.TestCase):
     def test_manifest_runtime_claims_and_unknown_backend_apis_never_prove_a_port(self):
         manifest = {

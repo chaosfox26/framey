@@ -254,7 +254,7 @@ t("Enter and Space activate the original toggle binding once per press", () => {
     btn().dispatchEvent(new w.KeyboardEvent("keydown", { key, repeat: true, bubbles: true }));
   }
   assert.equal(env.calls.length, 2);
-  env.calls.forEach(call => assert.deepEqual(call, { id: 0, plugin: "_core", method: "toggle" }));
+  env.calls.forEach(call => assert.deepEqual(call, { id: 0, plugin: "_core", method: "toggle", arg: { anchor_x: 0.146484375 } }));
   bar.dispose();
 });
 
@@ -291,7 +291,7 @@ t("a non-configurable native Steam binding remains usable when the optional pin 
   const { env, w, btn, bar } = boot({ fixedBinding: true });
   assert.equal(Object.getOwnPropertyDescriptor(w, "fyCall").configurable, false);
   btn().click();
-  assert.deepEqual(env.calls, [{ id: 0, plugin: "_core", method: "toggle" }]);
+  assert.deepEqual(env.calls, [{ id: 0, plugin: "_core", method: "toggle", arg: { anchor_x: 0.146484375 } }]);
   bar.dispose();
 });
 
@@ -299,7 +299,7 @@ t("the captured request serializer keeps the native button binding usable after 
   const { env, w, btn, bar } = boot();
   w.JSON.stringify = () => { throw new Error("unrelated page serializer failed"); };
   btn().click();
-  assert.deepEqual(env.calls, [{ id: 0, plugin: "_core", method: "toggle" }]);
+  assert.deepEqual(env.calls, [{ id: 0, plugin: "_core", method: "toggle", arg: { anchor_x: 0.146484375 } }]);
   bar.dispose();
 });
 

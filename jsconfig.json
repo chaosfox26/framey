@@ -13,6 +13,7 @@
   "include": [
     "*.js",
     "compat/*.js",
+    "decky_runtime/**/*.js",
     "examples/*/*.js",
     "types/*.d.ts"
   ],

@@ -10,9 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import fy_decky_catalog as decky
-
-
+from decky_runtime import catalog as decky
 def elf(machine, bits=64, byte_order="little"):
     size = 64 if bits == 64 else 52
     data = bytearray(size)

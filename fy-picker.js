@@ -87,6 +87,11 @@
 				untrack = null,
 				last = null,
 				observer = null,
+				pageIndex = 0,
+				pageRows = [],
+				mode = "entries",
+				detailText = "",
+				detailEntry = null,
 				unpanel = null;
 			const box = (css, text) => {
 				const e = framey.el(css, text);
@@ -94,46 +99,153 @@
 				return e;
 			};
 			const view = box(
-				"position:fixed;top:0;left:0;right:0;bottom:0;z-index:100000;box-sizing:border-box;padding:24px;background:#101018;color:#fff;font:20px sans-serif;overflow:auto",
+				"position:fixed;top:0;left:0;right:0;bottom:0;z-index:100000;box-sizing:border-box;padding:8px;background:#000;color:#fff;font:20px sans-serif;overflow:hidden;display:flex;flex-direction:column",
 			);
 			view.setAttribute("role", "dialog");
 			view.setAttribute("aria-modal", "true");
 			view.setAttribute("aria-label", name);
-			const crumb = box("font-size:18px;color:#8a8aa0;overflow-wrap:anywhere");
-			const err = box("font-size:19px;color:#ff7a7a;overflow-wrap:anywhere;display:none");
+			const crumb = box("font-size:18px;color:#fff;overflow-wrap:anywhere");
+			const err = box("font-size:19px;color:#ff35c8;overflow-wrap:anywhere;display:none");
 			err.setAttribute("role", "alert");
-			const status = box("font-size:19px;color:#c8c8d8");
+			const status = box("font-size:19px;color:#fff");
 			status.setAttribute("role", "status");
 			status.setAttribute("aria-live", "polite");
 			const errorActions = ui.group();
 			errorActions.style.display = "none";
 			const rootRow = ui.group();
 			const lst = ui.list({ empty: "Nothing here", onselect: n => open(n) });
-			lst.style.maxHeight = "55vh";
-			const up = ui.button({ label: "Up", disabled: true, onclick: () => load(root, parent) });
+			lst.style.overflow = "hidden";
+			lst.style.minHeight = "0";
+			lst.style.flex = "1";
+			const detail = box("font-size:18px;line-height:1.3;white-space:pre-wrap;overflow-wrap:anywhere;flex:1");
+			detail.dataset.pickerDetails = "true";
+			detail.style.display = "none";
+			const up = ui.button({
+				label: "Up",
+				disabled: true,
+				onclick: () => {
+					if (mode !== "entries") {
+						mode = "entries";
+						pageIndex = 0;
+						paintRows();
+					} else load(root, parent);
+				},
+			});
 			const ok = ui.button({
 				label: "Select",
 				primary: true,
 				disabled: true,
 				onclick: () => {
 					if (!alive() || !ready || loading || !root) return;
+					if (mode === "name") {
+						const entry = detailEntry;
+						mode = "entries";
+						pageIndex = 0;
+						paintRows();
+						open(entry, true);
+						return;
+					}
 					if (folder) finish({ root, path });
 					else if (chosen != null && entries.get(chosen)?.type === "file")
 						finish({ root, path: join(path, chosen), name: chosen });
 				},
 			});
 			const no = ui.button({ label: "Cancel", onclick: () => finish(null) });
+			const pageSize = () =>
+				Math.max(1, Math.floor(((view.clientHeight || document.documentElement.clientHeight || 320) - 280) / 60));
+			const pageLabel = box("font-size:16px;color:#ff70d8;text-align:center;flex:1");
+			const previous = ui.button({ label: "Previous", onclick: () => turn(-1) });
+			const next = ui.button({ label: "Next", onclick: () => turn(1) });
+			const pager = ui.group(previous, pageLabel, next);
+			pager.setAttribute("aria-label", "Folder entries pages");
+			const textParts = text => {
+				const parts = [];
+				let part = "",
+					lines = 1,
+					columns = 0;
+				for (const c of String(text || "")) {
+					if ((c === "\n" || columns >= 14) && lines >= 3) {
+						parts.push(part);
+						part = "";
+						lines = 1;
+						columns = 0;
+					}
+					if (columns >= 14) {
+						columns = 0;
+						lines++;
+					}
+					part += c;
+					if (c === "\n") {
+						lines++;
+						columns = 0;
+					} else columns++;
+				}
+				parts.push(part);
+				return parts;
+			};
+			const pageCount = () =>
+				mode === "entries"
+					? Math.max(1, Math.ceil(pageRows.length / pageSize()))
+					: mode === "roots"
+						? Math.max(1, known.length)
+						: textParts(detailText).length;
+			const paintRows = () => {
+				const size = pageSize(),
+					count = pageCount();
+				pageIndex = Math.max(0, Math.min(pageIndex, count - 1));
+				const isDetail = mode !== "entries" && mode !== "roots";
+				lst.style.display = isDetail ? "none" : "flex";
+				detail.style.display = isDetail ? "" : "none";
+				rootRow.style.display = mode === "entries" ? "flex" : "none";
+				up.textContent = mode === "entries" ? "Up" : "Back";
+				up.disabled = mode === "entries" && parent === null;
+				ok.textContent =
+					mode === "name" ? (entries.get(detailEntry)?.type === "dir" ? "Open folder" : "Choose file") : "Select";
+				ok.disabled = !ready || loading || (mode !== "name" && !folder && chosen === null);
+				if (isDetail) detail.textContent = textParts(detailText)[pageIndex];
+				else if (mode === "roots") {
+					const at = known[pageIndex];
+					lst.setItems(at ? [{ id: at.id, label: at.label.length > 35 ? at.label.slice(0, 32) + "…" : at.label }] : []);
+				} else
+					lst.setItems(
+						pageRows
+							.slice(pageIndex * size, (pageIndex + 1) * size)
+							.map(row => ({ ...row, label: row.label.length > 35 ? row.label.slice(0, 32) + "…" : row.label })),
+					);
+				previous.disabled = pageIndex === 0;
+				next.disabled = pageIndex === count - 1;
+				pageLabel.textContent = pageIndex + 1 + " of " + count;
+			};
+			const showDetails = (text, entry) => {
+				mode = entry == null ? "details" : "name";
+				detailText = text;
+				detailEntry = entry;
+				pageIndex = 0;
+				paintRows();
+				focusSafely(() => ui.focus(body));
+			};
+			const turn = delta => {
+				if (!alive() || loading || pageIndex + delta < 0 || pageIndex + delta >= pageCount()) return;
+				pageIndex += delta;
+				paintRows();
+				focusSafely(() => ui.focus(mode === "entries" || mode === "roots" ? lst : pager));
+			};
 			const body = ui.group(
-				box("font-size:28px;font-weight:700", name),
+				box("font-size:20px;font-weight:700", name.length <= 35 ? name : folder ? "Choose a folder" : "Choose a file"),
 				crumb,
 				status,
 				err,
 				errorActions,
 				rootRow,
 				lst,
+				detail,
 				ui.group(up, ok, no),
+				pager,
 			);
 			body.style.flexDirection = "column";
+			body.style.height = "100%";
+			body.style.minHeight = "0";
+			body.style.gap = "4px";
 			view.append(body);
 
 			const finish = v => {
@@ -155,8 +267,9 @@
 								panel &&
 								[
 									...panel.querySelectorAll(
-										'[role="tabpanel"] [tabindex], [role="tabpanel"] button, [role="tabpanel"] input, [role="tabpanel"] select, [role="tabpanel"] textarea, [role="tab"][aria-selected="true"]',
+										'[role="tabpanel"] [tabindex], [role="tabpanel"] button, [role="tabpanel"] input, [role="tabpanel"] select, [role="tabpanel"] textarea',
 									),
+									...panel.querySelectorAll('[role="tab"][aria-selected="true"]'),
 								].find(focusable);
 							if (target) target.focus();
 						}
@@ -172,9 +285,15 @@
 				}
 				return true;
 			};
-			const open = n => {
+			const open = (n, confirmed = false) => {
+				if (mode === "roots") {
+					mode = "entries";
+					pageIndex = 0;
+					return load(n, "");
+				}
 				const x = entries.get(n);
 				if (!alive() || !x || loading) return;
+				if (!confirmed && n.length > 35) return showDetails(n, n);
 				if (x.type === "dir") load(root, join(path, n));
 				else if (!folder && ready && x.type === "file") {
 					chosen = n;
@@ -200,7 +319,14 @@
 				status.textContent = "";
 				ok.disabled = true;
 				up.disabled = parent === null;
-				err.textContent = String(message || "Could not read this folder.").slice(0, 300);
+				const errorText = String(message || "Could not read this folder.").slice(0, 300);
+				err.textContent = errorText.length > 80 ? "Could not read this folder." : errorText;
+				if (errorText.length > 80) {
+					mode = "error";
+					detailText = errorText;
+					pageIndex = 0;
+					paintRows();
+				}
 				err.style.display = "";
 				errorActions.replaceChildren(
 					ui.button({
@@ -229,6 +355,11 @@
 			const load = (r, p) => {
 				if (!alive()) return;
 				const n = ++seq;
+				mode = "entries";
+				detail.style.display = "none";
+				lst.style.display = "flex";
+				up.textContent = "Up";
+				ok.textContent = "Select";
 				last = { root: r, path: p };
 				loading = true;
 				ready = false;
@@ -281,30 +412,45 @@
 						ready = true;
 						const rows = res.entries.slice(0, 500).filter(x => x && typeof x.name === "string" && x.name);
 						entries = new Map(rows.map(x => [x.name, x]));
-						lst.setItems(
-							rows.map(x => ({
-								id: x.name,
-								label: x.name,
-								sub: x.type === "dir" ? "Folder" : "",
-								disabled: !(x.type === "dir" || (x.type === "file" && !folder)),
-							})),
-						);
+						pageIndex = 0;
+						pageRows = rows.map(x => ({
+							id: x.name,
+							label: x.name,
+							sub: x.type === "dir" ? "Folder" : "",
+							disabled: !(x.type === "dir" || (x.type === "file" && !folder)),
+						}));
+						paintRows();
 						if (known.length > 1) {
 							rootRow.replaceChildren(
-								...known.map(x =>
-									ui.button({
-										label: x.label,
-										primary: x.id === root,
-										onclick: () => load(x.id, ""),
-									}),
-								),
+								...(known.length > 2 || known.some(x => x.label.length > 20)
+									? [
+											ui.button({
+												label: "Locations",
+												onclick: () => {
+													mode = "roots";
+													pageIndex = 0;
+													paintRows();
+													focusSafely(() => ui.focus(lst));
+												},
+											}),
+										]
+									: known.map(x =>
+											ui.button({
+												label: x.label,
+												primary: x.id === root,
+												onclick: () => load(x.id, ""),
+											}),
+										)),
 							);
 							rootRow._fySync();
 						}
 						up.disabled = parent === null;
 						ok.disabled = !folder;
-						crumb.textContent =
+						const locationText =
 							[root].concat(path.split("/").filter(Boolean)).join(" / ") + (res.truncated ? "  (list shortened)" : "");
+						if (locationText.length > 35)
+							crumb.replaceChildren(ui.button({ label: "Location details", onclick: () => showDetails(locationText) }));
+						else crumb.textContent = locationText;
 						if (folder) focusSafely(() => ok.focus());
 						focusSafely(() => ui.focus(lst));
 						settle();

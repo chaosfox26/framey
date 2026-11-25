@@ -11,9 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import fy_pkg
-import fy_decky_catalog
-
-
+from decky_runtime import catalog as fy_decky_catalog
 def package(entries):
     result = io.BytesIO()
     with zipfile.ZipFile(result, "w") as output:

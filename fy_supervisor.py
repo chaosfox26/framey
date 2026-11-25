@@ -175,6 +175,13 @@ def _meta(meta):
             out[key] = value[:200]
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             out[key] = value
+    if "decky_compat" in meta or meta.get("_framey_decky_managed") is True:
+        marker = meta.get("decky_compat")
+        out["decky_compat"] = {
+            key: marker[key]
+            for key in ("profile", "runtime_abi", "wrapper_version")
+            if isinstance(marker, dict) and type(marker.get(key)) is int
+        }
     return out
 
 
@@ -437,6 +444,11 @@ class Supervisor:
         return BackendError("stopped", "module was stopped while starting")
 
     def _gate(self, w):
+        admitted = getattr(self.host, "backend_admitted", None)
+        if callable(admitted) and not admitted(w.pid):
+            raise BackendError(
+                "runtime_unavailable", "The module compatibility runtime is unavailable"
+            )
         if w.state == "failed":
             e = w.last_error or {}
             raise BackendError(
@@ -454,8 +466,7 @@ class Supervisor:
             raise self._stopped()
         if w.stopping or (w.uninstalling and not uninstall):
             raise BackendError("stopped", "module is being stopped")
-        if w.state in ("failed", "crashed"):
-            self._gate(w)
+        self._gate(w)
         if len(w.waiters) >= QUEUE_MAX:
             raise BackendError("busy", "module busy; too many pending calls")
         fut = asyncio.get_running_loop().create_future()
@@ -480,6 +491,11 @@ class Supervisor:
 
     def _pump(self, w):
         if self._closed or self._ws.get(w.pid) is not w:
+            return
+        try:
+            self._gate(w)
+        except BackendError as error:
+            self._fail_waiters(w, error)
             return
         while w.waiters:
             fut = w.waiters[0]
@@ -642,7 +658,7 @@ class Supervisor:
         )
 
     def _init_message(self, w, dirs):
-        return {
+        message = {
             "plugin": w.pid,
             "file": str(w.dir / "backend.py"),
             "dirs": {k: str(v) if v is not None else None for k, v in dirs._asdict().items()},
@@ -660,6 +676,13 @@ class Supervisor:
                 "memory_mb": w.lim["memory_mb"],
             },
         }
+
+        runtime = getattr(self.host, "backend_runtime", None)
+        if callable(runtime):
+            descriptor = runtime(w.pid)
+            if descriptor is not None:
+                message["runtime"]["decky_runtime"] = descriptor
+        return message
 
     async def _abort(self, w, proc=None):
         if proc is not None:
@@ -682,6 +705,7 @@ class Supervisor:
         await self._room(w, epoch)
         if self._gone(w, epoch):
             await self._abort(w)
+        self._gate(w)
         try:
             proc = await self._launch(w, dirs)
         except OSError as e:

@@ -20,8 +20,16 @@ SHA = "a" * 40
 
 
 def repo_files():
-    files = [f for f in REPO.iterdir() if f.is_file() and (f.suffix in (".py", ".js", ".svg"))]
-    return files + [REPO / "catalog" / "index.json"]
+    import ast
+
+    tree = ast.parse((REPO / "framey.py").read_text())
+    manifest = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(getattr(target, "id", None) == "MANIFEST" for target in node.targets)
+    )
+    return [REPO / name for name in (*manifest, "LICENSE")]
 
 
 def full_tree():
@@ -77,7 +85,9 @@ class Net:
         self.routes["https://api.github.com/repos/" + path] = json.dumps(value).encode()
 
     def commit(self, owner, repo, ref, sha):
-        self.routes["https://api.github.com/repos/%s/%s/commits/%s" % (owner, repo, ref)] = sha.encode()
+        self.routes["https://api.github.com/repos/%s/%s/commits/%s" % (owner, repo, ref)] = (
+            sha.encode()
+        )
 
     def archive(self, owner, repo, sha, data):
         self.routes["https://github.com/%s/%s/archive/%s.zip" % (owner, repo, sha)] = data
@@ -104,7 +114,9 @@ class Loader:
         pathlib.Path.home = classmethod(lambda cls: self.home)
         self.net = Net()
         self.errors = io.StringIO()
-        spec = importlib.util.spec_from_file_location("framey_j%d" % next(COUNT), self.root / "framey.py")
+        spec = importlib.util.spec_from_file_location(
+            "framey_j%d" % next(COUNT), self.root / "framey.py"
+        )
         self.fy = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.fy)
         self.fy.fetch = self.net
@@ -125,7 +137,9 @@ class Loader:
             if k == "safe":
                 (d / "safe").write_text("") if v else (d / "safe").unlink(missing_ok=True)
             elif k == "dev.enabled":
-                dev.write_text(dev.read_text() if dev.exists() else "{}") if v else dev.unlink(missing_ok=True)
+                dev.write_text(dev.read_text() if dev.exists() else "{}") if v else dev.unlink(
+                    missing_ok=True
+                )
             elif k == "dev.targets":
                 dev.write_text(json.dumps({"targets": v}))
             else:
@@ -134,7 +148,13 @@ class Loader:
             cfg.write_text(json.dumps(j))
 
     def prefs(self, **kw):
-        self.trust(**{k: kw.pop(k) for k in list(kw) if k in ("safe", "channel", "file_roots", "dev.enabled", "dev.targets")})
+        self.trust(
+            **{
+                k: kw.pop(k)
+                for k in list(kw)
+                if k in ("safe", "channel", "file_roots", "dev.enabled", "dev.targets")
+            }
+        )
         s = self.fy.settings()
         for k, v in kw.items():
             if "." in k:
@@ -193,9 +213,15 @@ class Page:
         self.sent.append(obj)
         p = obj["params"]
         if obj["method"] == "Runtime.evaluate" and p.get("returnByValue"):
-            self.q.put_nowait(json.dumps({"id": obj["id"], "result": {"result": {"value": self.probe}}}))
-        elif obj["method"] == "Runtime.evaluate" and p["expression"].startswith("(function(__fyt){"):
-            self.q.put_nowait(json.dumps({"id": obj["id"], "result": {"result": {"objectId": "core"}}}))
+            self.q.put_nowait(
+                json.dumps({"id": obj["id"], "result": {"result": {"value": self.probe}}})
+            )
+        elif obj["method"] == "Runtime.evaluate" and p["expression"].startswith(
+            "(function(__fyt){"
+        ):
+            self.q.put_nowait(
+                json.dumps({"id": obj["id"], "result": {"result": {"objectId": "core"}}})
+            )
 
     async def recv(self):
         return await self.q.get()
@@ -218,7 +244,14 @@ class Page:
             del req["t"]
         elif req.get("plugin") and "t" not in req:
             req["t"] = next((t for t, p in toks.items() if p == req["plugin"]), None)
-        self.q.put_nowait(json.dumps({"method": "Runtime.bindingCalled", "params": {"name": "fyCall", "payload": json.dumps(req)}}))
+        self.q.put_nowait(
+            json.dumps(
+                {
+                    "method": "Runtime.bindingCalled",
+                    "params": {"name": "fyCall", "payload": json.dumps(req)},
+                }
+            )
+        )
 
     def trace(self, since=0):
         out = []
@@ -228,7 +261,10 @@ class Page:
                 out.append(p["expression"])
             elif o["method"] == "Runtime.callFunctionOn":
                 decl = p.get("functionDeclaration", "")
-                kind = next((k for k in ("reply", "event", "bind", "dispose") if ("this.%s(" % k) in decl), "run" if decl == "function(p){return this(p)}" else "call")
+                kind = next(
+                    (k for k in ("reply", "event", "bind", "dispose") if ("this.%s(" % k) in decl),
+                    "run" if decl == "function(p){return this(p)}" else "call",
+                )
                 out.append((kind, [a.get("value", "<obj>") for a in p.get("arguments", [])]))
         return out
 
@@ -246,21 +282,26 @@ class PluginPage(Page):
         self.hold_runs = False
 
     def reply(self, obj, result=None, failure=False):
-        body = {'result': result or {}}
+        body = {"result": result or {}}
         if failure:
-            body['exceptionDetails'] = {'text': 'Uncaught', 'exception': {'description': 'Error: fixture failure'}}
-        self.q.put_nowait(json.dumps({'id': obj['id'], 'result': body}))
+            body["exceptionDetails"] = {
+                "text": "Uncaught",
+                "exception": {"description": "Error: fixture failure"},
+            }
+        self.q.put_nowait(json.dumps({"id": obj["id"], "result": body}))
 
     async def send(self, obj):
         await super().send(obj)
-        params = obj['params']
-        if obj['method'] == 'Runtime.evaluate' and params.get('expression', '').startswith('(function(Framey){'):
-            self.reply(obj, {'objectId': 'source-' + str(obj['id'])})
-        elif obj['method'] == 'Runtime.callFunctionOn':
-            declaration = params.get('functionDeclaration', '')
-            if 'this.bind(' in declaration:
-                self.reply(obj, {'objectId': 'api-' + str(obj['id'])})
-            elif declaration == 'function(p){return this(p)}':
+        params = obj["params"]
+        if obj["method"] == "Runtime.evaluate" and params.get("expression", "").startswith(
+            "(function(Framey){"
+        ):
+            self.reply(obj, {"objectId": "source-" + str(obj["id"])})
+        elif obj["method"] == "Runtime.callFunctionOn":
+            declaration = params.get("functionDeclaration", "")
+            if "this.bind(" in declaration:
+                self.reply(obj, {"objectId": "api-" + str(obj["id"])})
+            elif declaration == "function(p){return this(p)}":
                 self.runs.append(obj)
                 if not self.hold_runs:
                     self.reply(obj)
@@ -292,11 +333,23 @@ class WorldPage(Page):
         self.q.put_nowait(json.dumps({"method": method, "params": params}))
 
     def created(self, c):
-        self.emit("Runtime.executionContextCreated", context={"id": c.id, "origin": "https://steam", "name": c.name, "auxData": {"frameId": self.frame, "isDefault": not c.name}})
+        self.emit(
+            "Runtime.executionContextCreated",
+            context={
+                "id": c.id,
+                "origin": "https://steam",
+                "name": c.name,
+                "auxData": {"frameId": self.frame, "isDefault": not c.name},
+            },
+        )
 
     def sees(self, c, name):
         if name == "fyCall":
-            return name in self.plain or c.name in self.scoped.get(name, ()) and not self.opt.get("hide")
+            return (
+                name in self.plain
+                or c.name in self.scoped.get(name, ())
+                and not self.opt.get("hide")
+            )
         return name in c.globals
 
     def worlds(self):
@@ -323,7 +376,12 @@ class WorldPage(Page):
             req.setdefault("t", core)
         elif req.get("plugin") and "t" not in req:
             req["t"] = next((t for t, p in toks.items() if p == req["plugin"]), None)
-        self.emit("Runtime.bindingCalled", name="fyCall", payload=json.dumps(req), executionContextId=ctx.id)
+        self.emit(
+            "Runtime.bindingCalled",
+            name="fyCall",
+            payload=json.dumps(req),
+            executionContextId=ctx.id,
+        )
         return True
 
     def navigate(self, frame=None, announce=True):
@@ -346,7 +404,10 @@ class WorldPage(Page):
         if method in self.opt.get("silent", ()):
             return
         try:
-            out = {"id": obj["id"], "result": getattr(self, "m_" + method.replace(".", "_"), lambda p: {})(p)}
+            out = {
+                "id": obj["id"],
+                "result": getattr(self, "m_" + method.replace(".", "_"), lambda p: {})(p),
+            }
         except Fail as e:
             out = {"id": obj["id"], "error": {"code": -32000, "message": str(e)}}
         self.q.put_nowait(json.dumps(out))
@@ -391,10 +452,25 @@ class WorldPage(Page):
         e = p["expression"]
         if p.get("returnByValue"):
             name = e.rpartition(".")[2]
-            return {"result": {"type": "string", "value": "function" if name == "fyCall" and self.sees(c, name) else "object" if name in c.globals else "undefined"}}
+            return {
+                "result": {
+                    "type": "string",
+                    "value": "function"
+                    if name == "fyCall" and self.sees(c, name)
+                    else "object"
+                    if name in c.globals
+                    else "undefined",
+                }
+            }
         c.evals.append(e)
         if "THROW_ME" in e:
-            return {"result": {}, "exceptionDetails": {"text": "Uncaught", "exception": {"description": "Error: boom"}}}
+            return {
+                "result": {},
+                "exceptionDetails": {
+                    "text": "Uncaught",
+                    "exception": {"description": "Error: boom"},
+                },
+            }
         if self.opt.get("blind") and c.name:
             return {"result": {}}
         if e.startswith("(function(__fyt){"):
@@ -418,15 +494,23 @@ async def attach(loader, name="main", page=None):
     pages = getattr(loader, "pages", None)
     if pages is None:
         pages = loader.pages = {}
+
         async def fake_open(cls, url):
             return pages[url.rsplit("/", 1)[1]]
+
         fy.WS.open = classmethod(fake_open)
     pages[name] = page
     page.tok = fy.CORE_TOK
     page.toks = fy.TOKS
     page.fy = fy
-    code, probe = (fy.main_code, "typeof window.Framey") if name == "main" else (fy.bar_code, "typeof window.FYBar")
-    task = asyncio.create_task(fy.session(name, {"webSocketDebuggerUrl": "ws://x/" + name}, code, probe))
+    code, probe = (
+        (fy.main_code, "typeof window.Framey")
+        if name == "main"
+        else (fy.bar_code, "typeof window.FYBar")
+    )
+    task = asyncio.create_task(
+        fy.session(name, {"webSocketDebuggerUrl": "ws://x/" + name}, code, probe)
+    )
     for _ in range(100):
         await asyncio.sleep(0.02)
         if name in fy.LIVE and len(page.exprs()) > 2:

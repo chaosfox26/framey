@@ -816,7 +816,7 @@ const realCorePages = () => {
     box.append(button);
   } };
   const panel = [...d.body.children].find(el => el.getAttribute("aria-label") === "Framey");
-  const content = panel.children[0];
+  const content = panel.querySelector('[role="tabpanel"]');
   return { h, FY, d, panel, content, current: () => FY._k(TOK).tab() };
 };
 

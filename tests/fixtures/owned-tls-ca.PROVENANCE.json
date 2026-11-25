@@ -1,0 +1,41 @@
+{
+  "fixture": "owned-tls-ca.pem",
+  "purpose": "Public certificate fixture for offline client trust-store loading tests. No network or peer handshake is required.",
+  "certificate": {
+    "common_name": "ACCVRAIZ1",
+    "subject": {
+      "common_name": "ACCVRAIZ1",
+      "organizational_unit": "PKIACCV",
+      "organization": "ACCV",
+      "country": "ES"
+    },
+    "issuer": {
+      "common_name": "ACCVRAIZ1",
+      "organizational_unit": "PKIACCV",
+      "organization": "ACCV",
+      "country": "ES"
+    },
+    "serial_hex": "5EC3B7A6437FA4E0",
+    "pem_sha256": "04846f73d9d0421c60076fd02bad7f0a81a3f11a028d653b0de53290e41dcead",
+    "der_sha256": "9a6ec012e1a7da9dbe34194d478ad7c0db1822fb071df12981496ed104384113",
+    "material": "One public X.509 root certificate. No private key is included."
+  },
+  "public_source": {
+    "project": "Mozilla Network Security Services (NSS)",
+    "release_ref": "NSS_3_132_RTM",
+    "file": "lib/ckfw/builtins/certdata.txt",
+    "url": "https://raw.githubusercontent.com/nss-dev/nss/NSS_3_132_RTM/lib/ckfw/builtins/certdata.txt",
+    "entry": "ACCVRAIZ1",
+    "verification": "The certificate identity and DER SHA-256 fingerprint match the public ACCVRAIZ1 entry in this source."
+  },
+  "acquisition": {
+    "method": "An existing public certificate was extracted from the local platform default trust store using Python ssl.create_default_context().get_ca_certs(binary_form=True) and serialized with ssl.DER_cert_to_PEM_cert.",
+    "generation": "The fixture acquisition did not generate a certificate or private key.",
+    "ownership": "Owned refers to the test copy and its selection. Framey did not author, generate, or acquire ownership of the ACCVRAIZ1 trust anchor."
+  },
+  "source_license_metadata": {
+    "nss_certdata_source_header": "Mozilla Public License, version 2.0 (MPL-2.0).",
+    "local_distribution_package_declared_license": "MPL-2.0 for the containing ca-certificates-mozilla package.",
+    "qualification": "These are source-file and containing-package license metadata. They are not a separate license determination for the certificate, a public-domain claim, a relicensing claim, or legal clearance."
+  }
+}

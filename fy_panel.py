@@ -1,12 +1,13 @@
 import asyncio
 import copy
 import inspect
+import math
 
 import fy_overlay
 import fy_overlay_browser
 
 
-MODES = ("embedded", "dashboard", "floating")
+MODES = ("embedded", "dashboard", "floating", "compact", "window")
 POLL_INTERVAL = 0.5
 ALIGN_INTERVAL = 1.0
 FIND_TIMEOUT = 1.0
@@ -16,6 +17,7 @@ CLOSE_TIMEOUT = 1.0
 VISIBILITY_ATTEMPTS = 5
 VISIBILITY_INTERVAL = 0.05
 ERROR = "Framey's separate panel is unavailable. Use the Steam panel or retry."
+TARGET_ERROR = "Framey cannot place a page beside this app yet. Return to the launcher and retry with Steam open."
 INPUT_NOTICE = (
     "Controller pointers may interrupt game controls while the floating panel is visible."
 )
@@ -26,6 +28,10 @@ class _Failure(Exception):
 
 
 class _Superseded(Exception):
+    pass
+
+
+class _TargetUnavailable(_Failure):
     pass
 
 
@@ -62,17 +68,34 @@ class Controller:
         self._shown = self._interactive = self._ui_visible = None
         self._last_align = 0.0
         self._last_poll = 0.0
+        self._anchor_x = 0.5
+        self._launcher_width = 382
+        self._launcher_flow = False
+        self._launcher_task = None
+        self._prepared_width = None
 
     def status(self):
-        pending = not self._closed and (self._pending is not None or self._busy or self._applying)
+        pending = not self._closed and (
+            self._pending is not None
+            or self._busy
+            or self._applying
+            or self._launcher_task is not None
+        )
         result = {
             "mode": self.mode,
+            "layout": "compact" if self.mode == "compact" else "window",
+            "placements": {"compact": bool(self.supported), "window": bool(self.supported)},
+            "target_scope": "steam",
             "available": bool(self.available),
             "active": bool(self.visible),
             "visible": bool(self.visible),
             "open": self._open,
             "pending": pending,
-            "requested_mode": (self._pending["mode"] if self._pending else self._requested)
+            "requested_mode": (
+                self._pending["mode"]
+                if self._pending
+                else self._requested or ("compact" if self._launcher_task is not None else None)
+            )
             if pending
             else None,
             "supported": bool(self.supported),
@@ -122,7 +145,7 @@ class Controller:
                 result.get("ok") is False or result.get("available") is False
             ):
                 raise _Failure()
-            if name in ("dashboard_visible", "own_visible") and (
+            if name in ("dashboard_visible", "own_visible", "steam_visible") and (
                 type(result) is not bool or getattr(native, "last_error", None)
             ):
                 raise _Failure()
@@ -151,12 +174,13 @@ class Controller:
                 except Exception:
                     pass
         self._native = None
+        self._prepared_width = None
         self._shown = self._interactive = None
 
-    async def _browser_call(self, name):
+    async def _browser_call(self, name, *args):
         if self._closed or self._browser is None:
             raise _Failure()
-        result = await getattr(self._browser, name)()
+        result = await getattr(self._browser, name)(*args)
         if not isinstance(result, dict) or result.get("ok") is not True:
             raise _Failure()
         return result
@@ -171,27 +195,145 @@ class Controller:
         if self._browser_closing is not None:
             await asyncio.wait((self._browser_closing,), timeout=CLOSE_TIMEOUT)
 
+    async def _prepare_native(self, mode):
+        if self._closed or not self.supported:
+            raise _Failure()
+        self._native = self._native_factory(enabled=True)
+        await self._native_call("probe")
+        if self._closed:
+            raise _Failure()
+        self._browser = self._browser_factory(self.host)
+        target = await self._resolve_target() if mode == "window" else None
+        if mode == "compact":
+            await self._browser_call("ensure", "compact", self._launcher_width)
+            self._prepared_width = self._launcher_width
+        else:
+            await self._browser_call("ensure")
+            self._prepared_width = None
+        if self._closed:
+            raise _Failure()
+        async with asyncio.timeout(FIND_TIMEOUT):
+            while not await self._native_call("find_own"):
+                await asyncio.sleep(0.1)
+        if target is not None:
+            await self._native_call("position_right", target)
+        else:
+            await self._position(mode)
+        self._last_align = asyncio.get_running_loop().time()
+        self.available = True
+
+    async def _position(self, mode):
+        if mode == "compact":
+            await self._native_call("position_above_bar", self._anchor_x, self._launcher_width)
+        elif mode == "window":
+            await self._native_call("position_right", await self._resolve_target())
+        else:
+            await self._native_call("position_right")
+
+    async def _resolve_target(self):
+        if self._browser is None or not callable(getattr(self._browser, "active_target", None)):
+            raise _TargetUnavailable()
+        target = await self._browser.active_target()
+        if (
+            not isinstance(target, dict)
+            or target.get("ok") is not True
+            or target.get("target") != "steam"
+        ):
+            raise _TargetUnavailable()
+        # Steam can hide this overlay while its popup windows change. App focus
+        # identifies the target; positioning validates its geometry, and the
+        # dashboard visibility check controls when Framey's window is shown.
+        return fy_overlay.STEAM_KEY
+
+    async def toggle_launcher(self, anchor_x=0.5):
+        if (
+            isinstance(anchor_x, bool)
+            or not isinstance(anchor_x, (int, float))
+            or not math.isfinite(anchor_x)
+            or not 0 <= anchor_x <= 1
+        ):
+            return dict(self.status(), error="Launcher position is invalid.", code="bad_anchor")
+        if self._closed:
+            return dict(self.status(), error="Framey's panel is shutting down.", code="closed")
+        if self._transition_busy():
+            return dict(self.status(), error="A panel change is already pending.", code="busy")
+        self._launcher_task = asyncio.current_task()
+        try:
+            result = await self._toggle_launcher(anchor_x)
+        finally:
+            self._launcher_task = None
+        return dict(result, pending=self.status()["pending"])
+
+    async def _toggle_launcher(self, anchor_x):
+        self._launcher_flow = True
+        self._anchor_x = anchor_x
+        if self.mode == "compact" and self._open:
+            await self._call("ui_panel_route", None)
+            await self._call("panel", False)
+            return self.status()
+        width_reader = getattr(self.host, "launcher_width", None)
+        try:
+            width = await _await(width_reader()) if callable(width_reader) else 382
+        except Exception:
+            width = 382
+        if self._closed:
+            return dict(self.status(), error="Framey's panel is shutting down.", code="closed")
+        self._launcher_width = width if type(width) is int and 382 <= width <= 662 else 382
+        await self._call("panel", True)
+        prepared = await self.request("compact")
+        if prepared.get("error"):
+            if not self._closed and prepared.get("code") != "busy":
+                await self._call("panel", False)
+            return prepared
+        if self._pending is not None:
+            self._pending["state"].update(tab="#launcher", open=True)
+            applied = await self.apply_pending()
+            if applied.get("error"):
+                return applied
+        await self._call("ui_panel_route", "#launcher")
+        return self.status()
+
+    async def launch(self, route):
+        allowed = getattr(self.host, "panel_route_allowed", None)
+        if not callable(allowed) or not await _await(allowed(route)):
+            return dict(self.status(), error="This launcher page is unavailable.", code="bad_route")
+        self._launcher_flow = True
+        prepared = await self.request("window")
+        if prepared.get("error"):
+            return prepared
+        if self._pending is not None:
+            self._pending["state"].update(tab=route, open=True)
+        else:
+            await self._call("ui_panel_route", route)
+        return dict(self.status(), ok=True)
+
+    def _transition_busy(self):
+        return bool(
+            self._busy
+            or self._applying
+            or self._pending
+            or self._launcher_task is not None
+            and self._launcher_task is not asyncio.current_task()
+            or self._cleanup is not None
+            and not self._cleanup.done()
+            or self._browser_closing is not None
+            and not self._browser_closing.done()
+        )
+
     async def request(self, arg=None):
         mode = arg.get("mode") if isinstance(arg, dict) else arg
         if mode not in MODES:
             return dict(
                 self.status(),
-                error="Choose embedded, dashboard, or floating panel mode.",
+                error="Choose Above bottom bar or Beside active app.",
                 code="bad_mode",
             )
         if self._closed:
             return dict(self.status(), error="Framey's panel is shutting down.", code="closed")
-        if (
-            self._busy
-            or self._applying
-            or self._pending
-            or self._cleanup is not None
-            and not self._cleanup.done()
-            or self._browser_closing is not None
-            and not self._browser_closing.done()
-        ):
+        if self._transition_busy():
             return dict(self.status(), error="A panel change is already pending.", code="busy")
-        if mode == self.mode:
+        resize_launcher = mode == "compact" and self._prepared_width != self._launcher_width
+        if mode == self.mode and not resize_launcher:
             return self.status()
         self._busy, self._requested = True, mode
         try:
@@ -201,23 +343,10 @@ class Controller:
             state = dict(state) if isinstance(state, dict) else {}
             self._open = getattr(self.host, "PANEL", False) is True
             state["open"] = self._open
+            if mode == "window" and self.mode != "embedded":
+                await self._resolve_target()
             if mode != "embedded" and self.mode == "embedded":
-                if not self.supported:
-                    raise _Failure()
-                self._native = self._native_factory(enabled=True)
-                await self._native_call("probe")
-                if self._closed:
-                    raise _Failure()
-                self._browser = self._browser_factory(self.host)
-                await self._browser_call("ensure")
-                if self._closed:
-                    raise _Failure()
-                async with asyncio.timeout(FIND_TIMEOUT):
-                    while not await self._native_call("find_own"):
-                        await asyncio.sleep(0.1)
-                await self._native_call("position_right")
-                self._last_align = asyncio.get_running_loop().time()
-                self.available = True
+                await self._prepare_native(mode)
             if self._closed:
                 raise _Failure()
             self._pending = {"mode": mode, "state": state}
@@ -228,12 +357,18 @@ class Controller:
                 self._retire()
                 await self._close_browser()
             raise
-        except Exception:
-            self.error, self.available = ERROR, False
+        except Exception as error:
+            target_failed = isinstance(error, _TargetUnavailable)
+            self.error, self.available = TARGET_ERROR if target_failed else ERROR, False
             if self.mode == "embedded":
                 self._retire()
                 await self._close_browser()
-            return dict(self.status(), pending=False, requested_mode=None, code="unavailable")
+            return dict(
+                self.status(),
+                pending=False,
+                requested_mode=None,
+                code="target_unavailable" if target_failed else "unavailable",
+            )
         finally:
             self._busy = False
             self._requested = None
@@ -274,6 +409,21 @@ class Controller:
         try:
             dashboard = await native("dashboard_visible") if opened else False
             wanted = opened and (mode == "floating" or dashboard)
+            now = asyncio.get_running_loop().time()
+            if (
+                wanted
+                and dashboard
+                and (self._shown is not True or now - self._last_align >= ALIGN_INTERVAL)
+            ):
+                if mode == "compact":
+                    await native("position_above_bar", self._anchor_x, self._launcher_width)
+                elif mode == "window":
+                    target = await self._resolve_target()
+                    check()
+                    await native("position_right", target)
+                else:
+                    await native("position_right")
+                self._last_align = now
             if not wanted and self._interactive is not False:
                 await native("interactive", False)
                 self._interactive = False
@@ -296,10 +446,6 @@ class Controller:
             if self._interactive != interactive:
                 await native("interactive", interactive)
                 self._interactive = interactive
-            now = asyncio.get_running_loop().time()
-            if wanted and dashboard and now - self._last_align >= ALIGN_INTERVAL:
-                await native("position_right")
-                self._last_align = now
             await self._publish_visibility(visible)
             check()
             return True
@@ -318,22 +464,22 @@ class Controller:
     async def _fallback(self, state):
         self.error, self.available = ERROR, False
         self.mode = "embedded"
+        if self._launcher_flow:
+            self._open = False
+        state = dict(state, layout="window", open=self._open)
         self._revision += 1
         try:
             if not self._closed:
                 await asyncio.wait_for(
-                    self._call("switch_panel_surface", "main", state), SWITCH_TIMEOUT
+                    self._call(
+                        "switch_panel_surface", "none" if self._launcher_flow else "main", state
+                    ),
+                    SWITCH_TIMEOUT,
                 )
                 if not self._closed:
                     await self._publish_visibility(self._open)
         except Exception:
             self.visible = False
-        else:
-            if not self._closed:
-                try:
-                    await self._save_mode("embedded")
-                except Exception:
-                    self.error = ERROR
         self._retire()
         await self._close_browser()
 
@@ -351,9 +497,28 @@ class Controller:
         self._applying = True
         self._revision += 1
         self._open = getattr(self.host, "PANEL", False) is True
-        state = dict(pending["state"], open=self._open)
+        state: dict[str, object] = dict(pending["state"], open=self._open)
         mode = pending["mode"]
         try:
+            resize_launcher = (
+                mode == self.mode == "compact" and self._prepared_width != self._launcher_width
+            )
+            if (self.mode == "compact") != (mode == "compact") or resize_launcher:
+                state["layout"] = "compact" if mode == "compact" else "window"
+                if self.mode != "embedded" and mode != "embedded":
+                    await self._call(
+                        "switch_panel_surface", "none" if self._launcher_flow else "main", state
+                    )
+                    if self._closed:
+                        raise _Failure()
+                    self.mode = "embedded"
+                    await asyncio.wait_for(asyncio.shield(self._retire()), NATIVE_TIMEOUT)
+                    await self._close_browser()
+                    if self._closed:
+                        raise _Failure()
+                    if self._browser_closing is not None and not self._browser_closing.done():
+                        raise _Failure()
+                    await self._prepare_native(mode)
             if (self.mode == "embedded") != (mode == "embedded"):
                 await asyncio.wait_for(
                     self._call(
@@ -416,7 +581,7 @@ class Controller:
                 except asyncio.TimeoutError:
                     pass
                 continue
-            if not self._busy and not self._applying and self._pending is None:
+            if not self._transition_busy():
                 try:
                     await self._sync_native()
                 except asyncio.CancelledError:
@@ -457,7 +622,12 @@ class Controller:
         except Exception:
             mode = "embedded"
         if mode in MODES and mode != "embedded" and not self._closed:
-            await self.request(mode)
+            requested = await self.request(mode)
+            if requested.get("error"):
+                self.error = (
+                    TARGET_ERROR if requested.get("code") == "target_unavailable" else ERROR
+                )
+                return self.status()
             return await self.apply_pending()
         return self.status()
 
@@ -494,4 +664,9 @@ async def panel_mode(host, arg=None):
     return await get(host).request(arg)
 
 
-METHODS = {"panel_status": panel_status, "panel_mode": panel_mode}
+async def panel_launch(host, arg=None):
+    route = arg.get("route") if isinstance(arg, dict) and set(arg) == {"route"} else None
+    return await get(host).launch(route)
+
+
+METHODS = {"panel_status": panel_status, "panel_mode": panel_mode, "panel_launch": panel_launch}

@@ -9,9 +9,14 @@ LIBRARY = "/opt/steamvr/bin/linuxarm64/libopenvr_api.so"
 VERSION = b"IVROverlay_027"
 OWN_KEY = b"framey.panel"
 STEAM_KEY = b"valve.steam.gamepadui.main"
+BAR_KEY = b"valve.steam.gamepadui.bar"
 STANDING = 1
-WIDTH_RATIO = 542 / 1280
+WIDTH_RATIO = 800 / 1280
+LAUNCHER_MIN_WIDTH = 382
+LAUNCHER_MAX_WIDTH = 662
+LAUNCHER_HEIGHT = 140
 GAP = 0.04
+BAR_GAP = 0.01
 INTERACTIVE = 65536
 
 
@@ -47,7 +52,7 @@ class _Failure(Exception):
     pass
 
 
-def _right_pose(pose, width):
+def _frame(pose, width):
     if not math.isfinite(width) or width <= 0:
         raise _Failure("Steam panel size is unavailable")
     values = [[float(pose.m[r][k]) for k in range(4)] for r in range(3)]
@@ -71,13 +76,14 @@ def _right_pose(pose, width):
     )
     if abs(det - 1) > 0.02:
         raise _Failure("Steam panel pose is invalid")
-    world_width = width * scale
-    own_width = c.c_float(world_width * WIDTH_RATIO).value
-    offset = world_width / 2 + own_width / 2 + GAP
+    return values, rotation, width * scale
+
+
+def _placed_pose(values, rotation, axis, offset, own_width):
     out = Matrix34()
     for r in range(3):
         for k in range(4):
-            out.m[r][k] = values[r][3] + offset * rotation[r][0] if k == 3 else rotation[r][k]
+            out.m[r][k] = values[r][3] + offset * rotation[r][axis] if k == 3 else rotation[r][k]
     if (
         not math.isfinite(own_width)
         or own_width <= 0
@@ -85,6 +91,20 @@ def _right_pose(pose, width):
     ):
         raise _Failure("Steam panel pose is invalid")
     return own_width, out
+
+
+def _right_pose(pose, width):
+    values, rotation, world_width = _frame(pose, width)
+    own_width = c.c_float(world_width * WIDTH_RATIO).value
+    offset = world_width / 2 + own_width / 2 + GAP
+    return _placed_pose(values, rotation, 0, offset, own_width)
+
+
+def _above_pose(pose, width, launcher_width=LAUNCHER_MIN_WIDTH):
+    values, rotation, world_width = _frame(pose, width)
+    own_width = c.c_float(world_width * launcher_width / 1280).value
+    offset = own_width * LAUNCHER_HEIGHT / launcher_width / 2 + BAR_GAP
+    return _placed_pose(values, rotation, 1, offset, own_width)
 
 
 class NativeOverlay:
@@ -245,18 +265,28 @@ class NativeOverlay:
                 self.error = "Native panel operation failed"
             return {"ok": False, "error": self.error}
 
-    def position_right(self):
+    def _position(self, target_key, anchor, build_pose):
+        if (
+            not isinstance(target_key, bytes)
+            or not 1 <= len(target_key) <= 127
+            or target_key == OWN_KEY
+            or not all(32 <= byte <= 126 for byte in target_key)
+        ):
+            return {"ok": False, "error": "Target panel key is invalid"}
+
         def operation():
-            own, steam = self._find(OWN_KEY), self._find(STEAM_KEY)
-            if own == steam:
+            own, target = self._find(OWN_KEY), self._find(target_key)
+            if own == target:
                 raise _Failure("Framey panel ownership is invalid")
             width, pose = c.c_float(), Matrix34()
-            if self._api["width"](steam, c.byref(width)):
-                raise _Failure("Steam panel size is unavailable")
-            center = Vector2((c.c_float * 2)(0.5, 0.5))
-            if self._api["coordinates"](steam, STANDING, center, c.byref(pose)):
-                raise _Failure("Steam panel pose is unavailable")
-            own_width, positioned = _right_pose(pose, width.value)
+            if self._api["width"](target, c.byref(width)):
+                raise _Failure("Target panel size is unavailable")
+            coordinates = Vector2((c.c_float * 2)(*anchor))
+            if self._api["coordinates"](target, STANDING, coordinates, c.byref(pose)):
+                raise _Failure("Target panel pose is unavailable")
+            own_width, positioned = build_pose(pose, width.value)
+            if self._find(target_key) != target:
+                raise _Failure("Target panel changed before the operation")
             self._own(own)
             if self._api["set_width"](own, own_width):
                 raise _Failure("Framey panel size could not be set")
@@ -265,6 +295,28 @@ class NativeOverlay:
                 raise _Failure("Framey panel position could not be set")
 
         return self._result(operation)
+
+    def position_right(self, target_key=STEAM_KEY):
+        return self._position(target_key, (0.5, 0.5), _right_pose)
+
+    def position_above_bar(self, anchor_x=0.5, launcher_width=LAUNCHER_MIN_WIDTH):
+        if (
+            isinstance(anchor_x, bool)
+            or not isinstance(anchor_x, (int, float))
+            or not math.isfinite(anchor_x)
+            or not 0 <= anchor_x <= 1
+        ):
+            return {"ok": False, "error": "Bar anchor is invalid"}
+        if (
+            type(launcher_width) is not int
+            or not LAUNCHER_MIN_WIDTH <= launcher_width <= LAUNCHER_MAX_WIDTH
+        ):
+            return {"ok": False, "error": "Launcher size is invalid"}
+        return self._position(
+            BAR_KEY,
+            (anchor_x, 1.0),
+            lambda pose, width: _above_pose(pose, width, launcher_width),
+        )
 
     def _action(self, name, *args):
         def operation():
@@ -306,3 +358,16 @@ class NativeOverlay:
 
     def own_visible(self):
         return self._visible(True)
+
+    def steam_visible(self):
+        with _SESSION:
+            try:
+                self._ready()
+                visible = bool(self._api["visible"](self._find(STEAM_KEY)))
+                self.error = None
+                return visible
+            except _Failure as error:
+                self.error = str(error)
+            except Exception:
+                self.error = "Target panel visibility is unavailable"
+            return False

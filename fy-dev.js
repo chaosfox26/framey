@@ -3,10 +3,10 @@
 	const privateApi = framey && framey._k && framey._k(typeof __fyt === "string" ? __fyt : "");
 	if (!privateApi || framey.devReady) return;
 	framey.devReady = true;
-	const RED = "#ff7a7a",
-		GREEN = "#7adf9a",
-		GREY = "#8a8aa0",
-		BLUE = "#5585ff";
+	const RED = "#ff35c8",
+		GREEN = "#fff",
+		GREY = "#fff",
+		BLUE = "#075bff";
 	const EXPOSURE = {
 		exposed: ["Debug port is open to other devices", RED],
 		loopback: ["Debug port is reachable from this device only", GREEN],
@@ -53,7 +53,7 @@
 		b.dataset.fy = "core";
 		b.tabIndex = 0;
 		b.style.cssText =
-			"font:inherit;font-weight:700;color:#fff;background:#2a2a3a;border:0;border-radius:12px;padding:10px 18px;min-height:48px;" +
+			"font:inherit;font-weight:700;color:#fff;background:#075bff;border:0;border-radius:12px;padding:10px 18px;min-height:48px;" +
 			(css || "");
 		b.textContent = label;
 		b.addEventListener("click", ev => __trusted(ev) && fn(ev));
@@ -70,38 +70,66 @@
 			report("Copy failed: " + failure(e).error, true);
 		}
 	};
-	const head = text => mk("font-size:22px;font-weight:700;margin-bottom:6px", text);
-	const note = (text, color) => mk("font-size:18px;overflow-wrap:anywhere;color:" + (color || GREY), text);
+	const head = text => mk("font-size:20px;font-weight:700", text);
+	const note = (text, color) =>
+		mk("font-size:18px;line-height:1.2;white-space:pre-wrap;overflow-wrap:anywhere;color:" + (color || GREY), text);
+
+	const pieces = value => {
+		const result = [];
+		let part = "",
+			lines = 1,
+			columns = 0;
+		for (const c of String(value || "")) {
+			if ((c === "\n" || columns >= 14) && lines >= 3) {
+				result.push(part);
+				part = "";
+				lines = 1;
+				columns = 0;
+			}
+			if (columns >= 14) {
+				columns = 0;
+				lines++;
+			}
+			part += c;
+			if (c === "\n") {
+				lines++;
+				columns = 0;
+			} else columns++;
+		}
+		if (part) result.push(part);
+		return result;
+	};
+	const addNotes = (box, text, color) => pieces(text).forEach(part => box.append(note(part, color)));
 
 	const paintExposure = (box, st) => {
 		box.replaceChildren();
 		const e = EXPOSURE[st && st.exposure && st.exposure.state];
 		if (!e) return;
-		const row = mk("border:3px solid " + e[1] + ";border-radius:14px;padding:12px");
+		const row = mk("border:3px solid " + e[1] + ";border-radius:12px;padding:6px");
 		row.append(mk("font-size:20px;font-weight:700;color:" + e[1], e[0]));
 		const addr = (st.exposure.addresses || []).slice(0, 16).join(", ");
 		if (st.exposure.state === "exposed") {
-			row.append(
-				note(
-					"Listening on " +
-						addr +
-						". Anyone who can reach this device on your network could control Steam's interface. Framey does not open or close this port; Steam owns it.",
-				),
+			addNotes(
+				box,
+				"Listening on " +
+					addr +
+					". Anyone who can reach this device on your network could control Steam's interface. Framey does not open or close this port; Steam owns it.",
 			);
-		} else if (addr) row.append(note(addr));
-		box.append(row);
+		} else if (addr) addNotes(box, addr);
+		box.prepend(row);
 	};
 
 	const paintHot = (box, st, list, again, view) => {
 		st = st && typeof st === "object" ? st : {};
 		box.replaceChildren(head("Hot reload"));
-		if (st.error) return box.append(note("Failed: " + st.error, RED));
-		if (st.warning) box.append(note(cut(st.warning, 200), "#e0a030"));
+		if (st.error) return addNotes(box, "Failed: " + cut(st.error, 200), RED);
+		if (st.warning) addNotes(box, cut(st.warning, 200), RED);
 		if (!st.enabled) return box.append(note("Developer mode is off."));
-		box.append(
-			note("Reloads a module when its files change. Each switch turns itself off after an hour without changes."),
+		addNotes(
+			box,
+			"Reloads a module when its files change. Each switch turns itself off after an hour without changes.",
 		);
-		if (list && list.error) return box.append(note("Could not load modules: " + cut(list.error, 200), RED));
+		if (list && list.error) return addNotes(box, "Could not load modules: " + cut(list.error, 200), RED);
 		const on = new Map(
 			(Array.isArray(st.hot) ? st.hot : []).filter(h => h && typeof h === "object").map(h => [h.id, h]),
 		);
@@ -114,6 +142,7 @@
 					cut(m.name || m.id, 60) +
 					(h ? "  (" + cut(h.mode, 20) + ", " + Math.ceil((+h.remaining_s || 0) / 60) + " min left)" : "");
 				const row = mk("display:flex;align-items:center;gap:10px;margin-top:8px");
+				row.dataset.devModule = m.id;
 				const toggle = btn(
 					h ? "On" : "Off",
 					() => {
@@ -140,17 +169,20 @@
 				toggle.setAttribute("aria-pressed", String(!!h));
 				toggle.disabled = view.pending.has(m.id);
 				if (toggle.disabled) toggle.setAttribute("aria-busy", "true");
-				row.append(mk("flex:1;font-size:20px;overflow-wrap:anywhere", label), toggle);
+				if (label.length > 28 || /[\r\n]/.test(label)) {
+					addNotes(box, label);
+					row.append(toggle);
+				} else row.append(mk("flex:1;font-size:20px;overflow-wrap:anywhere", label), toggle);
 				box.append(row);
 			});
 	};
 
 	const paintTargets = (box, r, view) => {
 		box.replaceChildren();
-		if (r.error) box.append(note(cut(r.error, 200), RED));
+		if (r.error) addNotes(box, cut(r.error, 200), RED);
 		const targets = (Array.isArray(r.targets) ? r.targets : []).filter(t => t && typeof t === "object").slice(0, 64);
 		targets.forEach(t => {
-			const row = mk("margin-top:8px;background:#181826;border-radius:12px;padding:10px");
+			const row = mk("");
 			const inspector = cut(t.inspector, 4096);
 			const button = btn(
 				"Copy address",
@@ -160,16 +192,14 @@
 				"margin-top:6px",
 			);
 			button.disabled = !inspector;
-			row.append(
-				mk("font-size:20px;font-weight:700", cut(t.name || "other", 80) + (t.title ? ": " + cut(t.title, 200) : "")),
-				note(cut(t.url, 4096)),
-				note(inspector, "#8fb0ff"),
-				button,
-			);
+			addNotes(row, cut(t.name || "other", 80) + (t.title ? ": " + cut(t.title, 200) : ""));
+			addNotes(row, cut(t.url, 4096));
+			addNotes(row, inspector, "#fff");
+			row.append(button);
 			box.append(row);
 		});
 		if (r.available && !targets.length) box.append(note("The port answered but lists no targets."));
-		if (r.hint) box.append(note(r.hint));
+		if (r.hint) addNotes(box, r.hint);
 	};
 
 	const snapshot = () =>
@@ -197,16 +227,16 @@
 			reportCode: "developer_diagnostics",
 		};
 		live = view;
-		box.replaceChildren(
-			mk("font-size:28px;font-weight:700", "Developer"),
-			note("For plugin authors. Nothing here runs by itself; it updates when you press a button."),
-		);
+		box.replaceChildren();
+		box.style.cssText += ";height:100%;min-height:0;overflow:hidden";
 		const expo = mk("margin-top:12px"),
 			hot = mk("margin-top:16px"),
 			dbg = mk("margin-top:16px"),
 			dg = mk("margin-top:16px");
 		view.alive = () => live === view && box.isConnected && box.contains(hot);
 		const feedback = note("");
+		feedback.hidden = true;
+		const feedbackPages = mk("");
 		feedback.setAttribute("role", "status");
 		feedback.setAttribute("aria-live", "polite");
 		view.reporter = () => {
@@ -215,6 +245,9 @@
 				if (!view.alive() || request !== view.feedback) return;
 				feedback.textContent = message;
 				feedback.style.color = failed ? RED : GREEN;
+				feedbackPages.replaceChildren();
+				addNotes(feedbackPages, message, failed ? RED : GREEN);
+				view.layout();
 			};
 		};
 		view.failure = code => {
@@ -236,16 +269,19 @@
 				if (r.error) view.failure("developer_debug_targets_failed");
 				else view.clearFailure("developer_debug_targets_failed");
 				paintTargets(targets, r, view);
+				view.layout();
 			});
 		});
 		dbg.append(head("Debug targets"), find, targets);
 		const out = document.createElement("textarea");
 		out.readOnly = true;
 		out.setAttribute("aria-label", "Diagnostics output");
-		out.rows = 12;
+		out.rows = 3;
+		out.hidden = true;
+		const diagnosticPages = mk("");
 		out.dataset.fy = "core";
 		out.style.cssText =
-			"width:100%;box-sizing:border-box;margin-top:8px;font:14px monospace;background:#101018;color:#fff;border:1px solid #2a2a3a;border-radius:8px";
+			"width:100%;box-sizing:border-box;margin-top:8px;font:14px monospace;background:#000;color:#fff;border:1px solid #2a2a3a;border-radius:8px";
 		const run = btn("Run diagnostics", () => {
 			if (!view.alive() || run.disabled) return;
 			run.disabled = true;
@@ -257,6 +293,18 @@
 				run.disabled = false;
 				run.removeAttribute("aria-busy");
 				out.value = r.text;
+				diagnosticPages.replaceChildren();
+				pieces(r.text).forEach((part, index, parts) => {
+					const area = document.createElement("textarea");
+					area.dataset.fy = "core";
+					area.readOnly = true;
+					area.rows = 3;
+					area.value = part;
+					area.setAttribute("aria-label", "Diagnostics part " + (index + 1) + " of " + parts.length);
+					area.style.cssText =
+						"width:100%;height:82px;box-sizing:border-box;resize:none;overflow:hidden;font:18px monospace;background:#000;color:#fff;border:1px solid #ff35c8";
+					diagnosticPages.append(area);
+				});
 				if (r.error) view.failure("developer_diagnostics_failed");
 				else view.clearFailure("developer_diagnostics_failed");
 				report(r.error ? "Diagnostics failed: " + cut(r.error, 200) : "Diagnostics ready.", !!r.error);
@@ -310,7 +358,74 @@
 		const reload = btn("Refresh status", () => {
 			if (view.alive()) refresh();
 		});
-		box.append(feedback, reload, expo, hot, dbg, dg);
+		box.append(feedback, feedbackPages, reload, expo, hot, dbg, dg, diagnosticPages);
+		let pageIndex = 0;
+		view.layout = focusedModule => {
+			if (!view.alive()) return;
+			const pages = [
+				reload,
+				...feedbackPages.children,
+				...expo.children,
+				...hot.children,
+				...Array.from(dbg.children).filter(node => node !== targets),
+				...Array.from(targets.children).flatMap(node =>
+					node.childElementCount && node.querySelector("button") ? [...node.children] : [node],
+				),
+				...Array.from(dg.children)
+					.filter(node => node !== diagnosticActions && node !== out)
+					.flatMap(node => {
+						if (node.dataset.devExplanation === "true") return [...node.children];
+						if (node.textContent.length <= 80 || node.children.length) return [node];
+						node.dataset.devExplanation = "true";
+						const parts = pieces(node.textContent).map(part => note(part));
+						node.replaceChildren(...parts);
+						return parts;
+					}),
+				...diagnosticActions.children,
+				...diagnosticPages.children,
+			];
+			if (typeof focusedModule === "string") {
+				const target = pages.findIndex(node => node.dataset.devModule === focusedModule);
+				if (target >= 0) pageIndex = target;
+			}
+			pageIndex = Math.max(0, Math.min(pageIndex, pages.length - 1));
+			pages.forEach((node, index) => {
+				node.hidden = index !== pageIndex;
+				node.style.display = node.hidden ? "none" : "";
+				node.style.marginTop = node.style.marginBottom = "0";
+			});
+			[expo, hot, dbg, dg, targets, diagnosticActions].forEach(node => {
+				node.style.marginTop = "0";
+			});
+			if (typeof privateApi.setPageNavigation === "function")
+				privateApi.setPageNavigation({
+					index: pageIndex,
+					count: pages.length,
+					title: hot.contains(pages[pageIndex])
+						? "Developer · Hot reload"
+						: dbg.contains(pages[pageIndex])
+							? "Developer · Debug targets"
+							: dg.contains(pages[pageIndex]) || diagnosticPages.contains(pages[pageIndex])
+								? "Developer · Diagnostics"
+								: "Developer",
+					label: "Developer",
+					onPage: index => {
+						if (!view.alive()) return;
+						pageIndex = index;
+						view.layout();
+						const current = pages[pageIndex];
+						const target = current.matches("button,textarea") ? current : current.querySelector("button,textarea");
+						if (target && !target.disabled) target.focus({ preventScroll: true });
+					},
+					onBack: () => {
+						if (pageIndex === 0) return framey.open("#settings");
+						pageIndex = 0;
+						view.layout();
+					},
+					onLayout: () => view.layout(),
+				});
+		};
+		view.layout();
 		const refresh = () => {
 			const request = ++view.refresh;
 			return Promise.all([ask("dev_status"), ask("list")]).then(([st, list]) => {
@@ -322,8 +437,11 @@
 					view.clearFailure("developer_module_list_failed");
 				}
 				const at = [...hot.querySelectorAll("button")].indexOf(document.activeElement);
+				const focusedRow = at >= 0 && document.activeElement.closest("[data-dev-module]");
+				const focusedModule = focusedRow && focusedRow.dataset.devModule;
 				paintExposure(expo, st);
 				paintHot(hot, st, list, refresh, view);
+				view.layout(focusedModule);
 				if (at >= 0) (hot.querySelectorAll("button")[at] || box.querySelector("button")).focus();
 			});
 		};

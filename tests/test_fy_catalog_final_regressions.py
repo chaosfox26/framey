@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fy_catalog
-import fy_decky_catalog
+from decky_runtime import catalog as fy_decky_catalog
 import fy_net
 from test_fy_catalog_flow import FakeHost, catalog_data, plugin
 

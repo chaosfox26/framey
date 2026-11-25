@@ -2,6 +2,7 @@
 const assert = require("assert");
 const { test } = require("node:test");
 const { makeDom } = require("./harness");
+const { pagedText } = require("./panel-navigation-helpers");
 
 const settle = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)); };
 const boot = () => {
@@ -71,10 +72,10 @@ test("the original bar toggle follows panel state across the native and Decky St
     assert.equal(button.getAttribute("aria-pressed"), "true");
     e.main.window.Framey.open("#decky-store");
     await settle();
-    const panel = e.main.document.querySelector('[role="tabpanel"]');
-    assert.match(panel.textContent, /Decky Store/);
-    assert.match(panel.textContent, /Not compatible/);
-    assert.match(panel.textContent, /ARM64: Not checked/);
+    const text = pagedText(e.main.document.querySelector(".fy-panel"));
+    assert.match(text, /Decky Store/);
+    assert.match(text, /Not compatible/);
+    assert.match(text, /ARM64: Not checked/);
     assert.equal(button.getAttribute("aria-label"), "Framey, 3 updates");
     assert.equal(button.querySelectorAll(".fy-bdg").length, 1);
     e.main.window.Framey.open("#discover");
@@ -94,7 +95,7 @@ test("unassessed Decky catalog entries never create a bottom-bar update badge", 
   try {
     e.main.window.Framey.open("#decky-store");
     await settle();
-    assert.match(e.main.document.querySelector('[role="tabpanel"]').textContent, /Example plugin/);
+    assert.match(pagedText(e.main.document.querySelector(".fy-panel")), /Example plugin/);
     assert.equal(e.control.button.getAttribute("aria-label"), "Framey");
     assert.equal(e.control.button.querySelectorAll(".fy-bdg").length, 0);
     e.control.set(false);

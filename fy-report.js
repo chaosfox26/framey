@@ -88,7 +88,7 @@
 	const button = (label, action) => {
 		const node = element(
 			"button",
-			"font:inherit;font-size:19px;font-weight:700;color:#fff;background:#2a2a3a;border:0;border-radius:12px;padding:10px 14px;min-height:48px",
+			"font:inherit;font-size:19px;font-weight:700;color:#fff;background:#075bff;border:0;border-radius:12px;padding:10px 14px;min-height:48px",
 			label,
 		);
 		node.type = "button";
@@ -103,7 +103,7 @@
 		return label;
 	};
 	const inputStyle =
-		"box-sizing:border-box;width:100%;min-height:48px;font:inherit;font-size:18px;line-height:1.45;color:#fff;background:#181826;border:1px solid #62627a;border-radius:8px;padding:10px;resize:vertical";
+		"box-sizing:border-box;width:100%;min-height:48px;font:inherit;font-size:18px;line-height:1.45;color:#fff;background:#000;border:1px solid #62627a;border-radius:8px;padding:10px;resize:none;overflow:hidden";
 	let active = null;
 	const cleanup = action => {
 		try {
@@ -159,12 +159,12 @@
 		);
 		const dialog = element(
 			"section",
-			"box-sizing:border-box;width:520px;max-width:100%;max-height:calc(100vh - 22px);overflow:auto;overscroll-behavior:contain;background:#101018;color:#fff;border-radius:16px;padding:18px;font:20px/1.45 sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.4)",
+			"box-sizing:border-box;width:520px;max-width:100%;height:calc(100vh - 22px);max-height:620px;overflow:hidden;display:flex;flex-direction:column;gap:6px;background:#000;color:#fff;border:2px solid #ff35c8;border-radius:16px;padding:10px;font:20px/1.35 sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.4)",
 		);
 		dialog.setAttribute("role", "dialog");
 		dialog.setAttribute("aria-modal", "true");
 		dialog.setAttribute("aria-labelledby", "fy-report-heading");
-		const heading = element("h2", "font-size:27px;line-height:1.2;margin:0;flex:1", "Report to Framey");
+		const heading = element("h2", "font-size:20px;line-height:1.2;margin:0;flex:1", "Report to Framey");
 		heading.id = "fy-report-heading";
 		const top = element("div", "display:flex;align-items:center;gap:12px");
 		const closeButton = button("Close", close);
@@ -222,19 +222,183 @@
 		const basic = button("Copy basic template", () => copyText(basicTemplate));
 		basic.hidden = true;
 		actions.append(back, openButton, copyButton, retry, basic);
-		dialog.append(
-			top,
-			privacy,
+		const storage = element("div");
+		storage.hidden = true;
+		storage.setAttribute("aria-hidden", "true");
+		storage.append(
 			labelled("Destination", destination),
 			labelled("Issue title", title),
 			labelled("Report details", body),
 			labelled("Diagnostics (editable)", diagnostics),
-			diagnosticChoices,
-			warning,
-			status,
 			fallback,
-			actions,
 		);
+		const pageArea = element("div", "flex:1;min-height:0;overflow:hidden");
+		pageArea.setAttribute("aria-live", "polite");
+		let pageIndex = 0,
+			reportPages = [],
+			editorFocus = null;
+		const editors = new Map();
+		const chunks = value => {
+			const result = [];
+			let part = "",
+				lines = 1,
+				columns = 0;
+			for (const character of String(value || "")) {
+				if ((character === "\n" || columns >= 14) && lines >= 3) {
+					result.push(part);
+					part = "";
+					lines = 1;
+					columns = 0;
+				}
+				if (columns >= 14) {
+					columns = 0;
+					lines++;
+				}
+				part += character;
+				if (character === "\n") {
+					lines++;
+					columns = 0;
+				} else columns++;
+			}
+			result.push(part);
+			return result;
+		};
+		const page = (name, node, key) => {
+			const section = element("div", "height:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:6px");
+			section.dataset.reportPage = key || name;
+			section.append(element("div", "font-size:18px;font-weight:700;color:#ff70d8", name), node);
+			reportPages.push(section);
+			return section;
+		};
+		const textPages = (name, value, key) =>
+			chunks(value).forEach((part, index, parts) =>
+				page(
+					name + (parts.length > 1 ? " · " + (index + 1) + " of " + parts.length : ""),
+					element("div", "font-size:18px;white-space:pre-wrap;overflow-wrap:anywhere", part),
+					key,
+				),
+			);
+		const editPages = (name, source, key) => {
+			let record = editors.get(source);
+			if (!record || record.value !== source.value) {
+				record = { value: source.value, parts: chunks(source.value) };
+				editors.set(source, record);
+			}
+			record.parts.forEach((part, index) => {
+				const editor = element("textarea", inputStyle + ";height:110px;min-height:0;flex:none");
+				editor.rows = 3;
+				editor.maxLength = 80;
+				editor.value = part;
+				editor.disabled = source.disabled;
+				editor.setAttribute("aria-label", name + " part " + (index + 1));
+				editor.addEventListener("input", () => {
+					const edited = editor.value.slice(0, 80);
+					const parts = chunks(edited);
+					const locate = position => {
+						let part = 0,
+							offset = Math.min(position, edited.length);
+						while (part < parts.length - 1 && offset > parts[part].length) offset -= parts[part++].length;
+						return { part, offset };
+					};
+					const start = locate(editor.selectionStart),
+						end = locate(editor.selectionEnd);
+					editorFocus = {
+						key,
+						part: index + end.part,
+						start: start.part === end.part ? start.offset : end.offset,
+						end: end.offset,
+					};
+					record.parts.splice(index, 1, ...parts);
+					record.value = source.value = record.parts.join("").slice(0, source.maxLength);
+					changed();
+				});
+				const section = page(name + " · " + (index + 1) + " of " + record.parts.length, editor, key);
+				section.dataset.reportPart = String(index);
+			});
+		};
+		const pageLabel = element("div", "flex:1;text-align:center;font-size:16px;color:#ff70d8");
+		const previous = button("Previous", () => move(-1));
+		const next = button("Next", () => move(1));
+		const pager = element("nav", "display:flex;gap:8px;align-items:center;flex:none");
+		pager.setAttribute("aria-label", "Report pages");
+		pager.append(previous, pageLabel, next);
+		const showPage = () => {
+			pageIndex = Math.max(0, Math.min(pageIndex, reportPages.length - 1));
+			reportPages.forEach((section, index) => {
+				section.hidden = index !== pageIndex;
+				section.style.display = section.hidden ? "none" : "flex";
+			});
+			previous.disabled = pageIndex === 0;
+			next.disabled = pageIndex === reportPages.length - 1;
+			pageLabel.textContent = pageIndex + 1 + " of " + reportPages.length;
+		};
+		const refreshPages = () => {
+			const focused = pageArea.contains(document.activeElement) ? document.activeElement : null;
+			const focusLabel = focused && focused.getAttribute("aria-label");
+			const selection =
+				focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
+			reportPages = [];
+			textPages("Review before sharing", privacy.textContent, "privacy");
+			textPages("Destination", destination.value, "destination");
+			editPages("Issue title", title, "title");
+			editPages("Report details", body, "details");
+			editPages("Diagnostics", diagnostics, "diagnostics");
+			page("Diagnostics choice", includeLabel, "include");
+			page("Remove diagnostics", removeDiagnostics, "remove");
+			if (warning.textContent) textPages("Warning", warning.textContent, "warning");
+			textPages("Status", status.textContent, "status");
+			page("Share after review", openButton, "open");
+			page("Copy after review", copyButton, "copy");
+			if (!retry.hidden) page("Prepare again", retry, "retry");
+			if (!basic.hidden) page("Without diagnostics", basic, "basic");
+			if (!fallback.hidden)
+				chunks(fallback.value).forEach((part, index, parts) => {
+					const excerpt = element("textarea", inputStyle + ";height:110px;min-height:0");
+					excerpt.readOnly = true;
+					excerpt.value = part;
+					excerpt.rows = 3;
+					excerpt.setAttribute("aria-label", "Sanitized report part " + (index + 1) + " of " + parts.length);
+					page("Sanitized report · " + (index + 1) + " of " + parts.length, excerpt, "fallback");
+				});
+			pageArea.replaceChildren(...reportPages);
+			if (editorFocus) {
+				const wanted = editorFocus;
+				editorFocus = null;
+				const destinationPage = reportPages.findIndex(
+					section => section.dataset.reportPage === wanted.key && section.dataset.reportPart === String(wanted.part),
+				);
+				if (destinationPage >= 0) {
+					pageIndex = destinationPage;
+					showPage();
+					const editor = reportPages[pageIndex].querySelector("textarea");
+					editor.focus({ preventScroll: true });
+					editor.setSelectionRange(wanted.start, wanted.end);
+					return;
+				}
+			}
+			showPage();
+			if (focused) {
+				const replacement = [...reportPages[pageIndex].querySelectorAll("textarea,input,button")].find(
+					node => node === focused || (focusLabel && node.getAttribute("aria-label") === focusLabel),
+				);
+				if (replacement && !replacement.disabled) {
+					replacement.focus({ preventScroll: true });
+					if (selection) replacement.setSelectionRange(...selection);
+				}
+			}
+		};
+		const move = delta => {
+			refreshPages();
+			pageIndex += delta;
+			showPage();
+			const control = reportPages[pageIndex].querySelector("textarea,input,button");
+			(control && !control.disabled ? control : delta > 0 ? next : previous).focus({ preventScroll: true });
+		};
+		const bottom = element("div", "display:flex;gap:8px;flex:none;align-items:center");
+		bottom.append(back, pager);
+		pager.style.flex = "1";
+		status.hidden = warning.hidden = true;
+		dialog.append(top, pageArea, status, warning, storage, bottom);
 		root.append(dialog);
 		const view = {
 			root,
@@ -263,7 +427,12 @@
 		const showStatus = (message, failed) => {
 			if (!alive()) return;
 			status.textContent = message;
-			status.style.color = failed ? "#ff9c9c" : "#b9b9cc";
+			status.style.color = failed ? "#ff70d8" : "#fff";
+			refreshPages();
+			if (view.showFeedback) {
+				pageIndex = reportPages.findIndex(section => section.dataset.reportPage === "status");
+				showPage();
+			}
 		};
 		const syncControls = () => {
 			const locked = view.loading || view.busy;
@@ -278,9 +447,11 @@
 			destination.value = view.repository
 				? view.repository + "/issues/new"
 				: "Framey issue repository is not configured";
+			refreshPages();
 		};
 		const changed = () => {
 			if (!alive()) return;
+			view.showFeedback = false;
 			fallback.hidden = true;
 			fallback.value = "";
 			warning.textContent = "";
@@ -291,6 +462,7 @@
 		include.addEventListener("change", changed);
 		const copyText = async text => {
 			if (!alive() || view.busy) return;
+			view.showFeedback = true;
 			view.busy = true;
 			syncControls();
 			try {
@@ -302,8 +474,11 @@
 				fallback.value = text;
 				fallback.hidden = false;
 				showStatus("Copy failed. Select and copy the reviewed text below.", true);
-				fallback.focus();
-				fallback.select();
+				pageIndex = reportPages.findIndex(section => section.dataset.reportPage === "fallback");
+				showPage();
+				const excerpt = reportPages[pageIndex].querySelector("textarea");
+				excerpt.focus();
+				excerpt.select();
 			} finally {
 				if (alive()) {
 					view.busy = false;
@@ -371,6 +546,7 @@
 			if (initial) dialog.scrollTop = 0;
 		};
 		const perform = async kind => {
+			view.showFeedback = true;
 			if (!alive() || view.busy || view.loading || !view.ready || (kind === "open" && !view.repository)) return;
 			const payload = {
 				title: title.value.slice(0, 160),
@@ -466,7 +642,7 @@
 			}
 			if (event.key !== "Tab") return;
 			const controls = [...dialog.querySelectorAll("button,input,textarea")].filter(
-				node => !node.disabled && !node.hidden && node.tabIndex >= 0,
+				node => !node.disabled && !node.hidden && !node.closest("[hidden]") && node.tabIndex >= 0,
 			);
 			const first = controls[0],
 				last = controls[controls.length - 1];

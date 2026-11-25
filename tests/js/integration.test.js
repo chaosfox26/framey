@@ -3,6 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { makeDom, ROOT, TOK, readLoaderConstants } = require("./harness");
+const { findShortcut, shortcutLabels, pagedControl, pagedText } = require("./panel-navigation-helpers");
 
 const HEAD = ["inject.js", "fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js"];
 const TAIL = ["fy-modules.js", "fy-settings.js"];
@@ -132,12 +133,18 @@ const main = (opts = {}) => {
   chain(env, safe ? SAFE.slice(0, -2) : HEAD, opts.plugins === undefined ? [FAN, ALPHA, BETA] : opts.plugins, safe ? SAFE.slice(-2) : opts.bare ? [] : TAIL);
   const FY = w.Framey;
   const panel = () => [...d.body.children].find(c => c.style.width === "520px");
-  const content = () => panel().children[0];
-  const rail = () => [...panel().children[1].children].map(c => c.textContent);
-  const goto = name => [...panel().children[1].children].find(c => c.textContent === name).click();
+  const content = () => panel().querySelector('[role="tabpanel"]');
+  const rail = () => shortcutLabels(panel());
+  const goto = name => {
+    const root = ["Settings", "Plugins", "Browse"].includes(name) ? null : ["Store", "Decky Store"].includes(name) ? "Browse" : "Plugins";
+    if (root) [...panel().querySelectorAll('[role="tab"]')].find(c => c.textContent === root).click();
+    const label = { Modules: "Manage plugins", Store: "Framey Store", "Decky Store": "Decky catalog", Fan: "Fan Control", Curve: "Curve editor" }[name] || name;
+    const target = [...panel().querySelectorAll('[role="tab"]')].find(c => c.textContent === label) || findShortcut(panel(), label);
+    target.click();
+  };
   const controls = () => [...content().querySelectorAll('[role="button"],[role="switch"],[role="option"]')];
   const control = label => {
-    const hit = controls().find(e => e.getAttribute("aria-label") === label);
+    const hit = pagedControl(panel(), label);
     if (!hit) throw new Error("no control '" + label + "' in " + controls().map(e => e.getAttribute("aria-label")).join(" | "));
     return hit;
   };
@@ -200,61 +207,62 @@ const barPage = (opts = {}) => {
 const tests = [];
 const t = (name, fn) => tests.push([name, fn]);
 
-t("rail: saved order from state_get, hidden tab omitted, builtin pages last", async () => {
+t("shortcuts: saved order from state_get, hidden plugins omitted, management last", async () => {
   const m = main({ state: { order: ["fan", "beta", "alpha"], hidden: ["beta"] } });
   m.FY.toggle();
-  assert.deepEqual(m.rail(), ["Fan", "Curve", "Alpha", "Beta", "Modules", "Store", "Decky Store", "Settings"], "before the reply: registration order");
+  assert.deepEqual(m.rail(), ["Fan Control", "Curve editor", "Alpha", "Beta", "Manage plugins"], "before the reply: registration order");
   await settle();
-  assert.deepEqual(m.rail(), ["Fan", "Curve", "Alpha", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Fan Control", "Curve editor", "Alpha", "Manage plugins"]);
   assert.equal(m.sent("state_get").length, 1);
 });
 
-t("rail before the state reply uses registration order and keeps the pages grouped under their plugin", async () => {
+t("shortcuts before the state reply use registration order and group pages under their plugin", async () => {
   const m = main();
   m.FY.toggle();
-  assert.deepEqual(m.rail(), ["Fan", "Curve", "Alpha", "Beta", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Fan Control", "Curve editor", "Alpha", "Beta", "Manage plugins"]);
   await settle();
-  assert.deepEqual(m.rail(), ["Alpha", "Beta", "Fan", "Curve", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Alpha", "Beta", "Fan Control", "Curve editor", "Manage plugins"]);
 });
 
-t("hidden plugin keeps running, its tab and pages are not in the rail, Framey.open still reaches it", async () => {
+t("hidden plugin keeps running, its shortcuts and pages are omitted, Framey.open still reaches it", async () => {
   const m = main({ state: { hidden: ["fan"] } });
   m.FY.toggle();
   await settle();
   assert.ok(m.FY.plugins.some(p => p.id === "fan" && !p.dead));
-  assert.deepEqual(m.rail(), ["Alpha", "Beta", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Alpha", "Beta", "Manage plugins"]);
   m.FY.open("fan");
   assert.ok(m.text().includes("home of fan"));
   m.FY.open("fan:cfg");
   assert.ok(m.text().includes("curve page"));
-  assert.deepEqual(m.rail(), ["Alpha", "Beta", "Modules", "Store", "Decky Store", "Settings"]);
+  m.goto("Plugins");
+  assert.deepEqual(m.rail(), ["Alpha", "Beta", "Manage plugins"]);
 });
 
-t("reorder and hide replies from the Modules methods update the open rail without reopening", async () => {
+t("reorder and hide replies from the Modules methods update open shortcuts without reopening", async () => {
   const m = main();
   m.FY.toggle();
   await settle();
   m.FY._k(TOK).call("mod_order", { id: "fan", delta: -1 });
   await settle();
-  assert.deepEqual(m.rail(), ["Alpha", "Fan", "Curve", "Beta", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Alpha", "Fan Control", "Curve editor", "Beta", "Manage plugins"]);
   m.FY._k(TOK).call("mod_hide", { id: "alpha", hidden: true });
   await settle();
-  assert.deepEqual(m.rail(), ["Fan", "Curve", "Beta", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Fan Control", "Curve editor", "Beta", "Manage plugins"]);
   assert.equal(m.sent("state_get").length, 1);
   m.FY._k(TOK).call("list");
   await settle();
-  assert.deepEqual(m.rail(), ["Fan", "Curve", "Beta", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Fan Control", "Curve editor", "Beta", "Manage plugins"]);
 });
 
-t("a junk state reply is ignored and the rail keeps its order", async () => {
+t("a junk state reply is ignored and shortcuts keep their order", async () => {
   const m = main({ methods: { state_get: () => ({ error: "state unavailable", code: "x" }) } });
   m.FY.toggle();
   await settle();
-  assert.deepEqual(m.rail(), ["Fan", "Curve", "Alpha", "Beta", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Fan Control", "Curve editor", "Alpha", "Beta", "Manage plugins"]);
   const n = main({ methods: { state_get: () => ({ order: "no", hidden: {} }) } });
   n.FY.toggle();
   await settle();
-  assert.equal(n.rail().length, 8);
+  assert.equal(n.rail().length, 5);
 });
 
 t("Modules and Settings delegate while missing catalog pages offer recovery", async () => {
@@ -266,9 +274,14 @@ t("Modules and Settings delegate while missing catalog pages offer recovery", as
   await settle();
   m.goto("Modules");
   await settle();
-  assert.ok(m.text().includes("Check for updates") && m.text().includes("Update all"));
-  assert.ok(m.text().includes("Fan Control") && m.text().includes("Alpha") && m.text().includes("Beta"));
-  assert.ok(m.text().includes("kaput 9") && m.controls().some(e => e.getAttribute("aria-label") === "Disable") && m.controls().some(e => e.getAttribute("aria-label") === "Reload"), "failed module row keeps Disable and Reload");
+  const hub = pagedText(m.panel());
+  assert.ok(hub.includes("Fan Control") && hub.includes("Alpha") && hub.includes("Beta"));
+  m.control("Fan Control").click();
+  assert.ok(pagedText(m.panel()).includes("kaput 9"));
+  assert.ok(m.control("Disable") && m.control("Reload"), "failed module keeps Disable and Reload on its pages");
+  m.control("Back").click();
+  m.control("Manage plugins").click();
+  assert.ok(pagedText(m.panel()).includes("Check for updates") && pagedText(m.panel()).includes("Update all"));
   assert.equal(m.w.sessionStorage.fyTab, "#modules");
   m.goto("Store");
   assert.ok(m.text().includes("Store is not available") && m.controls().some(e => e.textContent === "Open Modules"));
@@ -278,7 +291,7 @@ t("Modules and Settings delegate while missing catalog pages offer recovery", as
   assert.equal(m.w.sessionStorage.fyTab, "#decky-store");
   m.goto("Settings");
   await settle();
-  assert.ok(m.text().includes("Settings") && m.text().includes("Framey") && m.text().includes("Installed"));
+  assert.ok(m.panel().textContent.includes("Settings") && m.panel().getAttribute("aria-label") === "Framey" && m.text().includes("Updates"));
   assert.equal(m.w.sessionStorage.fyTab, "#settings");
   assert.ok(m.sent("list").length >= 1 && m.sent("loader").length >= 1);
   assert.ok(!m.text().includes("Tap again to confirm"));
@@ -299,12 +312,12 @@ t("without fy-modules.js and fy-settings.js the panel still opens and says the p
   assert.ok(m.text().includes("home of alpha"));
 });
 
-t("inject.js alone: panel, rail and Store work, nothing throws", () => {
+t("inject.js alone: panel destinations and Store work, nothing throws", () => {
   const env = makeDom();
   const FY = env.window.Framey;
   FY.toggle();
   const panel = [...env.document.body.children].find(c => c.style.width === "520px");
-  assert.deepEqual([...panel.children[1].children].map(c => c.textContent), ["Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual([...panel.children[1].children].map(c => c.textContent), ["Plugins", "Browse", "Settings"]);
   FY.toggle();
   assert.equal(panel.style.display, "none");
 });
@@ -319,10 +332,11 @@ t("plugin: keys, plain ids, #modules and #settings open the right page and open 
   assert.ok(m.text().includes("home of alpha"));
   m.FY.open("#settings");
   await settle();
-  assert.ok(m.text().includes("Installed"));
+  assert.ok(m.text().includes("Updates"));
   m.FY.open("#modules");
   await settle();
-  assert.ok(m.text().includes("Check for updates"));
+  m.control("Manage plugins").click();
+  assert.ok(pagedText(m.panel()).includes("Check for updates"));
   m.FY.toggle();
   m.FY.open("#settings");
   await settle();
@@ -330,7 +344,7 @@ t("plugin: keys, plain ids, #modules and #settings open the right page and open 
   assert.equal(m.sent("panel").map(c => c.arg).join(), "false,true,false,true");
 });
 
-t("closing a panel page returns to the plugin tab, removing it drops the rail entry", async () => {
+t("closing a panel page returns to the plugin tab, removing it drops the shortcut", async () => {
   const m = main();
   m.FY.toggle();
   m.goto("Curve");
@@ -338,6 +352,7 @@ t("closing a panel page returns to the plugin tab, removing it drops the rail en
   m.w.fanApi.pages.close();
   assert.ok(m.text().includes("home of fan"));
   m.w.fanApi.pages.register({ id: "other", title: "Second", render(b) { b.append(m.FY.el("", "second")); } });
+  m.goto("Plugins");
   assert.ok(m.rail().includes("Second"));
   assert.equal(m.w.fanApi.pages.list().length, 2);
 });
@@ -352,16 +367,17 @@ t("saved tab is restored when the panel opens again and falls back to the first 
   m.w.sessionStorage.fyTab = "gone";
   m.FY.toggle();
   assert.equal(m.w.sessionStorage.fyTab, "alpha");
+  m.goto("Plugins");
   assert.equal(m.rail()[0], "Alpha");
 });
 
 t("a panel page registered while the panel is open appears at once", async () => {
   const m = main({ plugins: [ALPHA] });
   m.FY.toggle();
-  assert.deepEqual(m.rail(), ["Alpha", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Alpha", "Manage plugins"]);
   const api = apiOf(m, "alpha");
   api.pages.register({ id: "p", title: "Extra page", render(b) { b.append(m.FY.el("", "extra")); } });
-  assert.deepEqual(m.rail(), ["Alpha", "Extra", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Alpha", "Extra page", "Manage plugins"]);
 });
 
 t("open and close push Framey._panel, the loader notice and api.visible; reopening an open panel does not repeat them", async () => {
@@ -395,7 +411,7 @@ t("restore opens the panel again when the session says so and shows the saved me
   m.w.eval("Framey.restore()");
   await settle();
   assert.equal(m.FY.panelOpen, true);
-  assert.ok(m.text().includes("Installed"));
+  assert.ok(m.text().includes("Updates"));
   assert.ok(m.d.body.textContent.includes("Framey updated"));
   assert.equal(m.w.sessionStorage.fyMsg, "");
 });
@@ -408,7 +424,7 @@ t("a notification action open:settings opens the panel on Settings", async () =>
   await settle();
   assert.equal(m.FY.panelOpen, true);
   assert.equal(m.w.sessionStorage.fyTab, "#settings");
-  assert.ok(m.text().includes("Installed"));
+  assert.ok(m.text().includes("Updates"));
   m.FY._k(TOK).event("_core", "notice", { title: "Modules", actions: [{ id: "open:modules", label: "Open Modules" }], duration: 0 });
   [...m.d.querySelectorAll("button")].find(x => x.textContent === "Open Modules").click();
   await settle();
@@ -427,7 +443,7 @@ t("every file in the chain extends the plugin api through FY.ext, and a throwing
   assert.equal(m.FY.plugins.length, 1);
 });
 
-t("Framey.lazy resolves at once for picker and dev, which are in the core scope; the Developer tab appears and opens", async () => {
+t("Framey.lazy resolves at once for picker and dev, which are in the core scope; Developer remains reachable", async () => {
   const m = main();
   m.R.env.load("fy-picker.js");
   m.FY.toggle();
@@ -441,8 +457,8 @@ t("Framey.lazy resolves at once for picker and dev, which are in the core scope;
   assert.deepEqual(m.sent("asset"), []);
   m.FY.open("#developer");
   await settle();
-  assert.ok(m.text().includes("Developer"));
-  assert.equal(m.rail().filter(x => x === "Dev").length, 1);
+  assert.ok(m.panel().textContent.includes("Developer"));
+  assert.equal(m.d.querySelectorAll('[role="tab"]').length, 3);
   assert.equal(m.w.sessionStorage.fyTab, "#developer");
   await assert.rejects(m.FY.lazy("evil"));
 });
@@ -453,10 +469,11 @@ t("Settings reaches the lazy Developer page through Framey.lazy and Framey.open"
   m.FY.toggle();
   m.goto("Settings");
   await settle();
+  m.control("Developer").click();
   m.control("Developer tools").click();
   await settle();
   assert.equal(m.w.sessionStorage.fyTab, "#developer");
-  assert.ok(m.text().includes("Developer"));
+  assert.ok(m.panel().textContent.includes("Developer"));
 });
 
 t("pagehide disposes every plugin once: nodes, timers, subscriptions, pending calls and notifications", async () => {
@@ -514,7 +531,7 @@ t("reinjection after the loader's wipe, three times: one panel, one style set, n
   await settle();
   assert.equal(m.w.Framey.panelOpen, true);
   assert.equal(m.d.querySelectorAll("div[style*='520px']").length, 1);
-  assert.equal([...m.d.querySelectorAll("div[style*='520px']")][0].children[1].children.length, 8);
+  assert.equal([...m.d.querySelectorAll("div[style*='520px']")][0].children[1].children.length, 3);
   m.w.eval("Framey.dispose(undefined,'" + TOK + "')");
   const before = m.w.Framey;
   chain(m.env, HEAD, [], []);
@@ -561,20 +578,24 @@ t("safe mode: only the panel files are injected, no plugins, the Modules page sh
   const m = main({ safe: true, plugins: [], state: { safe: true }, methods: { list: () => [] } });
   m.FY.toggle();
   await settle();
-  assert.deepEqual(m.rail(), ["Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Manage plugins"]);
   assert.equal(m.FY.plugins.length, 0);
   assert.equal(typeof m.FY.pages, "object");
   assert.equal(m.FY.panelPages, undefined);
-  assert.ok(m.text().includes("Safe mode is on"));
-  assert.ok(m.text().includes("~/.config/framey/safe"));
+  m.goto("Modules");
+  await settle();
+  m.control("Manage plugins").click();
+  assert.ok(pagedText(m.panel()).includes("Safe mode is on"));
+  assert.ok(pagedText(m.panel()).includes("~/.config/framey/safe"));
   assert.throws(() => m.control("Turn off safe mode"));
   assert.equal(m.sent("prefs_set").length, 0);
   m.goto("Settings");
   await settle();
-  assert.ok(m.text().includes("Safe mode"));
+  m.control("Preferences").click();
+  assert.ok(pagedText(m.panel()).includes("Safe mode"));
 });
 
-t("the stale reply rule still holds across the new state adoption: a reply from an older page cannot change the rail", async () => {
+t("the stale reply rule still holds across the new state adoption: a reply from an older page cannot change shortcut ordering", async () => {
   const m = main();
   m.FY.toggle();
   await settle();
@@ -583,7 +604,7 @@ t("the stale reply rule still holds across the new state adoption: a reply from 
   await settle();
   m.FY._reply("forged.gen:_core.0", req.id, { order: ["beta"], hidden: ["alpha"] });
   await settle();
-  assert.deepEqual(m.rail(), ["Alpha", "Beta", "Fan", "Curve", "Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(m.rail(), ["Alpha", "Beta", "Fan Control", "Curve editor", "Manage plugins"]);
   assert.ok(await Promise.race([old.then(() => true), new Promise(r => setImmediate(() => r(true)))]));
 });
 
@@ -681,7 +702,7 @@ t("size and hygiene of the glue: no HTML injection, bounded payload and spacing"
     assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(s), f);
     assert.ok(!/\r?\n\s*\r?\n\s*\r?\n/.test(s), f);
   });
-  assert.ok(Buffer.byteLength(read("inject.js"), "utf8") < 24 * 1024, "core injection payload stays below 24 KiB");
+  assert.ok(Buffer.byteLength(read("inject.js"), "utf8") < 52 * 1024, "launcher, navigation and bounded module lease cleanup injection stays below 52 KiB");
 });
 
 (async () => {

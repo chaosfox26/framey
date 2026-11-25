@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import fy_catalog
-import fy_decky_catalog
+from decky_runtime import catalog as fy_decky_catalog
 import fy_net
 from test_fy_net import PUBLIC, local_opener, read_head, serve_script
 

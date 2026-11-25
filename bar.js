@@ -83,7 +83,21 @@
 		label.style.setProperty("--y", Math.min(0, innerHeight - 2 - (buttonBounds.top + 44 + label.offsetHeight)) + "px");
 	};
 	const togglePanel = () => {
-		if (!disposed) fyCall(stringify({ id: 0, plugin: "_core", method: "toggle" }));
+		if (disposed) return;
+		const bounds = button.getBoundingClientRect();
+		const viewportWidth = innerWidth;
+		let anchorX = 0.5;
+		if (
+			Number.isFinite(viewportWidth) &&
+			viewportWidth > 0 &&
+			Number.isFinite(bounds.left) &&
+			Number.isFinite(bounds.width) &&
+			bounds.width > 0
+		) {
+			const position = (bounds.left + bounds.width / 2) / viewportWidth;
+			if (Number.isFinite(position)) anchorX = Math.max(0, Math.min(1, position));
+		}
+		fyCall(stringify({ id: 0, plugin: "_core", method: "toggle", arg: { anchor_x: anchorX } }));
 	};
 	button.addEventListener("mouseenter", positionLabel);
 	button.addEventListener("focus", positionLabel);

@@ -34,7 +34,7 @@ messages. A short implementation is useful only when its behavior remains clear.
 | Plugin API | `fy_sdk.py`, `types/` | Define native plugin contracts without exposing private loader operations |
 | Settings and packages | `fy_state.py`, `fy_store.py`, `fy_pkg.py` | Validate and persist state, stage changes, preserve recovery data |
 | Networking and updates | `fy_net.py`, `fy_updates.py`, `fy_maint.py` | Enforce network limits, server cooldowns, installation and recovery rules |
-| Catalogs | `fy_catalog.py`, `fy_decky_catalog.py` | Keep native installation separate from original Decky package inspection |
+| Catalogs | `fy_catalog.py`, `fy_decky_catalog.py`, `fy_decky_import.py` | Keep native installation, read-only Decky inspection and confirmed experimental import as separate operations |
 | Files, media and targets | `fy_files.py`, `fy_media.py`, `fy_targets.py` | Validate access, bound results, revoke resources and target registrations |
 | Panel presentation | `fy_panel.py`, `fy_overlay.py`, `fy_overlay_browser.py` | Serialize surface changes, own only Framey's popup and overlay, fall back to embedded presentation |
 | Browser lifecycle | `inject.js`, `fy-api.js` | Establish trusted boundaries, bind plugins, reject retired work, dispose subscriptions and resources |
@@ -484,3 +484,13 @@ Regressions for supervisor lifecycle transitions using isolated workers.
 ### tests/test_fy_worker_parity.py
 
 Regressions for worker lifecycle and ownership of in-flight requests.
+
+## Launcher and bounded page navigation
+
+The compact presentation is a launcher; the window presentation contains the selected page. `bar.js` sends a finite normalized icon anchor with its toggle. The private frontend `launcherWidth()` reports a bounded popup width from the current shortcut count. The controller keeps the created popup width and native geometry synchronized, including a closed launcher whose shortcuts changed. Transition ownership is reserved across width queries, and shutdown is checked again after awaited boundaries.
+
+`panel_launch` accepts only an allowed built-in route or an enabled installed plugin/subpage route. It uses the existing core capability and replies before applying a surface change. `none` is an internal suspended surface used while an owned popup is recreated; the original Steam target remains available for scoped injections but receives no active Framey frontend. Legacy bare toggles and placement values remain accepted for compatibility.
+
+Built-ins use private `setPageNavigation({index,count,onPage,label,onBack,title,onLayout})`, `clearPageNavigation()` and `panelLayout()` interfaces. Page changes preserve original controls and handlers. Long copy must account for hard line breaks as well as character count, and editable report chunks must preserve insertion order and cursor position. Async results use owner/serial guards that survive internal pagination while rejecting stale or departed views.
+
+Keep the launcher in Framey's magenta, blue, black and white palette. Its explicit glossy gradient and inward press feedback are intentional. The browser tests cover reduced motion, trusted input, keyboard recovery, growth and bounded layouts; native placement and physical-controller comfort require separate device acceptance. The current target probe supports only the audited Steam-host case and must not be described as general app-window tracking.

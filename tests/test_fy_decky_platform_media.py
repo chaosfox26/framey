@@ -11,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import fy_decky_catalog
+from decky_runtime import catalog as fy_decky_catalog
 import fy_media
 import test_fy_decky_catalog_flow as fixtures
 

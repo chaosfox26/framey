@@ -43,8 +43,14 @@ class FakeNative:
         self.trace.append(("native", "find_steam"))
         return 202 if self.available else None
 
-    def position_right(self):
-        return self.result("position_right")
+    def position_right(self, key=None):
+        return self.result("position_right", *(() if key is None else (key,)))
+
+    def position_above_bar(self, anchor_x=0.5, width=382):
+        return self.result("position_above_bar", anchor_x, *(() if width == 382 else (width,)))
+
+    def steam_visible(self):
+        return True
 
     def show_own(self):
         result = self.result("show_own")
@@ -87,6 +93,10 @@ class FakeBrowser:
         self.closed = False
         self.block_name = None
         self.entered, self.resume = asyncio.Event(), asyncio.Event()
+        self.target = {"ok": False, "code": "app_target_unavailable"}
+
+    async def active_target(self):
+        return self.target
 
     async def operation(self, name):
         self.trace.append(("browser", name))
@@ -100,7 +110,9 @@ class FakeBrowser:
     async def probe(self):
         return await self.operation("probe")
 
-    async def ensure(self):
+    async def ensure(self, layout="window", width=382):
+        self.layout = layout
+        self.width = width
         return await self.operation("ensure")
 
     async def show(self):
@@ -125,6 +137,7 @@ class FakeHost:
         self.switch_entered = asyncio.Event()
         self.switch_resume = None
         self.switch_failure = False
+        self.menu_width = 382
 
     def settings(self):
         return copy.deepcopy(self.config)
@@ -155,12 +168,27 @@ class FakeHost:
     async def notify_page(self, plugin, name, payload):
         self.events.append((plugin, name, copy.deepcopy(payload)))
 
+    def panel_route_allowed(self, route):
+        return route in ("#discover", "#decky-store", "#settings", "fan")
+
+    async def panel(self, opened):
+        self.trace.append(("host", "panel", opened))
+        self.PANEL = opened
+        await self.panel_controller.panel_changed(opened)
+
+    async def ui_panel_route(self, route):
+        self.trace.append(("host", "route", route))
+
+    async def launcher_width(self):
+        return self.menu_width
+
 
 class PanelControllerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.host = FakeHost()
         self.natives, self.browsers = [], []
         self.next_native_available = True
+        self.next_target = {"ok": False, "code": "app_target_unavailable"}
 
         def native_factory(enabled=False):
             self.assertTrue(enabled)
@@ -171,6 +199,7 @@ class PanelControllerTests(unittest.IsolatedAsyncioTestCase):
         def browser_factory(host):
             self.assertIs(host, self.host)
             browser = FakeBrowser(self.host.trace)
+            browser.target = self.next_target
             self.browsers.append(browser)
             return browser
 
@@ -211,6 +240,223 @@ class PanelControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.browsers, [])
         self.assertEqual(self.host.trace, [])
         self.assertEqual(self.host.saved, [])
+
+    async def test_compact_creates_a_small_surface_and_positions_it_above_the_bar(self):
+        result = await self.select("compact")
+        self.assertEqual(result["mode"], "compact")
+        self.assertEqual(result["layout"], "compact")
+        self.assertEqual(self.browsers[-1].layout, "compact")
+        self.assertTrue(self.calls("native", "position_above_bar"))
+        self.assertFalse(self.calls("native", "position_right"))
+        self.assertEqual(self.calls("host", "switch")[-1][3]["layout"], "compact")
+        self.assertEqual(self.host.config["prefs"]["panel_mode"], "compact")
+
+    async def test_compact_realigns_to_the_bar_and_hides_when_the_dashboard_closes(self):
+        await self.select("compact")
+        native = self.natives[-1]
+        self.host.trace.clear()
+        self.controller._last_align = 0
+        await self.controller._sync_native()
+        self.assertTrue(self.calls("native", "position_above_bar"))
+        native.dashboard_visible_value = False
+        await self.controller._sync_native()
+        self.assertFalse(self.controller.visible)
+        self.assertFalse(native.interactive_value)
+
+    async def test_reopening_compact_positions_before_showing_even_inside_alignment_interval(self):
+        await self.select("compact")
+        self.host.PANEL = False
+        await self.controller.panel_changed(False)
+        self.host.trace.clear()
+        self.host.PANEL = True
+        await self.controller.panel_changed(True)
+        positions = self.calls("native", "position_above_bar")
+        self.assertTrue(positions, "A newly visible panel must use the current bar position")
+        self.assertLess(self.host.trace.index(positions[0]), self.host.trace.index(self.calls("browser", "show")[0]))
+
+    async def test_presentation_change_recreates_owned_popup_and_keeps_selected_route(self):
+        await self.select("dashboard")
+        old_native, old_browser = self.natives[-1], self.browsers[-1]
+        result = await self.select("compact")
+        self.assertEqual(result["mode"], "compact")
+        self.assertTrue(old_native.closed)
+        self.assertTrue(old_browser.closed)
+        self.assertEqual(len(self.browsers), 2)
+        self.assertEqual(self.browsers[-1].layout, "compact")
+        self.assertEqual(self.calls("host", "switch")[-1][3]["tab"], "modules")
+        self.assertEqual(self.host.surface, "panel")
+
+    async def test_close_during_recreation_never_creates_another_native_adapter(self):
+        await self.select("dashboard")
+        await self.controller.request("compact")
+        self.host.switch_entered.clear()
+        self.host.switch_resume = asyncio.Event()
+        applying = asyncio.create_task(self.controller.apply_pending())
+        try:
+            await asyncio.wait_for(self.host.switch_entered.wait(), 1)
+            await self.controller.close()
+        finally:
+            self.host.switch_resume.set()
+        await asyncio.wait_for(applying, 1)
+        self.assertEqual(len(self.natives), 1)
+        self.assertEqual(len(self.browsers), 1)
+
+    async def test_failed_saved_compact_restoration_preserves_requested_preference(self):
+        self.host.config["prefs"]["panel_mode"] = "compact"
+        self.host.switch_failure = True
+        result = await self.controller.start()
+        self.assertEqual(result["mode"], "embedded")
+        self.assertEqual(self.host.config["prefs"]["panel_mode"], "compact")
+        self.assertTrue(result.get("error"))
+
+    async def test_window_mode_needs_a_verified_app_target_without_native_side_effects(self):
+        result = await self.controller.request("window")
+        self.assertEqual(result.get("code"), "target_unavailable")
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["mode"], "embedded")
+        self.assertFalse(self.calls("browser", "ensure"))
+        self.assertFalse(self.calls("host", "switch"))
+
+    async def test_window_mode_positions_beside_visible_steam_when_no_application_is_focused(self):
+        self.next_target = {"ok": True, "target": "steam"}
+        result = await self.select("window")
+        self.assertEqual(result["mode"], "window")
+        self.assertIn(("native", "position_right", b"valve.steam.gamepadui.main"), self.host.trace)
+        self.assertEqual(self.browsers[0].layout, "window")
+
+    async def test_launcher_toggle_uses_the_icon_anchor_and_never_opens_inside_steam(self):
+        self.host.PANEL = False
+        result = await self.controller.toggle_launcher(0.75)
+        self.assertEqual(result["mode"], "compact")
+        self.assertIn(("native", "position_above_bar", 0.75), self.host.trace)
+        self.assertEqual(self.calls("host", "switch")[-1][3]["tab"], "#launcher")
+        self.assertEqual(self.calls("host", "route")[-1][2], "#launcher")
+        self.assertEqual(self.host.surface, "panel")
+
+    async def test_launcher_rejects_invalid_anchor_before_any_action(self):
+        for value in (True, -1, 2, "0.5", float("nan"), None):
+            result = await self.controller.toggle_launcher(value)
+            self.assertEqual(result.get("code"), "bad_anchor")
+        self.assertEqual(self.natives, [])
+        self.assertEqual(self.host.trace, [])
+
+    async def test_launcher_size_follows_the_frontend_plugin_shortcut_count(self):
+        self.host.menu_width = 662
+        self.host.PANEL = False
+        await self.controller.toggle_launcher(0.75)
+        self.assertEqual(self.browsers[-1].width, 662)
+        self.assertIn(("native", "position_above_bar", 0.75, 662), self.host.trace)
+
+    async def test_launcher_click_during_pending_handoff_does_not_change_its_open_state(self):
+        await self.controller.request("dashboard")
+        before = copy.deepcopy(self.controller._pending)
+        trace = self.host.trace[:]
+        result = await self.controller.toggle_launcher(0.75)
+        self.assertEqual(result.get("code"), "busy")
+        self.assertEqual(self.controller._pending, before)
+        self.assertEqual(self.host.trace, trace)
+
+    async def test_launcher_reserves_transition_while_reading_its_width(self):
+        entered, resume = asyncio.Event(), asyncio.Event()
+
+        async def width():
+            entered.set()
+            await resume.wait()
+            return 382
+
+        self.host.launcher_width = width
+        opening = asyncio.create_task(self.controller.toggle_launcher(0.75))
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            self.assertEqual(self.controller.status()["requested_mode"], "compact")
+            blocked = await self.controller.request("dashboard")
+            self.assertEqual(blocked.get("code"), "busy")
+        finally:
+            resume.set()
+        result = await asyncio.wait_for(opening, 1)
+        self.assertEqual(result["mode"], "compact")
+        self.assertTrue(result["open"])
+
+    async def test_shutdown_during_launcher_width_read_never_opens_a_surface(self):
+        entered, resume = asyncio.Event(), asyncio.Event()
+
+        async def width():
+            entered.set()
+            await resume.wait()
+            return 382
+
+        self.host.launcher_width = width
+        opening = asyncio.create_task(self.controller.toggle_launcher(0.75))
+        await asyncio.wait_for(entered.wait(), 1)
+        await self.controller.close()
+        trace = self.host.trace[:]
+        resume.set()
+        result = await asyncio.wait_for(opening, 1)
+        self.assertEqual(result.get("code"), "closed")
+        self.assertEqual(self.host.trace, trace)
+        self.assertEqual(self.natives, [])
+
+    async def test_closed_launcher_is_recreated_before_changing_its_native_width(self):
+        await self.controller.toggle_launcher(0.75)
+        old_browser = self.browsers[0]
+        await self.controller.toggle_launcher(0.75)
+        self.host.menu_width = 662
+        result = await self.controller.toggle_launcher(0.75)
+        self.assertEqual(result["mode"], "compact")
+        self.assertEqual(len(self.browsers), 2)
+        self.assertTrue(old_browser.closed)
+        self.assertEqual(self.browsers[-1].width, 662)
+        self.assertIn(("native", "position_above_bar", 0.75, 662), self.host.trace)
+
+    async def test_launch_prepares_selected_route_and_acknowledges_before_handoff(self):
+        self.next_target = {"ok": True, "target": "steam"}
+        await self.controller.toggle_launcher(0.5)
+        previous = self.calls("host", "switch")[:]
+        result = await self.controller.launch("fan")
+        self.assertIs(result["ok"], True)
+        self.assertIs(result["pending"], True)
+        self.assertEqual(self.calls("host", "switch"), previous)
+        await self.controller.apply_pending()
+        self.assertEqual(self.controller.mode, "window")
+        self.assertEqual(self.calls("host", "switch")[-1][3]["tab"], "fan")
+        self.assertEqual(self.host.surface, "panel")
+        self.assertFalse(any(entry[2] == "main" for entry in self.calls("host", "switch")))
+
+    async def test_launcher_handoff_keeps_verified_steam_when_its_visibility_flag_changes(self):
+        self.next_target = {"ok": True, "target": "steam"}
+        await self.controller.toggle_launcher(0.5)
+        with mock.patch.object(FakeNative, "steam_visible", return_value=False):
+            result = await self.controller.launch("fan")
+            self.assertIs(result.get("ok"), True, result)
+            result = await self.controller.apply_pending()
+        self.assertEqual(result["mode"], "window")
+        self.assertEqual(self.host.surface, "panel")
+        self.assertEqual(self.calls("host", "switch")[-1][3]["tab"], "fan")
+        self.assertIn(("native", "position_right", b"valve.steam.gamepadui.main"), self.host.trace)
+
+    async def test_launcher_handoff_failure_keeps_the_main_steam_document_closed(self):
+        self.next_target = {"ok": True, "target": "steam"}
+        await self.controller.toggle_launcher(0.5)
+        await self.controller.launch("#discover")
+        self.host.switch_failure = True
+        result = await self.controller.apply_pending()
+        self.assertEqual(result["mode"], "embedded")
+        self.assertFalse(result["open"])
+        self.assertFalse(self.calls("host", "switch")[-1][3]["open"])
+
+    async def test_launch_rejects_nonexistent_routes_without_surface_changes(self):
+        for route in ("#not-real", "other", "');bad()//", None, {"route": "fan"}):
+            result = await self.controller.launch(route)
+            self.assertEqual(result.get("code"), "bad_route")
+        self.assertEqual(self.host.trace, [])
+
+    async def test_saved_unavailable_window_mode_reports_why_it_could_not_restore(self):
+        self.host.config["prefs"]["panel_mode"] = "window"
+        result = await self.controller.start()
+        self.assertEqual(result["mode"], "embedded")
+        self.assertTrue(result.get("error"), "Failed placement restoration must remain visible")
+        self.assertEqual(self.host.config["prefs"]["panel_mode"], "window")
+        self.assertFalse(self.calls("browser", "ensure"))
 
     async def test_invalid_modes_do_not_initialize_and_pending_change_is_busy(self):
         for mode in (None, True, "native", {"mode": []}, {"mode": "unknown"}):
@@ -524,7 +770,7 @@ class PanelControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.natives, adapters)
         self.assertEqual(self.browsers, browsers)
 
-    async def test_fallback_saves_embedded_only_after_embedded_surface_is_ready(self):
+    async def test_fallback_preserves_saved_placement_after_recovery_surface_is_ready(self):
         await self.select("floating")
         self.host.saved.clear()
         self.host.switch_entered = asyncio.Event()
@@ -541,7 +787,8 @@ class PanelControllerTests(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.wait_for(falling_back, 1)
         self.assertEqual(result["mode"], "embedded")
         self.assertEqual(self.host.surface, "main")
-        self.assertEqual(self.host.saved[-1]["prefs"]["panel_mode"], "embedded")
+        self.assertEqual(self.host.saved, [])
+        self.assertEqual(self.host.config["prefs"]["panel_mode"], "floating")
 
     async def test_closed_fallback_does_not_save_after_late_surface_readiness(self):
         await self.select("floating")

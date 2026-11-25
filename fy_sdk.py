@@ -1,3 +1,5 @@
+import importlib.util
+import inspect
 import json
 import os
 import re
@@ -23,6 +25,146 @@ class FrameyApiError(Exception):
         super().__init__(message)
         self.code = str(code)
         self.message = message
+
+
+_CORE_RUNTIME_MANAGER = None
+
+
+def _runtime_manager():
+    global _CORE_RUNTIME_MANAGER
+    if _CORE_RUNTIME_MANAGER is None:
+        name = "_framey_core_decky_runtime_worker"
+        path = Path(__file__).with_name("fy_decky_runtime.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise FrameyApiError("runtime_unavailable", "Core runtime validator is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+        _CORE_RUNTIME_MANAGER = module
+    return _CORE_RUNTIME_MANAGER
+
+
+def validate_decky_runtime_descriptor(descriptor):
+    try:
+        return _runtime_manager().validate_worker_descriptor(descriptor)
+    except Exception as error:
+        raise FrameyApiError(getattr(error, "code", "runtime_unavailable"), str(error)) from error
+
+
+def _forget_runtime(namespace):
+    for name in tuple(sys.modules):
+        if name == namespace or name.startswith(namespace + "."):
+            sys.modules.pop(name, None)
+
+
+class _CompatBackend:
+    def __init__(self, descriptor, adapter, namespace, vendor, plugin_dir):
+        self._descriptor = descriptor
+        self._adapter = adapter
+        self._namespace = namespace
+        self._vendor = vendor
+        self._plugin_dir = plugin_dir
+        self._closed = False
+
+    def _check(self):
+        if self._closed:
+            raise FrameyApiError("runtime_retired", "Compatibility backend has stopped")
+        _vendor_root(self._vendor, self._plugin_dir)
+        validate_decky_runtime_descriptor(self._descriptor)
+
+    async def _run(self, method, *args):
+        self._check()
+        result = getattr(self._adapter, method)(*args)
+        if inspect.isawaitable(result):
+            result = await result
+        self._check()
+        return result
+
+    async def start(self):
+        return await self._run("start")
+
+    async def call(self, method, arg):
+        return await self._run("call", method, arg)
+
+    async def stop(self):
+        if self._closed:
+            return None
+        try:
+            result = self._adapter.stop()
+            return await result if inspect.isawaitable(result) else result
+        finally:
+            self._closed = True
+            _forget_runtime(self._namespace)
+
+
+def _vendor_root(original_root, plugin_dir):
+    if plugin_dir is None:
+        raise FrameyApiError("runtime_vendor", "Plugin directory is unavailable")
+    expected = Path(plugin_dir).absolute() / "vendor" / "decky"
+    try:
+        vendor = Path(original_root)
+        if (
+            not vendor.is_absolute()
+            or vendor != expected
+            or any(p.is_symlink() for p in (vendor, *vendor.parents))
+            or not vendor.is_dir()
+        ):
+            raise ValueError("Original backend must stay in the managed vendor directory")
+    except (TypeError, ValueError, OSError) as error:
+        raise FrameyApiError("runtime_vendor", str(error)) from error
+    return vendor
+
+
+def _compat_backend(descriptor, original_root, plugin_dir, api, profile, rpc_result_version):
+    if (
+        type(profile) is not int
+        or profile != 1
+        or type(rpc_result_version) is not int
+        or rpc_result_version != 1
+    ):
+        raise FrameyApiError("runtime_abi", "Unsupported compatibility backend ABI")
+    vendor = _vendor_root(original_root, plugin_dir)
+    validate_decky_runtime_descriptor(descriptor)
+    root = Path(descriptor["root"])
+    namespace = "_framey_worker_decky_" + os.urandom(16).hex()
+    if (vendor / (namespace + ".py")).exists() or (vendor / namespace).exists():
+        raise FrameyApiError("runtime_collision", "Reserved runtime module name")
+    try:
+        spec = importlib.util.spec_from_file_location(
+            namespace, root / "__init__.py", submodule_search_locations=[str(root)]
+        )
+        if spec is None or spec.loader is None:
+            raise FrameyApiError("runtime_unavailable", "Optional runtime package is unavailable")
+        package = importlib.util.module_from_spec(spec)
+        sys.modules[namespace] = package
+        spec.loader.exec_module(package)
+        spec = importlib.util.spec_from_file_location(namespace + ".runtime", root / "runtime.py")
+        if spec is None or spec.loader is None:
+            raise FrameyApiError("runtime_unavailable", "Optional backend entry is unavailable")
+        entry = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = entry
+        spec.loader.exec_module(entry)
+        validate_decky_runtime_descriptor(descriptor)
+        if (
+            type(getattr(entry, "ABI", None)) is not int
+            or entry.ABI != 1
+            or not callable(getattr(entry, "backend_adapter", None))
+        ):
+            raise FrameyApiError("runtime_abi", "Optional runtime has no compatible backend entry")
+        adapter = entry.backend_adapter(
+            vendor, api, profile=profile, rpc_result_version=rpc_result_version
+        )
+        if not all(callable(getattr(adapter, name, None)) for name in ("start", "call", "stop")):
+            raise FrameyApiError("runtime_abi", "Invalid optional backend adapter")
+        return _CompatBackend(descriptor, adapter, namespace, vendor, plugin_dir)
+    except BaseException:
+        _forget_runtime(namespace)
+        raise
 
 
 class _LazyDirs:
@@ -207,6 +349,28 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
         exe = best[1] / name
         return exe if exe.is_file() and not exe.is_symlink() else best[1]
 
+    descriptor = runtime_metadata.get("decky_runtime")
+    descriptor = dict(descriptor) if type(descriptor) is dict else None
+    compat_adapter = None
+
+    def backend(*, original_root, profile=1, rpc_result_version=1):
+        nonlocal compat_adapter
+        if compat_adapter is None:
+            compat_adapter = _compat_backend(
+                descriptor, original_root, plugin_dir, api_module, profile, rpc_result_version
+            )
+        else:
+            if (
+                type(profile) is not int
+                or profile != 1
+                or type(rpc_result_version) is not int
+                or rpc_result_version != 1
+                or _vendor_root(original_root, plugin_dir) != compat_adapter._vendor
+            ):
+                raise FrameyApiError("runtime_abi", "Compatibility backend arguments changed")
+            compat_adapter._check()
+        return compat_adapter
+
     api_module = types.ModuleType("framey_api")
     api_module.__dict__.update(
         PLUGIN=pid,
@@ -227,6 +391,7 @@ def build(pid, meta, dirs, runtime, rpc, max_events=50):
             snapshot=lambda: fy_store.snapshot_settings(paths.config),
         ),
         companion=companion,
+        compat=types.SimpleNamespace(backend=backend),
         FrameyApiError=FrameyApiError,
     )
     return api_module

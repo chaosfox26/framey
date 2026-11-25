@@ -137,7 +137,7 @@ test("a missing Store module offers a working route back to module management", 
   assert.equal(e.window.sessionStorage.fyTab, "#modules");
 });
 
-test("selected rail text meets normal-text contrast against its background", t => {
+test("selected destination text meets normal-text contrast against its background", t => {
   const e = cleanup(t, fresh());
   e.window.Framey.open("#modules");
   const selected = e.document.querySelector('[role="tab"][aria-selected="true"]');
@@ -247,7 +247,7 @@ test("a remembered Decky Store route survives automatic reopen and unrelated plu
   e.window.Framey.toggle(); e.window.Framey.toggle();
   assert.equal(e.window.sessionStorage.fyTab, "#decky-store");
   const labels = [...e.document.querySelectorAll('[role="tab"]')].map(x => x.textContent);
-  assert.deepEqual(labels, ["Modules", "Store", "Decky Store", "Settings"]);
+  assert.deepEqual(labels, ["Plugins", "Browse", "Settings"]);
 });
 
 test("a stale Decky Store render failure cannot overwrite the Framey Store", async t => {
@@ -265,16 +265,16 @@ test("a stale Decky Store render failure cannot overwrite the Framey Store", asy
   assert.ok(!e.document.body.textContent.includes("late Decky result"));
 });
 
-test("rail focus reveals the selected tab and stays bounded at keyboard edges", t => {
+test("destination focus reveals the selected tab and stays bounded at keyboard edges", t => {
   const revealed = [];
   const e = cleanup(t, fresh({ before(w) { w.Element.prototype.scrollIntoView = function(options) { revealed.push([this.textContent, options.block]); }; } }));
   e.window.Framey.open("#decky-store");
   const selected = e.document.querySelector('[role="tab"][aria-selected="true"]');
   assert.equal(e.document.activeElement, selected);
-  assert.ok(revealed.some(x => x[0] === "Decky Store" && x[1] === "nearest"));
+  assert.ok(revealed.some(x => x[0] === "Browse" && x[1] === "nearest"));
   selected.dispatchEvent(new e.window.KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
   const first = e.document.activeElement;
-  const up = new e.window.KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true });
+  const up = new e.window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true });
   first.dispatchEvent(up);
   assert.equal(up.defaultPrevented, true);
   assert.equal(e.document.activeElement, first);
@@ -283,16 +283,16 @@ test("rail focus reveals the selected tab and stays bounded at keyboard edges", 
   assert.deepEqual(revealed.at(-1), ["Settings", "nearest"]);
 });
 
-test("rail and panel keep a scrolling viewport bound and associate tabs with their content", t => {
+test("fixed destinations associate their tabs with bounded paged content", t => {
   const e = cleanup(t, fresh());
   e.window.Framey.open("#decky-store");
   const panel = e.document.querySelector('[role="region"][aria-label="Framey"]');
   const rail = e.document.querySelector('[role="tablist"]');
   const selected = rail.querySelector('[aria-selected="true"]');
   const content = e.document.querySelector('[role="tabpanel"]');
-  assert.equal(rail.style.overflowY, "auto");
-  assert.equal(parseFloat(rail.style.minHeight), 0);
-  assert.ok(rail.style.maxHeight.includes("100vh"));
+  assert.equal(rail.style.overflowY, "");
+  assert.equal(parseFloat(content.style.minHeight), 0);
+  assert.equal(content.style.overflow, "hidden");
   assert.ok(panel.style.maxHeight.includes("100vh"));
   assert.ok(panel.style.maxWidth.includes("100vw"));
   assert.equal(selected.getAttribute("aria-controls"), content.id);
@@ -500,7 +500,7 @@ test("storage failures are counted without exposing exception fields or stopping
   const failure = { get message() { inspected++; return "private storage detail"; } };
   Object.defineProperty(e.window, "sessionStorage", { configurable: true, get() { throw failure; } });
   assert.doesNotThrow(() => e.window.Framey.open("#modules"));
-  assert.equal(e.document.querySelector('[role="tab"][aria-selected="true"]').textContent, "Modules");
+  assert.equal(e.document.querySelector('[role="tab"][aria-selected="true"]').textContent, "Plugins");
   const counters = plain(e.window.__S.K.diagnostics());
   assert.ok(counters.some(row => row.code === "core.storage_failed" && row.count > 0));
   assert.equal(inspected, 0);

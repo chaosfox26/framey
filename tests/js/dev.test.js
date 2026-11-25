@@ -30,9 +30,19 @@ const boot = (options = {}) => {
   const pending = method => env.calls.filter(x => x.method === method && !x.done).length;
   const buttons = () => [...box.querySelectorAll("button")];
   const button = text => buttons().find(b => b.textContent === text);
+  let navigation;
+  const setNavigation = w.__S.K.setPageNavigation;
+  w.__S.K.setPageNavigation = value => { navigation = value; return setNavigation(value); };
+  const show = control => {
+    for (let index = 0; index < navigation.count; index++) {
+      navigation.onPage(index);
+      if (!control.closest("[hidden]")) return;
+    }
+    throw new Error("Control has no reachable page");
+  };
   const copied = [];
   Object.defineProperty(w.navigator, "clipboard", { configurable: true, value: { writeText: s => { copied.push(s); return Promise.resolve(); } } });
-  return { env, w, d: env.document, FY: w.Framey, box, answer, pending, buttons, button, spy, copied };
+  return { env, w, d: env.document, FY: w.Framey, box, answer, pending, buttons, button, spy, copied, show, navigation: () => navigation };
 };
 
 const STATUS = (extra = {}) => Object.assign({ enabled: true, hot: [], exposure: { state: "closed", addresses: [] } }, extra);
@@ -67,7 +77,7 @@ t("render asks for status and the module list, and draws module rows", async () 
   const h = await open(STATUS({ hot: [{ id: "alpha", mode: "inotify", remaining_s: 1750, truncated: false }] }));
   assert.equal(h.env.calls.filter(c => c.plugin === "_core").map(c => c.method).slice(0, 2).sort().join(), "dev_status,list");
   const text = h.box.textContent;
-  assert.ok(text.includes("Developer"));
+  assert.ok(h.navigation().title.includes("Developer"));
   assert.ok(text.includes("Alpha  (inotify, 30 min left)"), text);
   assert.ok(text.includes("<b>Beta</b>"));
   assert.equal(h.box.querySelector("b"), null);
@@ -78,7 +88,7 @@ t("render asks for status and the module list, and draws module rows", async () 
   assert.equal(h.spy.timers, 0);
 });
 
-t("exposure banner: closed, loopback, exposed (red, with addresses), unknown", async () => {
+t("exposure banner: closed, loopback, exposed (warning, with addresses), unknown", async () => {
   const cases = [
     ["closed", [], "Debug port is closed", false],
     ["loopback", ["127.0.0.1:8080"], "this device only", false],
@@ -92,7 +102,7 @@ t("exposure banner: closed, loopback, exposed (red, with addresses), unknown", a
     const row = [...h.box.querySelectorAll("div")].find(e => /border/.test(e.getAttribute("style") || ""));
     assert.ok(row, state);
     assert.ok(row.textContent.startsWith("Debug port"), state);
-    assert.equal(/255, 122, 122|ff7a7a/i.test(row.getAttribute("style")), red, state);
+    assert.equal(/255, 53, 200|ff35c8/i.test(row.getAttribute("style")), red, state);
     if (state === "exposed") {
       assert.ok(text.includes("0.0.0.0:8080, [::]:8080"));
       assert.ok(text.includes("Anyone who can reach this device"));
@@ -273,6 +283,7 @@ t("On/Off keeps focus on the switched row after the page re-renders", async () =
   const hot = [{ id: "alpha", mode: "inotify", remaining_s: 60, truncated: false }];
   const h = await open(STATUS({ hot }));
   const hotButtons = () => h.buttons().filter(b => b.textContent === "On" || b.textContent === "Off");
+  h.show(hotButtons()[1]);
   hotButtons()[1].focus();
   hotButtons()[1].click();
   h.answer("dev_set", {});
@@ -546,6 +557,56 @@ t("trusted-input mode blocks synthetic reporting clicks", async () => {
   h.button("Report to Framey").click();
   await settle();
   assert.equal(reports, 0);
+});
+
+t("compact developer pages keep module switches reachable one at a time", async () => {
+  const h = boot();
+  let nav;
+  h.w.__S.K.panelLayout = () => "compact";
+  h.w.__S.K.setPageNavigation = value => { nav = value; };
+  const list = Array.from({length: 12}, (_, i) => ({id: "module" + i, name: "Module " + i}));
+  h.FY.dev.render(h.box);
+  h.answer("dev_status", STATUS()); h.answer("list", list);
+  await settle();
+  assert.ok(nav && nav.count > 12);
+  const reached = [];
+  for (let index = 0; index < nav.count; index++) {
+    nav.onPage(index);
+    const visible = [...h.box.querySelectorAll("button")].filter(b => !b.closest("[hidden]"));
+    assert.ok(visible.length <= 1);
+    const toggle = visible.find(b => b.hasAttribute("aria-pressed"));
+    if (toggle) reached.push(toggle.getAttribute("aria-label"));
+  }
+  assert.equal(reached.length, 12);
+  h.buttons().find(b => b.getAttribute("aria-label") === "Hot reload for Module 11: off").click();
+  assert.deepEqual(h.env.sent("dev_set")[0].arg, {id: "module11", hot: true});
+});
+
+t("Back from the first developer screen returns to Settings", async () => {
+  const h = await open();
+  h.navigation().onBack();
+  assert.equal(h.w.__S.K.tab(), "#settings");
+});
+
+t("wide module names have bounded label pages before their exact hot reload switch", async () => {
+  const name = "W".repeat(60);
+  const h = await open(STATUS(), [{id: "wide", name}]);
+  const read = [];
+  for (let index = 0; index < h.navigation().count; index++) {
+    h.navigation().onPage(index);
+    for (const node of h.box.querySelectorAll("div")) {
+      if (!node.closest("[hidden]") && node.children.length === 0 && node.textContent.startsWith("W")) {
+        assert.ok(node.textContent.length <= 42, "A wide name needs readable bounded detail parts");
+        read.push(node.textContent);
+      }
+    }
+  }
+  assert.equal(read.join(""), name);
+  const toggle = h.buttons().find(b => b.getAttribute("aria-label") === "Hot reload for " + name + ": off");
+  h.show(toggle);
+  assert.ok(!toggle.closest("[hidden]"));
+  toggle.click();
+  assert.deepEqual(h.env.sent("dev_set")[0].arg, {id: "wide", hot: true});
 });
 
 (async () => {

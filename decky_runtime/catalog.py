@@ -3,8 +3,11 @@ import hashlib
 import hmac
 import io
 import json
+import os
 import re
 import stat
+import shutil
+import tempfile
 import time
 import zipfile
 import zlib
@@ -24,6 +27,7 @@ from fy_catalog import (
     _safe,
     _transport_access,
     _user_agent,
+    _await,
     validate_source_url,
 )
 
@@ -806,7 +810,7 @@ class DeckyCatalog:
             max_bytes=ARCHIVE_MAX,
         )
 
-    async def _assess(self, arg):
+    async def _selected_version(self, arg):
         source = self.source(arg)
         catalog, status = await self._catalog(arg)
         if status["stale"] or status["origin"] == "unavailable":
@@ -836,6 +840,9 @@ class DeckyCatalog:
             raise CatalogError(
                 "unverified", "The selected version has no supported public package link"
             )
+        return source, record, chosen, status
+
+    async def _download_version(self, source, chosen):
         record_state = self.cache[source["id"]]
         archive_access = record_state.get("archive_access", {})
         access = _access_error(archive_access.get("code"), label="The Decky Store")
@@ -853,6 +860,18 @@ class DeckyCatalog:
             }
             await self._save()
             raise access
+        if not isinstance(data, bytes) or len(data) > ARCHIVE_MAX:
+            raise CatalogError("bad_archive", "The plugin archive exceeds the package limit")
+        if hashlib.sha256(data).hexdigest() != chosen["hash"]:
+            raise CatalogError(
+                "digest_mismatch",
+                "The downloaded plugin does not match the selected catalog checksum",
+            )
+        return data
+
+    async def _assess(self, arg):
+        source, record, chosen, status = await self._selected_version(arg)
+        data = await self._download_version(source, chosen)
         from fy_updates import _finish_transaction
 
         assessment = await _finish_transaction(
@@ -927,3 +946,206 @@ class DeckyCatalog:
             raise CatalogError(
                 "unverified", "The package could not be inspected; compatibility remains unverified"
             )
+
+
+def _discard_owned_import(dest, identity):
+    """Capture before deleting, and retain any ambiguous capture for recovery."""
+    try:
+        current = dest.lstat()
+        if (current.st_dev, current.st_ino) != identity:
+            return False, None
+        quarantine = Path(tempfile.mkdtemp(prefix=".framey-decky-rollback-", dir=dest.parent))
+    except OSError:
+        return False, None
+    captured = quarantine / "package"
+    detached, recovery = False, None
+    try:
+        # A replacement can arrive after lstat. Verify the object actually captured by rename.
+        dest.rename(captured)
+        current = captured.lstat()
+        if (current.st_dev, current.st_ino) == identity:
+            detached = True
+            shutil.rmtree(captured)
+    except OSError:
+        pass
+    finally:
+        try:
+            quarantine.rmdir()
+        except OSError:
+            # Never recursively clean an unexpected or only partially removed capture.
+            recovery = quarantine.name
+    return detached, recovery
+
+
+class CatalogService(DeckyCatalog):
+    """Generation-owned provider; core supplies only trusted transaction context."""
+
+    def __init__(self, host, *, fetcher=None, archive_fetcher=None, install_lock=None, current):
+        super().__init__(host, fetcher, archive_fetcher)
+        self.install_lock = install_lock if install_lock is not None else asyncio.Lock()
+        self._check = current
+
+    async def _download(self, url):
+        self._check()
+        value = await super()._download(url)
+        self._check()
+        return value
+
+    async def _archive(self, url):
+        self._check()
+        value = await super()._archive(url)
+        self._check()
+        return value
+
+    async def _save(self):
+        self._check()
+        task = asyncio.create_task(super()._save())
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        value = task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        self._check()
+        return value
+
+    def _import_guard(self, pid):
+        dest = Path(self.host.PLUGINS) / pid
+        if any(path.is_symlink() for path in (dest.parent, *dest.parent.parents)):
+            raise CatalogError(
+                "linked_output", "The plugin directory cannot contain symbolic links"
+            )
+        if getattr(self.host, "pending", lambda _: None)(pid):
+            raise CatalogError("pending", "Finish the pending module operation before importing")
+        if any(
+            os.path.lexists(path)
+            for path in (dest, dest.with_name(".stage-" + pid), dest.with_name(".old-" + pid))
+        ):
+            raise CatalogError(
+                "existing_output", "Import requires a new module; existing files were kept"
+            )
+        return dest
+
+    async def import_decky(self, arg=None):
+        arg = arg if isinstance(arg, dict) else {}
+        if arg.get("source") not in ("decky_stable", "decky_testing"):
+            raise CatalogError("bad_source", "Choose an official Decky catalog")
+        if (
+            arg.get("confirm") is not True
+            or not isinstance(arg.get("identity"), str)
+            or not HEX.fullmatch(arg["identity"])
+            or not isinstance(arg.get("version_identity"), str)
+            or not HEX.fullmatch(arg["version_identity"])
+        ):
+            raise CatalogError(
+                "confirmation_required", "Review the selected version before importing"
+            )
+        if type(arg.get("profile")) is not int or arg["profile"] != 1:
+            raise CatalogError("unsupported_profile", "Choose the supported experimental profile")
+        if not isinstance(arg.get("id"), str) or not ID.fullmatch(arg["id"]):
+            raise CatalogError("bad_arg", "Choose a Decky catalog plugin")
+        self._check()
+        async with self.install_lock:
+            source, record, chosen, _ = await self._selected_version(arg)
+            self._import_guard(record["id"])
+            try:
+                data = await asyncio.wait_for(self._download_version(source, chosen), 50)
+                from fy_updates import _finish_transaction
+
+                return await _finish_transaction(
+                    self._import_decky(arg, source, record, chosen, data)
+                )
+            except asyncio.TimeoutError:
+                raise CatalogError(
+                    "timeout", "The package download took too long; nothing was imported"
+                )
+            except (OSError, fy_net.NetError) as error:
+                if isinstance(error, fy_net.NetError) and error.code == "too_large":
+                    raise CatalogError("too_large", "The package exceeds the 5 MB import limit")
+                raise CatalogError(
+                    "import_failed", "The package could not be imported; existing files were kept"
+                )
+
+    async def _import_decky(self, arg, source, record, chosen, data):
+        from .importer import ImportError as DeckyImportError, import_plugin
+
+        self._check()
+        pid = record["id"]
+        root = Path(self.host.ROOT)
+        with tempfile.TemporaryDirectory(
+            prefix=".framey-decky-import-", dir=root.parent
+        ) as temporary:
+            package = Path(temporary) / "package"
+            try:
+                report = await asyncio.to_thread(import_plugin, data, chosen["hash"], package, pid)
+            except DeckyImportError as error:
+                raise CatalogError(error.code, str(error))
+            if report["version"] != chosen["name"]:
+                raise CatalogError(
+                    "identity_mismatch",
+                    "The package version does not match the selected catalog version",
+                )
+            receipt = {
+                "v": 1,
+                "id": pid,
+                "format": "decky",
+                "source": source,
+                "artifact": chosen["artifact"],
+                "identity": arg["identity"],
+                "version_identity": arg["version_identity"],
+                "version": chosen["name"],
+                "hash": chosen["hash"],
+                "profile": 1,
+                "experimental": True,
+                "runtime_verified": False,
+            }
+            fy_store.write_json_atomic(package / ".catalog.json", receipt, 8192)
+            self._check()
+            dest = self._import_guard(pid)
+
+            def fill(stage):
+                self._check()
+                # new_only reserves the stage before invoking this callback.
+                shutil.copytree(package, stage, dirs_exist_ok=True)
+                self._check()
+
+            installed = await asyncio.to_thread(
+                self.host.stage_swap, pid, fill, keep=True, new_only=True
+            )
+            try:
+                self._check()
+                current = dest.lstat()
+                if (current.st_dev, current.st_ino) != installed:
+                    raise CatalogError("load_failed", "The imported module changed before loading")
+                await _await(self.host.reload(pid))
+                self._check()
+                check = getattr(self.host, "backend_check", None)
+                if check and await _await(check(pid)):
+                    raise CatalogError("load_failed", "The imported plugin backend could not start")
+                current = dest.lstat()
+                if (current.st_dev, current.st_ino) != installed:
+                    raise CatalogError("load_failed", "The imported module changed while loading")
+            except Exception:
+                detached, recovery = await asyncio.to_thread(_discard_owned_import, dest, installed)
+                if detached:
+                    try:
+                        self._check()
+                        await _await(self.host.reload(pid))
+                    except Exception:
+                        pass
+                message = "The imported plugin backend could not start"
+                if recovery:
+                    message += "; files were kept for recovery in plugins/" + recovery + "/package"
+                raise CatalogError("load_failed", message)
+        return {
+            "ok": pid,
+            "version": chosen["name"],
+            "hash": chosen["hash"],
+            "profile": 1,
+            "experimental": True,
+            "runtime_verified": False,
+            "updated": False,
+        }

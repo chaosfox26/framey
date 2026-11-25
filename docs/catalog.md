@@ -2,14 +2,14 @@
 
 The experimental branch replaces the Store placeholder with a module catalog. This guide describes that branch; an older installed Framey build may still show "Coming soon". Check the installed commit in Settings. The [user guide](using.md) covers installation, module management and the limits of device validation.
 
-| Tab | What it offers |
+| Browse destination | What it offers |
 |---|---|
 | **Store** | Discovery and installation of Framey-native modules, with reviewed catalog snapshot updates. |
-| **Decky Store** | Browsing the upstream Decky catalogs and inspecting a selected package for porting evidence. Decky packages cannot be installed here. |
+| **Decky Store** | Upstream browsing and read-only package inspection. Builds with the experimental runtime also offer confirmed imports for a limited package profile. |
 
 ## Framey Store
 
-Open **Framey** from Steam's bottom bar, then **Store**. Enter a name or phrase in **Search modules** and choose **Search**. **Filters** offers category, source and sort controls. Sort by **Name**, **Recently updated** or **Relevance**. **Reset filters** clears the search and category and restores name sorting, keeping the selected source. Use **Load more** for additional results. **Refresh** asks for current catalog data. Loading, empty results and download errors have their own messages, with **Retry** when a request fails.
+Open the launcher from Steam's bottom-bar Framey icon and choose **Framey Store**, or use **Browse** in the side window. Enter a name or phrase in **Search modules** and choose **Search**. **Filters** offers category, source and sort controls. Sort by **Name**, **Recently updated** or **Relevance**. **Reset filters** clears the search and category and restores name sorting, keeping the selected source. The fixed Previous/Next controls move through bounded screens; **Next results** and **Previous results** replace the current catalog batch. **Refresh** asks for current catalog data. Loading, empty results and download errors have their own messages, with **Retry** when a request fails.
 
 Choose **Details: module name** to read the description, source, version and compatibility information. Compatibility describes declared Framey, API and platform requirements. Steam Frame uses ARM64 Linux (`linux-aarch64`); an entry marked compatible still needs device testing, especially if it contains native code.
 
@@ -82,7 +82,7 @@ Framey is independent of Decky Loader and is not affiliated with or endorsed by 
 
 Use **Report to Framey** in native or Decky catalog details and relevant error views for a Framey-specific problem. The editable preview targets the Framey runtime repository and lets you change the draft or remove optional diagnostics before opening GitHub. Opening a draft does not create an issue; you submit it yourself. See [Report to Framey](using.md#report-to-framey) for the fields, copy fallback and browser-opening limits.
 
-Decky entries show **Not compatible** with the reason "Built for Decky’s interface; it needs a Framey version before it can run here." Processor support is separate: **ARM64: Not checked** means that support has not been established, rather than that the package contains no native code. There is no Install or Update action for a Decky entry.
+Decky entries on builds with the runtime explain that experimental profile support remains unverified. Older builds show the source-port requirement and offer inspection only. Processor support is separate: **ARM64: Not checked** means that support has not been established, rather than that the package contains no native code. The normal Framey-native Install/Update operation never accepts a Decky entry.
 
 ### Inspect a selected version
 
@@ -92,15 +92,21 @@ Decky entries show **Not compatible** with the reason "Built for Decky’s inter
 
 The inspection checks the archive's SHA-256 against the selected catalog version and reads selected metadata and native file headers. It reports detected frontend/backend files, native binary architectures, declared root access, package dependency names and limited hardware hints. Long result lists and paths can be shortened. This is not an exhaustive dependency or hardware review. It does not install, import or execute the plugin. It does not read every file fully or validate every file's CRC. A matching SHA-256 is an integrity check against the catalog, not a publisher signature.
 
-An x86-only package needs an ARM64 build for Steam Frame. Finding ARM64 binaries provides evidence about those files only; missing, mixed or unrecognized binaries leave further work to do. Every Decky result still requires a Framey port. Steam Frame's ARM64 SteamOS and VR interface differ from the Steam Deck environment assumed by many Decky plugins, including its hardware paths and privileged helpers.
+An x86-only package needs an ARM64 build for Steam Frame. Finding ARM64 binaries provides evidence about those files only; missing, mixed or unrecognized binaries leave further work to do. The initial import profile refuses native binaries, remote-binary declarations and privilege flags. Steam Frame's ARM64 SteamOS and VR interface differ from the Steam Deck environment assumed by many Decky plugins, including its hardware paths and privileged helpers.
 
 The optional [Decky-style source-port helper](decky-compatibility.md) helps authors adapt a small set of source API patterns. It is not binary emulation or a complete Decky/React runtime. An author must port the frontend, backend, manifest and platform-specific behavior before distributing a Framey-native module. Archive inspection does not establish that this port exists or works in VR.
 
-Browsing, installing, frontend loading and backend execution are separate capabilities. This Decky Store tab currently browses metadata and inspects archives only. It neither loads a Decky frontend nor executes a Decky backend. A separately adapted Framey-native port follows Framey's normal module lifecycle: its frontend runs in Steam's page, and its backend runs in a worker process when called, including an installation health check. Such a port remains experimental and needs its own runtime and VR evidence.
+### Experimental package import
+
+On builds containing the compatibility runtime, choose **Review experimental import** in the selected version's details. Review the partial-support notice, then choose **Import experimental profile** or **Cancel**. This uses a separate import operation bound to the exact source, listing and version. It downloads the archive again and rechecks its hash; a previous inspection does not authorize or bypass import checks.
+
+Only new installations are supported. Existing plugin folders, backups, staging directories and pending operations are preserved. Import progress and matching results survive reopening the Store. Imported packages retain their original files, legal notices and source/version receipt; the ordinary repository updater does not silently take them over.
+
+Browsing, inspection, installation, frontend loading and backend execution are separate capabilities. Browsing and inspection never execute the package. Confirmed import can load its wrapped original frontend and start its backend through Framey's trusted module lifecycle. A successful startup check does not verify all controls, Steam integrations, hardware behavior or VR interaction. See [Experimental Decky package compatibility](decky-runtime.md) for supported contracts, exact test evidence and remaining limits. The separate source-port helper remains available for author-adapted Framey-native modules.
 
 ### Decky cache and network requests
 
-Opening this tab reads public metadata from the [Decky Store feed](https://plugins.deckbrew.xyz/plugins) or [Decky Store Testing feed](https://testing.deckbrew.xyz/plugins). Browsing and opening details do not download plugin archives. **Inspect compatibility** downloads the chosen version from its public HTTPS artifact URL; when no artifact URL is supplied, the feed's SHA-256 selects an archive on the [default archive host](https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions/). Remote servers receive normal request information, including the requester's IP address and requested URL.
+Opening this tab reads public metadata from the [Decky Store feed](https://plugins.deckbrew.xyz/plugins) or [Decky Store Testing feed](https://testing.deckbrew.xyz/plugins). Browsing, opening details and reviewing an import do not download plugin archives. **Inspect compatibility** and confirmed **Import experimental profile** each download the chosen version from its public HTTPS artifact URL; when no artifact URL is supplied, the feed's SHA-256 selects an archive on the [default archive host](https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions/). Remote servers receive normal request information, including the requester's IP address and requested URL.
 
 Catalog requests and Decky archive inspection use Framey's backend networking. They identify the application as `Framey/<version>` with its project URL in the User-Agent; they do not identify themselves as Decky Loader. A denied or failed request produces an error or a saved-catalog warning rather than an alternate route around the server's decision.
 

@@ -182,7 +182,7 @@ test("browser request uses original captured editor payload and never claims iss
   assert.ok(!h.sent("report_open")[0].arg.body.includes("Optional diagnostics"));
   assert.ok(h.status().includes("Browser launch requested"));
   assert.ok(h.status().includes("Framey has not created an issue"));
-  assert.ok(h.dialog().textContent.includes("Opening GitHub sends the draft to GitHub"));
+  assert.ok(h.dialog().textContent.replace(/Review before sharing(?: · \d+ of \d+)?/g, "").includes("Opening GitHub sends the draft to GitHub"));
 });
 
 test("long URLs offer complete sanitized copy without a browser request", async t => {
@@ -207,8 +207,9 @@ test("clipboard rejection exposes selectable sanitized text only", async t => {
   assert.equal(fallback.hidden, false);
   assert.ok(fallback.value.includes("[removed]"));
   assert.ok(!fallback.value.includes("PRIVATE_BODY"));
-  assert.equal(h.document.activeElement, fallback);
-  assert.equal(fallback.selectionEnd, fallback.value.length);
+  const excerpt = h.dialog().querySelector('[data-report-page="fallback"]:not([hidden]) textarea');
+  assert.equal(h.document.activeElement, excerpt);
+  assert.equal(excerpt.selectionEnd, excerpt.value.length);
   assert.ok(!h.status().includes("private system error"));
 });
 
@@ -462,4 +463,47 @@ test("source uses core backend opening only and never stores report drafts", () 
   const source = fs.readFileSync(path.join(ROOT, "fy-report.js"), "utf8");
   assert.ok(!/window\.open|SteamClient|sessionStorage|localStorage|innerHTML|insertAdjacentHTML/.test(source));
   assert.ok(!/setTimeout|setInterval|fetch\(/.test(source));
+});
+
+test("compact report has explicit field pages and keeps edited chunks in the sanitized export", async t => {
+  const h = boot(t, {handlers: {report_draft: () => draft({body: "A".repeat(240), diagnostics: ""})}});
+  Object.defineProperty(h.window, "innerHeight", {value: 320, configurable: true});
+  await h.open();
+  assert.equal(h.dialog().style.overflow, "hidden");
+  assert.ok(h.dialog().querySelector('[aria-label="Report pages"]'));
+  while (!h.dialog().querySelector('[data-report-page="details"]:not([hidden])')) await h.click("Next");
+  const editor = h.dialog().querySelector('[data-report-page="details"]:not([hidden]) textarea');
+  assert.ok(editor.value.length <= 80);
+  editor.value = "Reviewed first chunk";
+  editor.dispatchEvent(new h.window.Event("input", {bubbles: true}));
+  await h.click("Next");
+  await h.click("Previous");
+  assert.equal(h.dialog().querySelector('[data-report-page="details"]:not([hidden]) textarea').value, "Reviewed first chunk");
+  await h.click("Copy sanitized report");
+  assert.ok(h.copied[0].includes("Reviewed first chunk"));
+  assert.ok(h.copied[0].includes("A".repeat(160)));
+});
+
+test("typing across a report chunk boundary preserves cursor order and the complete export", async t => {
+  const h = boot(t, {handlers: {report_draft: () => draft({body: "A".repeat(42) + "TAIL", diagnostics: ""})}});
+  await h.open();
+  while (!h.dialog().querySelector('[data-report-page="details"]:not([hidden])')) await h.click("Next");
+  let editor = h.dialog().querySelector('[data-report-page="details"]:not([hidden]) textarea');
+  editor.focus();
+  editor.setSelectionRange(editor.value.length, editor.value.length);
+  for (const character of ["x", "y"]) {
+    editor = h.document.activeElement;
+    assert.equal(editor.tagName, "TEXTAREA");
+    assert.ok(!editor.closest("[hidden]"));
+    editor.setRangeText(character, editor.selectionStart, editor.selectionEnd, "end");
+    editor.dispatchEvent(new h.window.InputEvent("input", {bubbles: true, data: character, inputType: "insertText"}));
+  }
+  assert.equal(h.field("Report details").value, "A".repeat(42) + "xyTAIL");
+  assert.equal(h.document.activeElement.value, "xy");
+  assert.equal(h.document.activeElement.selectionStart, 2);
+  await h.click("Next");
+  await h.click("Previous");
+  assert.equal(h.document.activeElement.value, "xy");
+  await h.click("Copy sanitized report");
+  assert.equal(h.copied[0], "Framey: Example problem\n\n" + "A".repeat(42) + "xyTAIL");
 });

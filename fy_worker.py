@@ -413,6 +413,13 @@ class Worker:
             self.runtime.update(
                 plugin=plugin, version=meta.get("version"), plugin_dir=pathlib.Path(file).parent
             )
+            descriptor = self.runtime.get("decky_runtime")
+            managed = "decky_compat" in meta or meta.get("_framey_decky_managed") is True
+            if descriptor is not None or managed:
+                validate = getattr(self.sdk_module, "validate_decky_runtime_descriptor", None)
+                if not callable(validate):
+                    raise ValueError("Optional runtime validation is unavailable")
+                validate(descriptor)
             self.plugin, self.key = plugin, "fy_" + plugin
             if self.sdk_module is not None:
                 self.sdk = self.sdk_module.build(plugin, meta, self.dirs, self.runtime, Rpc(self))

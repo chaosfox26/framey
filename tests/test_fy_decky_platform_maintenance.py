@@ -1,4 +1,6 @@
 import hashlib
+import sys
+from types import SimpleNamespace
 import tempfile
 import unittest
 import urllib.parse
@@ -10,7 +12,8 @@ import test_fy_decky_catalog_validation as fixtures
 import test_fy_maint as maintenance
 
 import fy_catalog
-import fy_decky_catalog as decky
+from decky_runtime import catalog as decky
+from decky_runtime import runtime as provider
 import fy_maint
 import fy_pkg
 
@@ -146,6 +149,16 @@ class CatalogEvidenceIsolation(unittest.IsolatedAsyncioTestCase):
         self.fetcher = flow.ControlledFetcher()
         self.archives = flow.NoArchiveFetcher()
         self.service = fy_catalog.Catalog(self.host, fetcher=self.fetcher, archive_fetcher=self.archives)
+        # Admission is intentionally injected for provider/cache semantics; real
+        # manager verification and default-off behavior have separate coverage.
+        lease = SimpleNamespace(entry=provider)
+        broker = SimpleNamespace(acquire=lambda host: lease, current=lambda host, handle: handle is lease,
+                                 status=lambda host: {"enabled": True})
+        activation = mock.patch.dict(sys.modules, {"fy_decky_runtime": broker})
+        activation.start()
+        self.addCleanup(activation.stop)
+        self.addAsyncCleanup(provider.shutdown, self.host)
+
         blocker = mock.patch("socket.create_connection", side_effect=AssertionError("controlled test reached a network socket"))
         blocker.start()
         self.addCleanup(blocker.stop)

@@ -1,6 +1,6 @@
 "use strict";
 const assert = require("assert");
-const { makeDom } = require("./harness");
+const { makeDom, TOK } = require("./harness");
 
 const FILES = ["fy-api.js", "fy-ui.js", "fy-pages.js", "fy-strings-en.js", "fy-modules.js", "fy-settings.js"];
 const CORRUPT = "Settings file is damaged. Framey is running with no plugins enabled until it is repaired.";
@@ -35,16 +35,31 @@ const boot = (over = {}, trusted = "off") => {
     loadFiles: FILES,
   });
   const FY = env.window.Framey;
+  const K = FY._k(TOK);
+  let navigation = null;
+  const setNavigation = K.setPageNavigation;
+  const clearNavigation = K.clearPageNavigation;
+  K.setPageNavigation = value => { navigation = value; return setNavigation(value); };
+  K.clearPageNavigation = () => { navigation = null; return clearNavigation(); };
   const box = FY.el("");
   env.document.body.append(box);
   const sent = m => calls.filter(c => c.method === m);
   const all = () => [...box.querySelectorAll('[role="button"],[role="switch"],[role="option"]')];
   const find = (label, n = 0) => {
-    const hit = all().filter(e => e.getAttribute("aria-label") === label);
+    let hit = all().filter(e => e.getAttribute("aria-label") === label);
+    const start = navigation;
+    if (!hit[n] && start) {
+      for (let i = 0; i < start.count; i++) {
+        start.onPage(i);
+        hit = all().filter(e => e.getAttribute("aria-label") === label);
+        if (hit[n]) break;
+      }
+      if (!hit[n]) start.onPage(start.index);
+    }
     if (!hit[n]) throw new Error("no control '" + label + "' in: " + all().map(e => e.getAttribute("aria-label")).join(" | "));
     return hit[n];
   };
-  const has = label => all().some(e => e.getAttribute("aria-label") === label);
+  const has = label => { try { return !!find(label); } catch { return false; } };
   const click = async label => {
     find(label).click();
     await settle();
@@ -54,7 +69,15 @@ const boot = (over = {}, trusted = "off") => {
     await settle();
   };
   const toasts = () => [...env.document.querySelectorAll('[role="status"]')].map(e => e.textContent).join(" | ");
-  return { FY, box, calls, R, sent, has, find, click, open, toasts, text: () => box.textContent };
+  const text = () => {
+    const start = navigation;
+    if (!start) return box.textContent;
+    const screens = [];
+    for (let i = 0; i < start.count; i++) { start.onPage(i); screens.push(box.textContent); }
+    start.onPage(start.index);
+    return screens.join(" ");
+  };
+  return { FY, box, calls, R, sent, has, find, click, open, toasts, text };
 };
 
 const tests = [];
@@ -71,6 +94,7 @@ t("modules page: corrupt settings shows the banner and a Repair settings button"
 t("settings page: corrupt settings shows the banner and a Repair settings button", async () => {
   const c = boot({ status: { settings_state: "corrupt" } });
   await c.open("settings");
+  await c.click("Support");
   assert.ok(c.text().includes(CORRUPT));
   assert.ok(c.has("Repair settings"));
 });
@@ -81,6 +105,7 @@ t("ok settings: no banner on either page", async () => {
   assert.ok(!c.text().includes(CORRUPT) && !c.text().includes(UNREADABLE));
   assert.ok(!c.has("Repair settings"));
   await c.open("settings");
+  await c.click("Support");
   assert.ok(!c.text().includes(CORRUPT) && !c.text().includes(UNREADABLE));
   assert.ok(!c.has("Repair settings"));
 });
@@ -91,6 +116,7 @@ t("unreadable settings: message shown on both pages and no repair button", async
   assert.ok(c.text().includes(UNREADABLE));
   assert.ok(!c.has("Repair settings"));
   await c.open("settings");
+  await c.click("Support");
   assert.ok(c.text().includes(UNREADABLE));
   assert.ok(!c.has("Repair settings"));
 });
@@ -112,6 +138,7 @@ t("repair flow: confirm calls settings_repair once, refreshes the page and shows
 t("repair flow on settings page calls settings_repair once and refreshes", async () => {
   const c = boot({ status: { settings_state: "corrupt" } });
   await c.open("settings");
+  await c.click("Support");
   await c.click("Repair settings");
   c.R.status = { settings_state: "ok" };
   await c.click("Repair");

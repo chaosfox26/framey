@@ -68,14 +68,42 @@ def _websocket(target):
     return raw
 
 
-def _expression(action):
-
+def _expression(action, layout="window", launcher_width=382):
+    if not isinstance(layout, str) or layout not in ("compact", "window"):
+        raise ValueError("invalid_layout")
+    if type(launcher_width) is not int or not 382 <= launcher_width <= 662:
+        raise ValueError("invalid_launcher_width")
     config = json.dumps(
-        {"owner": OWNER, "key": KEY, "action": action}, ensure_ascii=True, allow_nan=False
+        {
+            "owner": OWNER,
+            "key": KEY,
+            "action": action,
+            "layout": layout,
+            "width": launcher_width if layout == "compact" else 800,
+        },
+        ensure_ascii=True,
+        allow_nan=False,
     )
     return """(async () => {
   const config = CONFIG;
   const failure = code => ({ok: false, code});
+  if (config.action === 'target') {
+    try {
+      if (location.origin !== 'https://steamloopback.host') return failure('target_context_unavailable');
+      const store = window.FocusedAppWindowStore;
+      if (!store || typeof store !== 'object' || Array.isArray(store)) return failure('target_context_unavailable');
+      const getters = ['GetFocusedAppID', 'GetFocusedWindowID', 'GetFocusedOverlayAppID',
+                       'GetFocusedOverlayPID'].map(name => store[name]);
+      if (!getters.every(getter => typeof getter === 'function')) return failure('target_context_unavailable');
+      const values = getters.map(getter => getter.call(store));
+      if (!values.every(value => value == null || typeof value === 'string' ||
+          (typeof value === 'number' && Number.isFinite(value)))) return failure('target_context_unavailable');
+      const empty = value => value == null || value === 0 || value === '0' || value === '';
+      return values.every(empty) ? {ok: true, target: 'steam'} : failure('app_target_unavailable');
+    } catch {
+      return failure('target_context_unavailable');
+    }
+  }
   if (location.origin !== 'https://steamloopback.host') return failure('context_changed');
   const owned = value => value && typeof value === 'object' &&
     value.owner === config.owner && value.key === config.key && value.popup !== window;
@@ -88,13 +116,19 @@ def _expression(action):
     record = undefined;
   }
   if (config.action === 'probe') return {ok: true, available: typeof factory === 'function'};
+  if (record && config.action === 'ensure' &&
+      ((record.layout === undefined ? 'window' : record.layout) !== config.layout ||
+       (record.width === undefined ? (record.layout === 'compact' ? 382 : 800) : record.width) !== config.width)) {
+    return failure('layout_conflict');
+  }
   let created = false;
   if (!record && config.action !== 'ensure') {
     return config.action === 'show' ? failure('popup_missing') : {ok: true, absent: true};
   }
   if (!record) {
     if (typeof factory !== 'function') return failure('factory_unavailable');
-    record = {owner: config.owner, key: config.key, popup: null, element: null,
+    record = {owner: config.owner, key: config.key, layout: config.layout, width: config.width,
+              popup: null, element: null,
               state: 'creating', pending: null, busy: false};
     window.__frameyPanelHost = record;
     created = true;
@@ -102,7 +136,10 @@ def _expression(action):
       try {
         const result = await factory.call(manager.constructor, 'Framey_Panel', {
           browserType: 1, eCreationFlags: 2, strVROverlayKey: config.key,
-          title: 'Framey', dimensions: {width: 542, height: 607, left: 0, top: 0}
+          title: 'Framey', dimensions: {
+            width: config.width,
+            height: config.layout === 'compact' ? 140 : 720, left: 0, top: 0
+          }
         });
         if (!result || !result.popup || result.popup === window) { record.state = 'failed'; return; }
         record.popup = result.popup;
@@ -170,7 +207,11 @@ class OverlayBrowser:
         self._lock = asyncio.Lock()
         self._serial = 0
 
-    async def _run(self, action):
+    async def _run(self, action, layout="window", launcher_width=382):
+        if not isinstance(layout, str) or layout not in ("compact", "window"):
+            return self._failure("invalid_layout")
+        if type(launcher_width) is not int or not 382 <= launcher_width <= 662:
+            return self._failure("invalid_launcher_width")
         ws = None
         try:
             async with asyncio.timeout(DEADLINE):
@@ -192,10 +233,10 @@ class OverlayBrowser:
                             "id": request_id,
                             "method": "Runtime.evaluate",
                             "params": {
-                                "expression": _expression(action),
+                                "expression": _expression(action, layout, launcher_width),
                                 "returnByValue": True,
                                 "awaitPromise": True,
-                                "userGesture": True,
+                                "userGesture": action != "target",
                             },
                         }
                     )
@@ -219,6 +260,20 @@ class OverlayBrowser:
                         value = remote.get("value") if isinstance(remote, dict) else None
                         if not isinstance(value, dict) or type(value.get("ok")) is not bool:
                             raise _Failure("debugger_reply_failed")
+                        if action == "target":
+                            if value["ok"] is not True:
+                                code = value.get("code")
+                                if (
+                                    set(value) != {"ok", "code"}
+                                    or not isinstance(code, str)
+                                    or code
+                                    not in {"app_target_unavailable", "target_context_unavailable"}
+                                ):
+                                    raise _Failure("debugger_reply_failed")
+                                raise _Failure(code)
+                            if set(value) != {"ok", "target"} or value.get("target") != "steam":
+                                raise _Failure("debugger_reply_failed")
+                            return {"ok": True, "target": "steam"}
                         if value["ok"] is not True:
                             code = value.get("code")
                             allowed = {
@@ -231,6 +286,7 @@ class OverlayBrowser:
                                 "window_api_unavailable",
                                 "window_command_failed",
                                 "popup_closing",
+                                "layout_conflict",
                             }
                             raise _Failure(
                                 code
@@ -280,8 +336,11 @@ class OverlayBrowser:
             "code": code,
         }
 
-    async def ensure(self):
-        return await self._run("ensure")
+    async def ensure(self, layout="window", launcher_width=382):
+        return await self._run("ensure", layout, launcher_width)
+
+    async def active_target(self):
+        return await self._run("target")
 
     async def probe(self):
         result = await self._run("probe")

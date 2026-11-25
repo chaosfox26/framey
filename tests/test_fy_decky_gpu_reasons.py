@@ -9,9 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import fy_decky_catalog
-
-
+from decky_runtime import catalog as fy_decky_catalog
 def inspect(source="", name="Example", binary=None):
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w", zipfile.ZIP_DEFLATED) as archive:

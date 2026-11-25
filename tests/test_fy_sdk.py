@@ -27,7 +27,7 @@ POSIX = os.name == "posix"
 POSIX_ONLY = "POSIX only; run on Linux: python3 -I -m unittest discover -s tests -p test_fy_sdk.py"
 CONTRACT_MEMBERS = {
     "PLUGIN", "API", "runtime", "dirs", "settings", "log", "events", "fetch", "resource_url",
-    "resource_revoke", "list_dir", "migrate", "companion", "FrameyApiError",
+    "resource_revoke", "list_dir", "migrate", "companion", "compat", "FrameyApiError",
 }
 
 
@@ -173,7 +173,7 @@ class PyiAgreementTest(Base):
         self.assertNotIn("#", PYI.read_text(encoding="utf-8"))
 
     def test_sources_follow_project_rules(self):
-        allowed = {"collections", "errno", "hashlib", "json", "os", "re", "shutil", "stat", "sys", "tempfile", "threading", "time", "types",
+        allowed = {"importlib", "inspect", "collections", "errno", "hashlib", "json", "os", "re", "shutil", "stat", "sys", "tempfile", "threading", "time", "types",
                    "datetime", "pathlib", "typing", "fy_store"}
         for name in ("fy_store.py", "fy_sdk.py"):
             path = ROOT / name

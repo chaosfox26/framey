@@ -15,6 +15,90 @@ interface FrameyApiError extends Error {
   code?: string;
 }
 
+type FrameySteamReadOperation = "visibleApps" | "app" | "focus";
+type FrameySteamSource = "steam-appstore-cache" | "steam-focus-cache";
+type FrameySteamFocusValue = string | number | null;
+
+/** Raw cached Steam categories; null means missing, and numbers are not rating labels. */
+interface FrameySteamApp {
+  readonly appId: number;
+  readonly steamDeckCategory: number | null;
+  readonly steamOsCategory: number | null;
+  readonly steamMachineCategory: number | null;
+  readonly steamFrameCategory: number | null;
+}
+
+/** The visible library snapshot is bounded to 4096 records, not all owned or running apps. */
+interface FrameySteamVisibleAppsSnapshot {
+  readonly status: "empty" | "present" | "partial";
+  readonly apps: readonly FrameySteamApp[];
+  readonly visibleCount: number;
+  readonly truncated: boolean;
+}
+
+type FrameySteamAppSnapshot =
+  | { readonly status: "not_found"; readonly app: null }
+  | { readonly status: "present" | "partial"; readonly app: FrameySteamApp };
+
+/** Window focus scalars; these do not establish a running app or current scene. */
+interface FrameySteamFocusSnapshot {
+  readonly status: "empty" | "present";
+  readonly focusedAppId: FrameySteamFocusValue;
+  readonly focusedWindowId: FrameySteamFocusValue;
+  readonly focusedOverlayAppId: FrameySteamFocusValue;
+  readonly focusedOverlayPid: FrameySteamFocusValue;
+}
+
+interface FrameySteamReadReply<Data, Source extends FrameySteamSource> {
+  readonly ok: true;
+  readonly available: true;
+  readonly source: Source;
+  readonly data: Data;
+}
+
+interface FrameySteam {
+  /** Fixed cached reads only. Unavailable, unauthorized and stale reads reject with a code. */
+  read(
+    operation: "visibleApps",
+    args?: Readonly<Record<string, never>>,
+  ): Promise<FrameySteamReadReply<FrameySteamVisibleAppsSnapshot, "steam-appstore-cache">>;
+  read(
+    operation: "app",
+    args: { readonly appId: number },
+  ): Promise<FrameySteamReadReply<FrameySteamAppSnapshot, "steam-appstore-cache">>;
+  read(
+    operation: "focus",
+    args?: Readonly<Record<string, never>>,
+  ): Promise<FrameySteamReadReply<FrameySteamFocusSnapshot, "steam-focus-cache">>;
+}
+
+interface FrameyCompatModuleLease {
+  readonly root: string;
+  readonly entry: string;
+  readonly token: string;
+  readonly ttl: 600;
+}
+
+interface FrameyCompatModules {
+  /**
+   * Gets the current instance's lease. Each new graph adapter must use {fresh:true} once;
+   * this local option retires an earlier incarnation and never enters the native payload.
+   */
+  issue(options?: { readonly fresh: true }): Promise<FrameyCompatModuleLease>;
+  /** Renews only this API instance's live owned token. Expired leases require a fresh issue. */
+  touch(token: string): Promise<{ readonly renewed: true; readonly ttl: 600 }>;
+  revoke(token: string): Promise<{ readonly revoked: true }>;
+}
+
+interface FrameyCompat {
+  /**
+   * Native module graph leases have a 600-second lifetime and a private 240-second heartbeat.
+   * A long sleep can expire the lease. The plugin-local compat.modules.lost event carries only
+   * {code}, without graph identity; discard the current graph and acquire a fresh lease.
+   */
+  readonly modules: FrameyCompatModules;
+}
+
 type FrameyCatalogCompatibilityStatus = "compatible" | "incompatible" | "unverified";
 type FrameyDeckyBinaryFormat = "ELF" | "PE" | "Mach-O";
 type FrameyDeckyBinaryArchitecture = "aarch64" | "x86_64" | "x86" | "arm" | "unknown";
@@ -331,6 +415,8 @@ interface FrameyApi {
   readonly lang: string;
   readonly events: FrameyEvents;
   readonly i18n: FrameyApiI18n;
+  readonly steam: FrameySteam;
+  readonly compat: FrameyCompat;
   timeout(fn: () => void, ms: number): number;
   interval(fn: () => void, ms: number): number;
   clear(handle: number): void;
@@ -366,6 +452,8 @@ interface FrameyApi {
   notify(options: FrameyNotifyOptions): FrameyNotification;
   onVisible(fn: (visible: boolean) => void): FrameyUnsubscribe;
   t(key: string, vars?: FrameyTranslationVars): string;
+  /** Requests the native HTTPS handler; does not confirm page visibility. */
+  openURL(url: string): Promise<{ requested: true }>;
   fetch(url: string, options?: FrameyFetchOptions): Promise<FrameyFetchResult>;
   resource(root: "data" | "runtime", path: string, ttl?: number): Promise<string>;
   revoke(url: string): Promise<boolean>;

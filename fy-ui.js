@@ -28,6 +28,16 @@
 		".fy-o>div{min-width:0;max-width:100%;overflow-wrap:anywhere}",
 		".fy-em{padding:12px;font:18px sans-serif;color:#8a8aa0}",
 		".fy-g{display:flex;gap:10px;align-items:stretch}",
+		'.fy-panel[data-fy-navigation="single"]{background:#0e141b!important;border-radius:6px!important;box-shadow:0 8px 24px #0007!important}',
+		'.fy-panel[data-fy-navigation="single"]>.fy-panel-header{border-bottom:1px solid #707d8b55;padding-bottom:6px}',
+		'.fy-panel[data-fy-navigation="single"]>.fy-panel-header>img,.fy-panel[data-fy-navigation="single"]>.fy-panel-header>[aria-label="Back"],.fy-panel[data-fy-navigation="single"]>[role="tablist"],.fy-panel[data-fy-navigation="single"]>[aria-label="Page navigation"]{display:none!important}',
+		'.fy-panel[data-fy-navigation="single"] [role="button"],.fy-panel[data-fy-navigation="single"] [role="switch"]{border-radius:5px!important;border:1px solid #707d8b!important;background:linear-gradient(170deg,#303b47,#242f3b 45%,#1d2732)!important;box-shadow:inset 0 1px 0 #ffffff33,0 2px 2px #202126,0 4px 5px #0005;font-size:16px!important;transition:transform 90ms,box-shadow 90ms}',
+		'.fy-panel[data-fy-navigation="single"] [role="button"]:hover,.fy-panel[data-fy-navigation="single"] [role="switch"]:hover{border-color:#5585ff!important}',
+		'.fy-panel[data-fy-navigation="single"] [aria-pressed="true"],.fy-panel[data-fy-navigation="single"] .fy-p{border-color:#5585ff!important;background:#172d49!important}',
+		'.fy-panel[data-fy-navigation="single"] [role="button"]:active,.fy-panel[data-fy-navigation="single"] [role="switch"]:active{transform:translateY(2px);filter:none;border-color:#536170!important;background:#0e141b!important;box-shadow:inset 0 2px 4px #0007,inset 0 -1px 0 #ffffff12}',
+		'.fy-panel[data-fy-navigation="single"] input:not([type="range"]),.fy-panel[data-fy-navigation="single"] select,.fy-panel[data-fy-navigation="single"] textarea{box-sizing:border-box;min-width:0;background:#101822;color:#fff;border:1px solid #707d8b;border-radius:4px;caret-color:#9bbcff}',
+		'@media(prefers-reduced-motion:reduce){.fy-panel[data-fy-navigation="single"] [role="button"],.fy-panel[data-fy-navigation="single"] [role="switch"]{transition:none}}',
+		'.fy-panel[data-fy-navigation="single"]>[role="tabpanel"]{padding:0!important}',
 	].join("");
 
 	const diagnostic = code => {

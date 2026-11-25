@@ -3,13 +3,9 @@
 	const privateApi = framey && framey._k && framey._k(typeof __fyt === "string" ? __fyt : "");
 	if (!privateApi || !privateApi.kit || privateApi.settingsReady) return;
 	privateApi.settingsReady = true;
-	const { T, call, tx, put, col, row, say, warn, obj, day, make, dmg, ui, GREY, GOOD, BAD, UP, WARN, TITLE, DANGER } =
-		privateApi.kit;
-	const panelModes = [
-		{ id: "embedded", label: "Inside Steam" },
-		{ id: "dashboard", label: "Beside Steam dashboard" },
-		{ id: "floating", label: "Floating during games" },
-	];
+	const { T, call, tx, col, row, say, warn, obj, day, make, ui, GREY, BAD, WARN, TITLE, DANGER } = privateApi.kit;
+	const knownPanelMode = mode => ["compact", "window", "embedded", "dashboard", "floating"].includes(mode);
+	const knownPanelLayout = layout => layout === "compact" || layout === "window";
 	let stopPanelUpdates = null;
 	const leaveSettings = () => {
 		const stop = stopPanelUpdates;
@@ -18,13 +14,222 @@
 	};
 
 	const settings = {
-		render(box) {
+		render(box, requestedCategory) {
 			leaveSettings();
 			const k = make(box);
 			const { btn, sw } = k;
-			const panelSection = tx("margin:20px 0");
+			const windowLayout =
+				!!box.closest(".fy-panel") && typeof privateApi.singleWindow === "function" && privateApi.singleWindow();
+			let settingsCategory = windowLayout
+					? typeof requestedCategory === "string"
+						? requestedCategory
+						: "Preferences"
+					: requestedCategory === "Decky"
+						? "Decky"
+						: "",
+				settingsPage = 0,
+				categoryPage = 0,
+				supportPage = 0,
+				settingsHomeVisible = false,
+				settingsScreenSerial = 0,
+				loaderCheckSerial = 0;
+			const categoryNames = ["Updates", "Preferences", "Decky", "Maintenance", "Worker", "Support"];
+			k.bounded = !!box.closest(".fy-panel");
+			const show = k.show;
+			const showScreen = (...nodes) => {
+				settingsHomeVisible = true;
+				settingsScreenSerial++;
+				return (k.rawShow || show)(...nodes);
+			};
+			k.show = (...nodes) => {
+				settingsHomeVisible = false;
+				settingsScreenSerial++;
+				if (typeof privateApi.clearPageNavigation === "function") privateApi.clearPageNavigation();
+				return windowLayout ? windowShow(...nodes) : show(...nodes);
+			};
+			if (typeof k.pages === "function") {
+				const pages = k.pages;
+				k.pages = (...args) => {
+					settingsHomeVisible = false;
+					settingsScreenSerial++;
+					return windowLayout ? windowPages(...args) : pages(...args);
+				};
+			}
+			let preserveWindowView = false;
+			const windowShow = (...nodes) => {
+				const result = preserveWindowView
+					? box.replaceChildren(...nodes.filter(Boolean))
+					: (k.rawShow || show)(...nodes);
+				const large = box.clientWidth >= 650;
+				box.style.cssText += ";display:flex;flex-direction:column;gap:8px;min-height:0;overflow:hidden";
+				for (const node of box.querySelectorAll("*")) {
+					if (node.matches("[role=button],[role=switch],[role=slider],input")) {
+						node.style.minHeight = large ? "48px" : "44px";
+						node.style.boxSizing = "border-box";
+						node.style.flexShrink = "0";
+						node.style.fontSize = large ? "18px" : "16px";
+					} else if (!node.childElementCount) {
+						node.style.fontSize = node.style.fontSize === "28px" ? "22px" : large ? "18px" : "15px";
+						node.style.lineHeight = "1.3";
+						node.style.margin = "0";
+						node.style.overflowWrap = "anywhere";
+						if (node.textContent.length > 650) {
+							const full = node.textContent;
+							const preserve = preserveWindowView;
+							node.textContent = full.slice(0, 240) + "…";
+							node.after(
+								row(
+									btn("Read full details", () => {
+										const context = Array.from(box.children);
+										reader(
+											"Details",
+											full,
+											() => {
+												preserveWindowView = preserve;
+												try {
+													k.show(...context);
+												} finally {
+													preserveWindowView = false;
+												}
+											},
+											preserve,
+										);
+									}),
+								),
+							);
+						}
+					}
+				}
+				return result;
+			};
+			const input = (label, type = "search") => {
+				const node = tx(
+					"height:44px;min-width:0;width:100%;padding:8px;border:1px solid #556575;border-radius:5px;background:#0e141b;color:#fff;font-size:16px",
+				);
+				const control = document.createElement("input");
+				control.type = type;
+				control.setAttribute("aria-label", label);
+				control.placeholder = label;
+				control.style.cssText = node.style.cssText;
+				return control;
+			};
+			const reader = (title, value, close, preserve = false) => {
+				const text = String(value || T("v.nonotes"));
+				const search = input("Find in text");
+				const position = input("Text position", "number");
+				position.style.width = "110px";
+				position.style.flex = "none";
+				const parts = [];
+				let part = "",
+					lines = 0;
+				for (const character of text) {
+					part += character;
+					if (character === "\n" || character === "\r" || character === "\u2028" || character === "\u2029") lines++;
+					if (part.length >= 200 || lines >= 5) {
+						parts.push(part);
+						part = "";
+						lines = 0;
+					}
+				}
+				if (part) parts.push(part);
+				position.min = "1";
+				position.max = String(Math.max(1, parts.length));
+				position.value = "1";
+				const excerpt = tx("white-space:pre-wrap;height:234px;overflow:hidden", "");
+				const status = tx("");
+				status.setAttribute("role", "status");
+				const paint = () => {
+					const at = Math.max(0, Math.min(Number(position.max) - 1, Math.floor(Number(position.value) || 1) - 1));
+					excerpt.textContent = parts[at];
+					status.textContent = "Text position " + (at + 1) + " of " + position.max;
+				};
+				position.oninput = paint;
+				search.oninput = () => {
+					const at = text.toLocaleLowerCase().indexOf(search.value.toLocaleLowerCase());
+					if (at < 0) {
+						status.textContent = "No matching text";
+						return;
+					}
+					let end = 0;
+					position.value = String(
+						parts.findIndex(part => {
+							end += part.length;
+							return at < end;
+						}) + 1,
+					);
+					paint();
+				};
+				preserveWindowView = preserve;
+				try {
+					k.show(
+						tx(TITLE, title),
+						search,
+						row(tx("flex:1", "Text position"), position),
+						status,
+						excerpt,
+						row(btn(preserve ? "Return to progress details" : T("c.back"), close)),
+					);
+				} finally {
+					preserveWindowView = false;
+				}
+				paint();
+				search.focus();
+			};
+			const windowPages = (title, nodes, options = {}) => {
+				preserveWindowView = !!options.preserve;
+				try {
+					k.show(
+						title && tx(TITLE, title),
+						...nodes,
+						options.back && row(btn(options.preserveBack ? "Return to progress" : T("c.back"), options.back)),
+					);
+				} finally {
+					preserveWindowView = false;
+				}
+			};
+			if (windowLayout) {
+				k.ask = (title, text, actions, cancel) => {
+					const ask = () => {
+						const value = String(text || "");
+						const cancelButton = btn(T("c.cancel"), cancel);
+						k.show(
+							tx(TITLE, title),
+							col("#fff", value.length > 650 ? value.slice(0, 240) + "…" : value),
+							value.length > 650 && row(btn("Read full details", () => reader(title, value, ask))),
+							...actions.map(action => row(btn(action[0], action[1], action[2]))),
+							row(cancelButton),
+						);
+						cancelButton.focus();
+					};
+					ask();
+				};
+				k.notes = (id, tag, title, close) => {
+					k.show(tx(TITLE, title), col(GREY, T("c.loading")), row(btn(T("c.back"), close)));
+					return call("notes", { id, tag }).then(
+						k.guard(reply => reader(title, reply.error || reply.notes || T("v.nonotes"), close)),
+						k.guard(k.bad),
+					);
+				};
+			}
+			const textScreens = (text, color = "#fff") => {
+				let rest = String(text || "");
+				const pages = [];
+				while (rest) {
+					let end = Math.min(72, rest.length);
+					if (end < rest.length) end = rest.lastIndexOf(" ", end) > 24 ? rest.lastIndexOf(" ", end) : end;
+					const part = rest.slice(0, end);
+					pages.push(() => [tx("font-size:18px;line-height:1.35;overflow-wrap:anywhere;color:" + color, part)]);
+					rest = rest.slice(end).trimStart();
+				}
+				return pages;
+			};
+			const setNavigation = (count, title, onPage, onBack) => {
+				if (!windowLayout && typeof privateApi.setPageNavigation === "function")
+					privateApi.setPageNavigation({ index: settingsPage, count, title, onPage, onBack, onLayout: () => home() });
+			};
+			const panelSection = tx("");
 			panelSection.setAttribute("role", "group");
-			panelSection.setAttribute("aria-label", "Framey panel");
+			panelSection.setAttribute("aria-label", "Panel diagnostics");
 			panelSection.tabIndex = -1;
 			let panelState = null,
 				panelError = "",
@@ -40,14 +245,24 @@
 					!value ||
 					typeof value !== "object" ||
 					Array.isArray(value) ||
-					!panelModes.some(mode => mode.id === value.mode) ||
+					!knownPanelMode(value.mode) ||
 					typeof value.available !== "boolean" ||
 					typeof value.active !== "boolean"
 				)
 					return null;
 				if (
 					(value.pending !== undefined && typeof value.pending !== "boolean") ||
-					(value.pending === true && !panelModes.some(mode => mode.id === value.requested_mode))
+					(value.pending === true && !knownPanelMode(value.requested_mode))
+				)
+					return null;
+				if (
+					(value.layout !== undefined && !knownPanelLayout(value.layout)) ||
+					(value.placements !== undefined &&
+						(!value.placements ||
+							typeof value.placements !== "object" ||
+							Array.isArray(value.placements) ||
+							typeof value.placements.compact !== "boolean" ||
+							typeof value.placements.window !== "boolean"))
 				)
 					return null;
 				if (
@@ -57,6 +272,10 @@
 					return null;
 				return {
 					mode: value.mode,
+					layout: value.layout,
+					placements: value.placements
+						? { compact: value.placements.compact, window: value.placements.window }
+						: { compact: value.available, window: false },
 					available: value.available,
 					active: value.active,
 					pending: value.pending === true,
@@ -70,107 +289,127 @@
 					? reply.error.slice(0, 240)
 					: "Panel controls are unavailable. Select Retry to check again.";
 			const paintPanel = () => {
-				if (panelClosed || !k.alive() || !panelSection.isConnected) return;
+				if (panelClosed || !k.alive() || settingsCategory !== "Panel status") return;
 				const focused = panelSection.contains(document.activeElement);
-				const choices = ui().list({
-					items: panelModes.map(mode => ({
-						...mode,
-						disabled: panelBusy || !panelState || (mode.id !== "embedded" && !panelState.available),
-					})),
-					selected: panelState && panelState.mode,
-					onselect: mode => {
-						if (!panelBusy && panelState && mode !== panelState.mode) requestPanel("panel_mode", { mode }, mode);
+				const status = panelBusy
+					? panelMoving
+						? "Panel operation pending."
+						: T("c.loading")
+					: panelError
+						? "Panel status unavailable."
+						: "Panel status confirmed.";
+				const pages = [
+					() => {
+						const line = col(panelError ? WARN : "#fff", status, 18);
+						line.setAttribute("role", "status");
+						line.setAttribute("aria-live", "polite");
+						return [line];
 					},
-				});
-				choices.setAttribute("aria-label", "Framey panel mode");
-				choices.setAttribute("aria-busy", String(panelBusy));
-				const status = col(
-					panelError ? WARN : GREY,
-					panelMoving ? "Moving Framey panel…" : panelBusy ? T("c.loading") : panelError ? T("c.unavailable") : "",
-					18,
-				);
-				status.setAttribute("role", "status");
-				status.setAttribute("aria-live", "polite");
-				panelSection.replaceChildren(
-					...[
-						tx("font-size:22px;font-weight:700;margin-bottom:10px", "Framey panel"),
-						choices,
-						status,
-						panelError && col(WARN, panelError, 18),
-						panelState &&
-							!panelState.available &&
-							col(GREY, "Native panel modes are unavailable. Inside Steam remains available.", 17),
-						col(GREY, "Floating panels remain visible after the Steam menu closes.", 17),
-						col(
-							GREY,
-							(panelState && panelState.input_notice) || "Controller pointers may interrupt game controls.",
-							17,
+				];
+				if (panelState) {
+					const host =
+						panelState.mode === "embedded"
+							? "Recovery: Framey is inside Steam."
+							: panelState.mode === "dashboard"
+								? "Legacy panel host: Steam dashboard."
+								: panelState.mode === "floating"
+									? "Legacy panel host: floating."
+									: "Panel host: " + panelState.mode + ".";
+					pages.push(
+						...textScreens(host),
+						...textScreens(
+							"Native window available: " +
+								(panelState.available ? "yes" : "no") +
+								". Active: " +
+								(panelState.active ? "yes" : "no") +
+								".",
 						),
-						col(GREY, "Open Framey using its bottom-bar button through the Steam System menu in 2D or VR.", 17),
-						(panelError || panelMoving || (panelState && !panelState.available)) &&
-							row(
-								btn(T("c.retry"), () => requestPanel("panel_status"), { disabled: panelInFlight }),
-								panelError && k.reportButton(panelReport || { error: panelError, code: "panel_status_failed" }),
-							),
-					].filter(Boolean),
-				);
-				if (focused) {
-					const target = panelBusy
-						? panelSection
-						: panelSection.querySelector('[role="option"][aria-selected="true"][aria-disabled="false"]') ||
-							panelSection.querySelector('[role="option"][aria-disabled="false"]') ||
-							panelSection;
-					target.focus();
+					);
 				}
+				if (panelError) pages.push(...textScreens(panelError, WARN));
+				if (panelState && panelState.input_notice) pages.push(...textScreens(panelState.input_notice));
+				pages.push(() => [
+					row(
+						btn(T("c.retry"), requestPanel, { disabled: panelInFlight }),
+						panelError && k.reportButton(panelReport || { error: panelError, code: "panel_status_failed" }),
+					),
+				]);
+				settingsPage = Math.min(settingsPage, pages.length - 1);
+				if (windowLayout) {
+					const detail = [
+						status,
+						panelState &&
+							"Panel host: " +
+								panelState.mode +
+								". Native window available: " +
+								(panelState.available ? "yes" : "no") +
+								". Active: " +
+								(panelState.active ? "yes" : "no") +
+								".",
+						panelError,
+						panelState && panelState.input_notice,
+					]
+						.filter(Boolean)
+						.join("\n\n");
+					panelSection.replaceChildren(
+						col(panelError ? WARN : "#fff", detail.length > 500 ? detail.slice(0, 240) + "…" : detail),
+						row(btn(T("c.retry"), requestPanel, { disabled: panelInFlight })),
+						detail.length > 500 ? row(btn("Read full details", () => reader("Panel status", detail, home))) : tx(""),
+						panelError
+							? row(k.reportButton(panelReport || { error: panelError, code: "panel_status_failed" }))
+							: tx(""),
+						row(
+							btn(T("c.back"), () => {
+								settingsCategory = "Support";
+								home();
+							}),
+						),
+					);
+					windowShow(panelSection);
+				} else panelSection.replaceChildren(...pages[settingsPage]());
+				setNavigation(
+					pages.length,
+					"Panel status",
+					page => {
+						settingsPage = page;
+						paintPanel();
+					},
+					() => {
+						settingsCategory = "Support";
+						settingsPage = supportPage;
+						home();
+					},
+				);
+				if (focused) (panelSection.querySelector('[role="button"][aria-disabled="false"]') || panelSection).focus();
 			};
-			const requestPanel = (method, arg, requested) => {
-				if (panelClosed || !k.alive() || !panelSection.isConnected || panelInFlight) return;
+			const requestPanel = () => {
+				if (panelClosed || !k.alive() || panelInFlight) return;
 				const serial = ++panelSerial;
 				const wasMoving = panelMoving;
 				panelAttempted = panelInFlight = panelBusy = true;
-				if (method === "panel_mode") panelMoving = true;
 				panelError = "";
 				panelReport = null;
 				paintPanel();
-				let applied = false;
-				const accept = reply => {
-					if (panelClosed || !k.alive() || serial !== panelSerial || !panelSection.isConnected) return;
-					applied = true;
+				const finishPanel = reply => {
+					if (panelClosed || !k.alive() || serial !== panelSerial) return;
+					panelInFlight = false;
 					const actual = panelStatus(reply);
-					if (actual && (!actual.pending || !requested || actual.requested_mode === requested)) {
+					if (actual) {
 						panelState = actual;
 						panelBusy = panelMoving = actual.pending;
-						panelError =
-							actual.error ||
-							(!actual.pending && requested && actual.mode !== requested
-								? "The panel stayed in its previous mode. Select Retry to check its current state."
-								: "");
+						panelError = actual.error;
+						if (knownPanelLayout(actual.layout) && typeof privateApi.setPanelLayout === "function")
+							privateApi.setPanelLayout(actual.layout);
 					} else {
-						panelBusy = panelMoving = method === "panel_status" && wasMoving;
+						panelBusy = panelMoving = wasMoving;
 						panelError = reply.error
 							? panelProblem(reply)
-							: "Framey did not confirm the panel mode. The last confirmed choice is shown; select Retry to check again.";
+							: "Framey did not confirm the panel status. Select Retry to check again.";
 					}
-					if (panelError) {
-						const mode = panelModes.find(mode => mode.id === (requested || (actual && actual.requested_mode)));
-						panelReport = supportError(
-							panelError + (mode ? " Requested panel mode: " + mode.label + "." : ""),
-							method + "_failed",
-						);
-					}
+					panelReport = panelError ? supportError(panelError, "panel_status_failed") : null;
 					paintPanel();
 				};
-				const finishPanel = reply => {
-					if (panelClosed || serial !== panelSerial) return;
-					panelInFlight = false;
-					accept(reply);
-					if (!applied) {
-						panelBusy = panelMoving;
-						panelError = "Panel status is unavailable. Select Retry to check its current state.";
-						paintPanel();
-					}
-				};
-				return call(method, arg).then(finishPanel, error =>
+				return call("panel_status").then(finishPanel, error =>
 					finishPanel({ error: String((error && error.message) || T("c.noanswer")) }),
 				);
 			};
@@ -233,7 +472,8 @@
 					el.disabled = true;
 					el.setAttribute("aria-busy", "true");
 				}
-				const done = k.guard(r => {
+				const done = r => {
+					if (panelClosed || !k.alive()) return;
 					const values = method === "prefs_set" ? r.prefs : r;
 					const saved = values && values[key];
 					if (el) {
@@ -249,7 +489,7 @@
 					apply(saved);
 					if (el) el.value = saved;
 					if (after) after();
-				});
+				};
 				return call(method, { [key]: value }).then(
 					r => {
 						saving.delete(key);
@@ -281,24 +521,30 @@
 				typeof c.commit === "string" &&
 				/^[0-9a-f]{40}$/.test(c.commit);
 			const check = (el, after) => {
+				const serial = ++loaderCheckSerial;
+				const screen = settingsScreenSerial;
 				k.hold(true);
 				if (el) {
 					el.textContent = T("c.checking");
 					el.style.color = GREY;
 				}
-				call("loader_check").then(
-					k.guard(r => {
-						k.hold(false);
-						lres = r.loader || null;
-						cand = r.candidate || (lres && lres.candidate) || null;
-						info = r.installed || null;
-						line = lres ? null : T("c.failed", { msg: r.error || T("c.noanswer") });
-						if (r.error || (lres && lres.state === "error")) supportError(r.error || lres.msg, "loader_check_failed");
-						if (after && checkedCandidate(cand) && lres && lres.state !== "error") return after();
-						if (after && !line && (!lres || lres.state !== "current"))
-							line = T("c.failed", { msg: (lres && lres.msg) || T("c.noanswer") });
-						home();
-					}),
+				const accept = r => {
+					if (panelClosed || !k.alive() || serial !== loaderCheckSerial) return;
+					const sameScreen = screen === settingsScreenSerial;
+					if (sameScreen) k.hold(false);
+					lres = r.loader || null;
+					cand = r.candidate || (lres && lres.candidate) || null;
+					info = r.installed || null;
+					line = lres ? null : T("c.failed", { msg: r.error || T("c.noanswer") });
+					if (r.error || (lres && lres.state === "error")) supportError(r.error || lres.msg, "loader_check_failed");
+					if (after && sameScreen && settingsHomeVisible && checkedCandidate(cand) && lres && lres.state !== "error")
+						return after();
+					if (after && !line && (!lres || lres.state !== "current") && !checkedCandidate(cand))
+						line = T("c.failed", { msg: (lres && lres.msg) || T("c.noanswer") });
+					if (settingsHomeVisible && settingsCategory === "Updates") home();
+				};
+				return call("loader_check").then(accept, error =>
+					accept({ error: String((error && error.message) || T("c.noanswer")) }),
 				);
 			};
 			const loaderUpdate = (confirm, selected) =>
@@ -323,10 +569,12 @@
 							} catch (e) {
 								if (typeof privateApi.diagnostic === "function") privateApi.diagnostic("core.storage_failed");
 							}
-							const b = k.btn(T("c.back"), back);
-							put(out, col(GOOD, T("s.restarting"), 21, true), row(b));
-							b.focus();
-							return out;
+							const result = k.result(out, {}, T("s.restarting"), back);
+							if (k.bounded) {
+								const b = box.closest(".fy-panel")?.querySelector('[aria-label="Back"]');
+								if (b && b.isConnected && b.style.display !== "none") b.focus();
+							}
+							return result;
 						}
 						k.result(out, r, "", back, r.error ? supportError(r.error, "loader_update_failed") : undefined);
 					},
@@ -400,6 +648,9 @@
 					value,
 					onchange: v => savePref("workers_max", v, control),
 				});
+				control.style.flexWrap = windowLayout && box.clientWidth >= 650 ? "nowrap" : "wrap";
+				control.style.rowGap = "0";
+				control.querySelector(".fy-l").style.flex = windowLayout && box.clientWidth >= 650 ? "1" : "0 0 100%";
 				return [control, col(GREY, T("s.workers_text"), 16)];
 			};
 			const finish = (method, title, okKey) =>
@@ -408,119 +659,610 @@
 					() => call(method),
 					(r, out) => k.result(out, r, T(okKey), back, r.error ? supportError(r.error, method + "_failed") : undefined),
 				);
-			const home = () => {
-				const p = obj(st.prefs);
-				const autoUnavailable =
-					auto.error ||
-					typeof auto.enabled !== "boolean" ||
-					(auto.enabled &&
-						(!Number.isFinite(auto.last) || auto.last < 0 || !Number.isFinite(new Date(auto.last * 1000).getTime())));
-				const autoText = autoUnavailable
-					? T("c.unavailable") + (auto.error ? " — " + T("c.failed", { msg: String(auto.error).slice(0, 200) }) : "")
-					: auto.enabled
-						? auto.last
-							? T("s.auto_last", { d: new Date(auto.last * 1000).toLocaleString() })
-							: T("s.auto_never")
-						: T("s.auto_off");
-				if (autoUnavailable && !supportContext.error)
-					supportError(auto.error || T("c.unavailable"), "autocheck_status_unavailable");
-				const dev = p.dev && p.dev.enabled === true;
-				const rv = (window.FY_RUNTIME || {}).version;
-				const iv = (info && info.version) || rv;
-				const c = tx("background:#181826;border-radius:14px;padding:12px;margin-bottom:12px");
-				const sum = col(GREY, "", 19);
-				const state = lres && lres.state;
-				const v = line
-					? [line, BAD]
-					: state === "current"
-						? [T("s.current"), GOOD]
-						: state === "update"
-							? lres.downgrade
-								? [T("s.older"), WARN]
-								: [T("s.update_avail"), UP]
-							: state === "error"
-								? [T("s.check_failed", { msg: lres.msg }), BAD]
-								: ["", GREY];
-				sum.textContent = v[0];
-				sum.style.color = v[1];
-				put(
-					c,
-					tx("font-size:22px;font-weight:700", T("s.framey")),
-					col(
-						GREY,
-						iv
-							? T("s.installed", { v: iv, c: ld.commit || T("c.unknown") })
-							: T("s.installed_c", { c: ld.commit || T("c.unknown") }),
-					),
-					col("#fff", cand ? identity(cand) : T("s.not_checked"), 18),
-					cand && cand.prerelease && col(WARN, cand.label || T("s.prerelease"), 18),
-					sum,
-					(line || state === "error") && row(k.reportButton(supportContext)),
-					col(GREY, T("s.ch_ro", { channel: p.channel === "prerelease" ? "prerelease" : "stable" }), 16),
-					row(
-						btn(T("s.check"), () => check(sum), { primary: true }),
-						btn(T("s.update"), updateAsk, { primary: state === "update" }),
-					),
-					row(
-						btn(T("s.notes"), () => k.notes("_loader", cand.tag, T("s.notes_title", { tag: cand.tag }), home), {
-							disabled: !cand,
-						}),
-						btn(T("s.history"), () => k.versions("_loader", T("s.history"), back)),
-					),
-					ld.kept && col("#fff", T("s.kept"), 19, true),
-					ld.kept &&
+			const categoryHome = () => {
+				settingsCategory = "";
+				settingsPage = categoryPage;
+				home();
+			};
+			const repairSettings = () =>
+				k.ask(
+					T("sd.repair_title"),
+					T("sd.repair_text"),
+					[
+						[
+							T("sd.repair_ok"),
+							() =>
+								call("settings_repair").then(
+									k.guard(reply => {
+										if (reply.ok) say(T("sd.repaired"));
+										else warn(reply.error || T("c.noanswer"));
+										back();
+									}),
+								),
+							{ primary: true },
+						],
+					],
+					back,
+				);
+			const windowHistory = () => {
+				let versions = [],
+					page = 0,
+					more = false,
+					busy = false,
+					error = "",
+					note = "",
+					query = "",
+					offset = 0;
+				const eligible = value => value.eligible === true && value.current !== true;
+				const label = value => value.version || value.tag;
+				const install = (value, confirm) => {
+					if (!eligible(value)) return;
+					if (value.downgrade && !confirm)
+						return k.ask(
+							T("v.confirm_title", { v: label(value) }),
+							T("v.confirm_text", { v: label(value) }),
+							[[T("v.goback"), () => install(value, true), DANGER]],
+							() => detail(value),
+						);
+					return k.work(
+						T("v.installing", { v: label(value) }),
+						() => call("ver_install", { id: "_loader", tag: value.tag, confirm: !!confirm }),
+						(reply, out) => {
+							if (reply.confirm)
+								return k.ask(
+									T("v.confirm_title", { v: label(value) }),
+									reply.confirm,
+									[[T("v.goback"), () => install(value, true), DANGER]],
+									() => detail(value),
+								);
+							if (reply.current === true) return k.result(out, {}, T("m.already"), home);
+							const result = reply.error || reply.ok || reply.staged ? reply : { error: T("c.noanswer") };
+							return k.result(
+								out,
+								result,
+								T("v.installed_ok", { v: reply.version || label(value) }),
+								home,
+								result.error ? supportError(result.error, "version_install_failed") : undefined,
+							);
+						},
+					);
+				};
+				const detail = value => {
+					const compatibility = obj(value.compat);
+					const metadata = [
+						label(value),
+						value.tag,
+						value.published && T("v.published", { d: day(value.published) }),
+						compatibility.msg,
+						value.downgrade && T("v.limits"),
+						!eligible(value) && (value.reason || T(value.current ? "v.installed" : "c.unavailable")),
+						value.label,
+					]
+						.filter(Boolean)
+						.join("\n\n");
+					k.show(
+						tx(TITLE, label(value)),
+						col(GREY, metadata.length > 500 ? metadata.slice(0, 240) + "…" : metadata),
+						metadata.length > 500 &&
+							row(btn("Read full details", () => reader(label(value), metadata, () => detail(value)))),
 						row(
-							btn(T("s.done"), () => finish("loader_done", T("s.working"), "s.done_ok")),
-							btn(T("s.rollback"), () =>
-								k.ask(
-									T("s.rollback_title"),
-									T("s.rollback_text"),
-									[[T("s.rollback"), () => finish("loader_roll", T("s.rolling"), "s.rolled"), DANGER]],
-									back,
+							btn(T(value.downgrade ? "v.goback" : "v.install"), () => install(value, false), {
+								disabled: !eligible(value),
+								primary: !value.downgrade,
+							}),
+							btn(T("v.notes"), () => k.notes("_loader", value.tag, label(value), () => detail(value))),
+						),
+						row(btn(T("c.back"), list)),
+					);
+				};
+				const list = () => {
+					const search = input("Find a version");
+					search.value = query;
+					const position = input("Result position", "number");
+					position.style.width = "110px";
+					position.style.flex = "none";
+					position.min = "1";
+					position.value = String(offset + 1);
+					const results = tx("display:flex;flex-direction:column;gap:8px");
+					const count = col(GREY, "", 15);
+					const paint = () => {
+						const found = versions.filter(value =>
+							[value.version, value.tag, value.label, value.reason, value.published]
+								.join(" ")
+								.toLocaleLowerCase()
+								.includes(query.toLocaleLowerCase()),
+						);
+						offset = Math.max(0, Math.min(Math.max(0, found.length - 1), offset));
+						position.max = String(Math.max(1, found.length));
+						position.value = String(offset + 1);
+						count.textContent = found.length + " matching versions · " + versions.length + " loaded";
+						results.replaceChildren(
+							...found.slice(offset, offset + 3).map(value => {
+								const button = btn(label(value), () => detail(value));
+								button.style.cssText +=
+									";height:44px;min-height:44px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:16px";
+								return button;
+							}),
+							!found.length ? col(GREY, T("v.none")) : tx(""),
+						);
+					};
+					search.oninput = () => {
+						query = search.value;
+						offset = 0;
+						paint();
+					};
+					position.oninput = () => {
+						offset = Math.floor(Number(position.value) || 1) - 1;
+						paint();
+					};
+					k.show(
+						tx(TITLE, T("s.history")),
+						search,
+						row(col(GREY, "Result position", 15), position),
+						count,
+						results,
+						(error || note) &&
+							row(
+								btn(error ? "History error details" : "History details", () =>
+									reader(T("s.history"), error || note, list),
 								),
 							),
+						row(
+							more && btn(T("v.more"), () => load(page + 1), { disabled: busy }),
+							error && btn(T("c.retry"), () => load(page + 1), { disabled: busy }),
+							btn(T("c.back"), home),
 						),
-				);
-				k.show(
-					tx(TITLE, T("s.title")),
-					dmg(k, ss, back),
-					c,
-					panelSection,
-					pref(T("s.auto"), "autocheck", p.autocheck === true, draw),
-					col(GREY, autoText, 16),
-					pref(T("s.notify_loader"), "notify_loader", p.notify_loader === true),
-					pref(T("s.notify_plugins"), "notify_plugins", p.notify_plugins === true),
-					...maintBox(),
-					...workerBox(),
-					col(GREY, T("s.lang"), 16),
-					col(GREY, T("s.safe_ro", { state: T(st.safe === true ? "s.on" : "s.off") }), 16),
-					col(GREY, T("s.safe_text"), 16),
-					col(GREY, T("s.dev_ro", { state: T(dev ? "s.on" : "s.off") }), 16),
-					dev && row(btn(T("s.dev_open"), lazyDev), btn(T("s.diag"), lazyDev)),
-					row(
-						btn(T("s.reload"), () => {
-							k.hold(true);
-							call("reload").then(
-								k.guard(r => {
-									k.hold(false);
-									if (r.error) {
-										supportError(r.error, "module_reload_failed");
-										warn(r.error);
-									} else say(T("s.reloaded"));
-								}),
+					);
+					paint();
+				};
+				const load = next => {
+					if (busy) return;
+					busy = true;
+					list();
+					const accept = reply => {
+						busy = false;
+						if (reply.error) error = String(reply.error);
+						else {
+							error = "";
+							page = next;
+							more = !!reply.more;
+							note = reply.note || note;
+							versions = versions.concat(
+								(Array.isArray(reply.versions) ? reply.versions : []).filter(
+									value => value && typeof value === "object" && typeof value.tag === "string",
+								),
 							);
-						}),
-					),
-					col(GREY, T("s.trust"), 18),
-					!line && state !== "error" && row(k.reportButton(supportContext)),
+						}
+						list();
+					};
+					return call("ver_list", { id: "_loader", page: next }).then(
+						k.guard(accept),
+						k.guard(reason => accept({ error: String(reason.message || reason) })),
+					);
+				};
+				return load(1);
+			};
+			let deckyState = null,
+				deckyPending = false,
+				deckyAttempted = false,
+				deckyRequestSerial = 0,
+				deckyAction = "";
+			const deckyError = value => {
+				const error = obj(value).error;
+				return String(typeof error === "string" ? error : obj(error).message || "").slice(0, 300);
+			};
+			const deckyReply = reply => {
+				const value = obj(reply);
+				if (typeof value.installed !== "boolean" || typeof value.enabled !== "boolean")
+					return { ...obj(deckyState), phase: "error", error: deckyError(value) || T("s.decky_unavailable") };
+				return value;
+			};
+			const runDecky = (method, args) => {
+				const cancelling = method === "decky_runtime_enable" && args.enabled === false && deckyAction === "enable";
+				if (deckyPending && !cancelling) return;
+				const requestSerial = ++deckyRequestSerial;
+				deckyPending = true;
+				deckyAttempted = true;
+				deckyAction = method === "decky_runtime_enable" ? (args.enabled ? "enable" : "disable") : method;
+				home();
+				return call(method, args).then(
+					reply => {
+						if (requestSerial !== deckyRequestSerial) return;
+						const value = deckyReply(reply);
+						const manager = privateApi.optionalRuntime;
+						const previous = manager && typeof manager.state === "function" ? manager.state() : null;
+						if (
+							manager &&
+							typeof manager.invalidate === "function" &&
+							(method !== "decky_runtime_status" ||
+								value.enabled !== true ||
+								(previous && Number.isSafeInteger(value.generation) && value.generation > previous.generation))
+						)
+							manager.invalidate(value);
+						if (panelClosed || !k.alive()) return;
+						deckyPending = false;
+						deckyState = value;
+						if (settingsCategory === "Decky") home();
+					},
+					error => {
+						if (requestSerial !== deckyRequestSerial || panelClosed || !k.alive()) return;
+						deckyPending = false;
+						deckyState = {
+							...obj(deckyState),
+							error: String((error && error.message) || T("c.noanswer")),
+							phase: "error",
+						};
+						if (settingsCategory === "Decky") home();
+					},
 				);
-				paintPanel();
-				if (!panelAttempted) requestPanel("panel_status");
+			};
+			const deckyBox = () => {
+				if (!deckyAttempted)
+					Promise.resolve().then(() => {
+						if (!panelClosed && k.alive() && !deckyAttempted) runDecky("decky_runtime_status", {});
+					});
+				const value = obj(deckyState);
+				const enabled = value.enabled === true;
+				const phaseBusy = ["enabling", "installing", "disabling", "removing"].includes(value.phase);
+				const known = typeof value.enabled === "boolean" && typeof value.installed === "boolean";
+				const toggle = sw(T("s.decky_enable"), enabled, (next, el) => {
+					el.value = enabled;
+					if (!deckyPending) runDecky("decky_runtime_enable", { enabled: next });
+				});
+				toggle.disabled = deckyPending || phaseBusy || !known;
+				if (deckyPending) toggle.setAttribute("aria-busy", "true");
+				const error = deckyError(value);
+				const phaseText = {
+					enabling: "s.decky_enabling",
+					installing: "s.decky_installing",
+					disabling: "s.decky_disabling",
+					removing: "s.decky_removing",
+				}[value.phase];
+				const state = deckyPending
+					? T(
+							deckyAction === "enable"
+								? "s.decky_enabling"
+								: deckyAction === "disable"
+									? "s.decky_disabling"
+									: "s.decky_working",
+						)
+					: phaseText
+						? T(phaseText)
+						: !known
+							? T("s.decky_unavailable")
+							: enabled
+								? T("s.decky_on")
+								: value.installed
+									? T("s.decky_off_installed")
+									: T("s.decky_off");
+				return [
+					toggle,
+					col(GREY, state),
+					typeof value.version === "string" && value.version && col(GREY, T("s.decky_version", { v: value.version })),
+					col(GREY, T("s.decky_explain"), 15),
+					error && col(BAD, error),
+					((deckyPending && deckyAction === "enable") || ["enabling", "installing"].includes(value.phase)) &&
+						btn(T("s.decky_cancel"), () => runDecky("decky_runtime_enable", { enabled: false })),
+					row(
+						btn(T("s.decky_refresh"), () => runDecky("decky_runtime_status", {}), { disabled: deckyPending }),
+						value.installed === true &&
+							btn(T("s.decky_remove"), () => runDecky("decky_runtime_remove", {}), {
+								disabled: deckyPending || phaseBusy,
+							}),
+					),
+				].filter(Boolean);
+			};
+			const windowHome = () => {
+				const p = obj(st.prefs);
+				const dev = p.dev && p.dev.enabled === true;
+				const text = (value, color = GREY) => col(color, value, 15);
+				const detail = (label, value) => btn(label, () => reader(label, value, home));
+				let nodes;
+				if (settingsCategory === "Panel status") {
+					if (!panelSection.isConnected) showScreen(panelSection);
+					paintPanel();
+					if (!panelAttempted) requestPanel();
+					return;
+				}
+				if (settingsCategory === "Decky") nodes = deckyBox();
+				else if (settingsCategory === "Preferences") {
+					const unavailable =
+						auto.error ||
+						typeof auto.enabled !== "boolean" ||
+						(auto.enabled &&
+							(!Number.isFinite(auto.last) || auto.last < 0 || !Number.isFinite(new Date(auto.last * 1000).getTime())));
+					const status = unavailable
+						? T("c.unavailable")
+						: auto.enabled
+							? auto.last
+								? T("s.auto_last", { d: new Date(auto.last * 1000).toLocaleString() })
+								: T("s.auto_never")
+							: T("s.auto_off");
+					nodes = [
+						pref(T("s.auto"), "autocheck", p.autocheck === true, draw),
+						text(status),
+						pref(T("s.notify_loader"), "notify_loader", p.notify_loader === true),
+						pref(T("s.notify_plugins"), "notify_plugins", p.notify_plugins === true),
+						text(T("s.lang")),
+						text(T("s.safe_ro", { state: T(st.safe === true ? "s.on" : "s.off") })),
+						row(
+							detail("Safe mode details", T("s.safe_text")),
+							dev && btn(T("s.dev_open"), lazyDev),
+							dev && btn(T("s.diag"), lazyDev),
+						),
+						text(T("s.dev_ro", { state: T(dev ? "s.on" : "s.off") })),
+						unavailable && auto.error && row(detail("Automatic check details", auto.error)),
+					];
+				} else if (settingsCategory === "Updates") {
+					const state = lres && lres.state;
+					const status =
+						line ||
+						(state === "current"
+							? T("s.current")
+							: state === "update"
+								? T(lres.downgrade ? "s.older" : "s.update_avail")
+								: state === "error"
+									? T("s.check_failed", { msg: lres.msg })
+									: T("s.not_checked"));
+					const installed = (info && info.version) || (window.FY_RUNTIME || {}).version;
+					nodes = [
+						row(
+							btn(T("s.check"), () => check(null), { primary: true }),
+							btn(T("s.update"), updateAsk, { primary: state === "update" }),
+						),
+						text(status.length > 160 ? status.slice(0, 160) + "…" : status, line || state === "error" ? BAD : "#fff"),
+						status.length > 160 && row(detail("Read check details", status)),
+						text(
+							installed
+								? T("s.installed", { v: installed, c: ld.commit || T("c.unknown") })
+								: T("s.installed_c", { c: ld.commit || T("c.unknown") }),
+						),
+						text(cand ? identity(cand) : T("s.not_checked")),
+						cand && cand.prerelease && text(cand.label || T("s.prerelease"), WARN),
+						text(T("s.ch_ro", { channel: p.channel === "prerelease" ? "prerelease" : "stable" })),
+						row(
+							btn(T("s.notes"), () => k.notes("_loader", cand.tag, T("s.notes_title", { tag: cand.tag }), home), {
+								disabled: !cand,
+							}),
+							btn(T("s.history"), () => windowHistory()),
+						),
+						ld.kept && text(T("s.kept")),
+						ld.kept &&
+							row(
+								btn(T("s.done"), () => finish("loader_done", T("s.working"), "s.done_ok")),
+								btn(T("s.rollback"), () =>
+									k.ask(
+										T("s.rollback_title"),
+										T("s.rollback_text"),
+										[[T("s.rollback"), () => finish("loader_roll", T("s.rolling"), "s.rolled"), DANGER]],
+										back,
+									),
+								),
+							),
+						(line || state === "error") && row(k.reportButton(supportContext)),
+					];
+				} else if (settingsCategory === "Maintenance") nodes = maintBox();
+				else if (settingsCategory === "Worker") {
+					const parts = workerBox();
+					nodes = parts.length ? parts : [text("Worker controls are unavailable.")];
+				} else {
+					nodes = [
+						ss === "corrupt" && text(T("sd.corrupt"), BAD),
+						ss === "corrupt" && row(btn(T("sd.repair"), repairSettings, { primary: true })),
+						ss === "unreadable" && text(T("sd.unreadable"), BAD),
+						row(
+							k.reportButton(supportContext),
+							btn("Panel status", () => {
+								settingsCategory = "Panel status";
+								home();
+							}),
+						),
+						text(T("s.trust")),
+						row(
+							btn(T("s.reload"), () => {
+								k.hold(true);
+								call("reload").then(
+									k.guard(reply => {
+										k.hold(false);
+										if (reply.error) {
+											supportError(reply.error, "module_reload_failed");
+											warn(reply.error);
+										} else say(T("s.reloaded"));
+									}),
+									k.guard(error => {
+										k.hold(false);
+										warn(error.message);
+									}),
+								);
+							}),
+						),
+					];
+				}
+				showScreen(...nodes);
+				windowShow(...Array.from(box.children));
+			};
+			const home = () => {
+				if (windowLayout) return windowHome();
+				const p = obj(st.prefs);
+				const dev = p.dev && p.dev.enabled === true;
+				const names = dev ? categoryNames.concat("Developer") : categoryNames;
+				if (!settingsCategory) {
+					settingsPage = Math.min(settingsPage, names.length - 1);
+					categoryPage = settingsPage;
+					const categories = tx("");
+					categories.setAttribute("role", "group");
+					categories.setAttribute("aria-label", "Settings categories");
+					categories.append(
+						btn(names[settingsPage], () => {
+							settingsCategory = names[settingsPage];
+							settingsPage = 0;
+							home();
+						}),
+					);
+					showScreen(categories);
+					setNavigation(names.length, T("s.title"), page => {
+						settingsPage = page;
+						home();
+					});
+				} else if (settingsCategory === "Panel status") {
+					if (panelSection.parentNode !== box) showScreen(panelSection);
+					paintPanel();
+				} else {
+					let pages;
+					if (settingsCategory === "Updates") {
+						const state = lres && lres.state;
+						const status =
+							line ||
+							(state === "current"
+								? T("s.current")
+								: state === "update"
+									? lres.downgrade
+										? T("s.older")
+										: T("s.update_avail")
+									: state === "error"
+										? T("s.check_failed", { msg: lres.msg })
+										: T("s.not_checked"));
+						pages = [
+							() => [
+								row(
+									btn(T("s.check"), () => check(null), { primary: true }),
+									btn(T("s.update"), updateAsk, { primary: state === "update" }),
+								),
+							],
+							...textScreens(status, line || state === "error" ? BAD : "#fff"),
+							...textScreens(
+								(info && info.version) || (window.FY_RUNTIME || {}).version
+									? T("s.installed", {
+											v: (info && info.version) || window.FY_RUNTIME.version,
+											c: ld.commit || T("c.unknown"),
+										})
+									: T("s.installed_c", { c: ld.commit || T("c.unknown") }),
+							),
+							...textScreens(cand ? identity(cand) : T("s.not_checked")),
+							...(cand && cand.prerelease ? textScreens(cand.label || T("s.prerelease"), WARN) : []),
+							...textScreens(T("s.ch_ro", { channel: p.channel === "prerelease" ? "prerelease" : "stable" })),
+							() => [
+								row(
+									btn(T("s.notes"), () => k.notes("_loader", cand.tag, T("s.notes_title", { tag: cand.tag }), home), {
+										disabled: !cand,
+									}),
+									btn(T("s.history"), () => k.versions("_loader", T("s.history"), back)),
+								),
+							],
+						];
+						if (line || state === "error") pages.push(() => [row(k.reportButton(supportContext))]);
+						if (ld.kept)
+							pages.push(...textScreens(T("s.kept")), () => [
+								row(
+									btn(T("s.done"), () => finish("loader_done", T("s.working"), "s.done_ok")),
+									btn(T("s.rollback"), () =>
+										k.ask(
+											T("s.rollback_title"),
+											T("s.rollback_text"),
+											[[T("s.rollback"), () => finish("loader_roll", T("s.rolling"), "s.rolled"), DANGER]],
+											back,
+										),
+									),
+								),
+							]);
+					} else if (settingsCategory === "Decky") {
+						pages = deckyBox().map(node => () => [node]);
+					} else if (settingsCategory === "Preferences") {
+						const unavailable =
+							auto.error ||
+							typeof auto.enabled !== "boolean" ||
+							(auto.enabled &&
+								(!Number.isFinite(auto.last) ||
+									auto.last < 0 ||
+									!Number.isFinite(new Date(auto.last * 1000).getTime())));
+						const autoText = unavailable
+							? T("c.unavailable") +
+								(auto.error ? " — " + T("c.failed", { msg: String(auto.error).slice(0, 200) }) : "")
+							: auto.enabled
+								? auto.last
+									? T("s.auto_last", { d: new Date(auto.last * 1000).toLocaleString() })
+									: T("s.auto_never")
+								: T("s.auto_off");
+						if (unavailable && !supportContext.error)
+							supportError(auto.error || T("c.unavailable"), "autocheck_status_unavailable");
+						pages = [
+							() => [pref(T("s.auto"), "autocheck", p.autocheck === true, draw)],
+							...textScreens(autoText),
+							() => [pref(T("s.notify_loader"), "notify_loader", p.notify_loader === true)],
+							() => [pref(T("s.notify_plugins"), "notify_plugins", p.notify_plugins === true)],
+							...textScreens(T("s.lang")),
+							...textScreens(T("s.safe_ro", { state: T(st.safe === true ? "s.on" : "s.off") })),
+							...textScreens(T("s.safe_text")),
+							...textScreens(T("s.dev_ro", { state: T(dev ? "s.on" : "s.off") })),
+						];
+					} else if (settingsCategory === "Maintenance") {
+						const parts = maintBox();
+						pages =
+							mp.error || typeof mp["maint.window_days"] !== "number"
+								? textScreens(T("mt.unavailable"))
+								: [() => [parts[0]], ...textScreens(T("mt.bg_text")), () => [parts[2]]];
+					} else if (settingsCategory === "Worker") {
+						const parts = workerBox();
+						pages = parts.length
+							? [() => [parts[0]], ...textScreens(T("s.workers_text"))]
+							: textScreens("Worker controls are unavailable.");
+					} else if (settingsCategory === "Developer") {
+						pages = [() => [row(btn(T("s.dev_open"), lazyDev), btn(T("s.diag"), lazyDev))]];
+					} else {
+						pages = [
+							() => [row(k.reportButton(supportContext))],
+							() => [
+								row(
+									btn("Panel status", () => {
+										supportPage = settingsPage;
+										settingsCategory = "Panel status";
+										settingsPage = 0;
+										home();
+									}),
+								),
+							],
+							...textScreens(T("s.trust")),
+							() => [
+								row(
+									btn(T("s.reload"), () => {
+										k.hold(true);
+										call("reload").then(
+											k.guard(r => {
+												k.hold(false);
+												if (r.error) {
+													supportError(r.error, "module_reload_failed");
+													warn(r.error);
+												} else say(T("s.reloaded"));
+											}),
+										);
+									}),
+								),
+							],
+						];
+						if (ss === "corrupt")
+							pages.unshift(...textScreens(T("sd.corrupt"), BAD), () => [
+								row(btn(T("sd.repair"), repairSettings, { primary: true })),
+							]);
+						if (ss === "unreadable") pages.unshift(...textScreens(T("sd.unreadable"), BAD));
+					}
+					settingsPage = Math.min(settingsPage, pages.length - 1);
+					showScreen(...pages[settingsPage]());
+					setNavigation(
+						pages.length,
+						settingsCategory,
+						page => {
+							settingsPage = page;
+							home();
+						},
+						categoryHome,
+					);
+				}
+				if (settingsCategory === "Panel status" && !panelAttempted) requestPanel();
 			};
 			let unlisten = null;
 			try {
 				unlisten = privateApi.listen("panel_mode", value => {
-					if (panelClosed || !k.alive() || !panelSection.isConnected) return;
+					if (panelClosed || !k.alive()) return;
 					const actual = panelStatus(value);
 					if (!actual) return;
 					panelSerial++;
@@ -530,6 +1272,8 @@
 					panelBusy = panelMoving = actual.pending;
 					panelError = actual.error;
 					panelReport = panelError ? supportError(panelError, "panel_mode_failed") : null;
+					if (knownPanelLayout(actual.layout) && typeof privateApi.setPanelLayout === "function")
+						privateApi.setPanelLayout(actual.layout);
 					paintPanel();
 				});
 			} catch (error) {
@@ -537,12 +1281,24 @@
 			}
 			stopPanelUpdates = () => {
 				panelClosed = true;
+				if (typeof privateApi.clearPageNavigation === "function") privateApi.clearPageNavigation();
 				panelSerial++;
 				if (typeof unlisten === "function") unlisten();
 			};
 			draw();
 		},
 	};
+	privateApi.windowPages = (privateApi.windowPages || []).concat(
+		["Preferences", "Updates", "Decky", "Maintenance", "Worker", "Support"].map(name =>
+			Object.freeze({
+				id: "#settings:" + name.toLowerCase(),
+				name,
+				short: name,
+				render: box => settings.render(box, name),
+				leave: leaveSettings,
+			}),
+		),
+	);
 	Object.defineProperty(framey.pages, "settings", {
 		value: Object.freeze({ render: settings.render, leave: leaveSettings, dispose: leaveSettings }),
 		enumerable: true,

@@ -25,6 +25,118 @@
 		const NAME = /^[a-z0-9_.-]{1,40}$/;
 		const LANG = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
 		const LEVELS = ["debug", "info", "warning", "error"];
+		const STEAM_CATEGORY_FIELDS = [
+			"steamDeckCategory",
+			"steamOsCategory",
+			"steamMachineCategory",
+			"steamFrameCategory",
+		];
+		const STEAM_FOCUS_FIELDS = ["focusedAppId", "focusedWindowId", "focusedOverlayAppId", "focusedOverlayPid"];
+		const STEAM_FAILURE_CODES = new Set([
+			"unknown_operation",
+			"invalid_arguments",
+			"not_allowed",
+			"stale_caller",
+			"busy",
+			"rate_limited",
+			"service_closed",
+			"provider_disposed",
+			"stale_context",
+			"target_unavailable",
+			"capability_unavailable",
+			"context_unavailable",
+			"ambiguous_context",
+			"provider_timeout",
+			"provider_read_failed",
+			"invalid_provider_result",
+			"result_limit",
+			"inventory_limit",
+		]);
+		const steamError = code => Object.assign(new Error(code), { code });
+		const steamInteger = (value, low, high) => Number.isInteger(value) && value >= low && value <= high;
+		const steamShape = (value, keys) =>
+			value !== null &&
+			typeof value === "object" &&
+			!Array.isArray(value) &&
+			Object.prototype.toString.call(value) === "[object Object]" &&
+			Object.keys(value).length === keys.length &&
+			keys.every(key => Object.prototype.hasOwnProperty.call(value, key));
+		const steamApp = value =>
+			steamShape(value, ["appId", ...STEAM_CATEGORY_FIELDS]) &&
+			steamInteger(value.appId, 1, 4294967295) &&
+			STEAM_CATEGORY_FIELDS.every(key => value[key] === null || steamInteger(value[key], 0, 2147483647));
+		const steamPartial = value => STEAM_CATEGORY_FIELDS.some(key => value[key] === null);
+		const steamAppSnapshot = value => ({
+			appId: value.appId,
+			steamDeckCategory: value.steamDeckCategory,
+			steamOsCategory: value.steamOsCategory,
+			steamMachineCategory: value.steamMachineCategory,
+			steamFrameCategory: value.steamFrameCategory,
+		});
+		const steamSnapshot = (operation, args, result) => {
+			if (result && result.ok === false && result.available === false)
+				throw steamError(STEAM_FAILURE_CODES.has(result.code) ? result.code : "provider_read_failed");
+			const source = operation === "focus" ? "steam-focus-cache" : "steam-appstore-cache";
+			if (
+				!steamShape(result, ["ok", "available", "source", "data"]) ||
+				result.ok !== true ||
+				result.available !== true ||
+				result.source !== source
+			)
+				throw steamError("invalid_provider_result");
+			const data = result.data;
+			let snapshot;
+			if (operation === "focus") {
+				if (!steamShape(data, ["status", ...STEAM_FOCUS_FIELDS])) throw steamError("invalid_provider_result");
+				const values = STEAM_FOCUS_FIELDS.map(key => data[key]);
+				const valid = values.every(
+					value =>
+						value === null ||
+						(typeof value === "string" && value.length <= 256) ||
+						(typeof value === "number" && Number.isFinite(value)),
+				);
+				const empty = values.every(value => value === null || value === 0 || value === "0" || value === "");
+				if (!valid || data.status !== (empty ? "empty" : "present")) throw steamError("invalid_provider_result");
+				snapshot = {
+					status: data.status,
+					focusedAppId: data.focusedAppId,
+					focusedWindowId: data.focusedWindowId,
+					focusedOverlayAppId: data.focusedOverlayAppId,
+					focusedOverlayPid: data.focusedOverlayPid,
+				};
+			} else if (operation === "app") {
+				if (!steamShape(data, ["status", "app"])) throw steamError("invalid_provider_result");
+				if (data.app === null) {
+					if (data.status !== "not_found") throw steamError("invalid_provider_result");
+				} else if (
+					!steamApp(data.app) ||
+					data.app.appId !== args.appId ||
+					data.status !== (steamPartial(data.app) ? "partial" : "present")
+				)
+					throw steamError("invalid_provider_result");
+				snapshot = { status: data.status, app: data.app === null ? null : steamAppSnapshot(data.app) };
+			} else {
+				if (
+					!steamShape(data, ["status", "apps", "visibleCount", "truncated"]) ||
+					!Array.isArray(data.apps) ||
+					!steamInteger(data.visibleCount, 0, 2147483647) ||
+					typeof data.truncated !== "boolean" ||
+					data.apps.length !== Math.min(data.visibleCount, 4096) ||
+					data.truncated !== data.visibleCount > 4096 ||
+					!Array.from(data.apps).every(steamApp) ||
+					new Set(data.apps.map(app => app.appId)).size !== data.apps.length ||
+					data.status !== (data.visibleCount === 0 ? "empty" : data.apps.some(steamPartial) ? "partial" : "present")
+				)
+					throw steamError("invalid_provider_result");
+				snapshot = {
+					status: data.status,
+					apps: data.apps.map(steamAppSnapshot),
+					visibleCount: data.visibleCount,
+					truncated: data.truncated,
+				};
+			}
+			return { ok: true, available: true, source, data: snapshot };
+		};
 		const OPEN = new Map([
 			["open:modules", "#modules"],
 			["open:settings", "#settings"],
@@ -374,6 +486,113 @@
 				invokeSafely("api.resource_failed", () => io.post("resource", { revoke: token, pid: key }));
 			const rpc = (method, arg) => api._rpc(method, arg);
 			s.hub = createEventHub(64);
+			let compatibilityClient = null,
+				compatibilityGeneration = -1,
+				mountSequence = 0;
+			const compatibilityWaits = new Set();
+			const compatibilityError = () =>
+				Object.assign(new Error("Compatibility runtime is unavailable"), { code: "runtime_unavailable" });
+			const compatibilityDispose = (replacing = false) => {
+				if (!replacing) mountSequence++;
+				const value = compatibilityClient;
+				compatibilityClient = null;
+				compatibilityGeneration = -1;
+				for (const wait of compatibilityWaits) {
+					if (!replacing || wait.ready) {
+						wait.reject(alive() ? compatibilityError() : disposed());
+						compatibilityWaits.delete(wait);
+					}
+				}
+				if (value) invokeSafely("api.compat_failed", () => value.dispose());
+			};
+			const compatibilityWait = work =>
+				new NativePromise((resolve, reject) => {
+					const wait = { reject, ready: false };
+					compatibilityWaits.add(wait);
+					NativePromise.resolve()
+						.then(() => work(wait))
+						.then(resolve, reject)
+						.finally(() => compatibilityWaits.delete(wait));
+				});
+			const compatibilityManager = () => privateApi.optionalRuntime;
+			const compatibilityClientFor = async () => {
+				if (!alive()) throw disposed();
+				const manager = compatibilityManager();
+				if (!manager) throw compatibilityError();
+				const provider = await manager.ensure("decky", 1);
+				if (!alive()) throw disposed();
+				if (!manager.current(provider.generation)) throw compatibilityError();
+				if (compatibilityClient && compatibilityGeneration === provider.generation) return compatibilityClient;
+				if (compatibilityClient) compatibilityDispose();
+				const generation = provider.generation;
+				const allowed = new Set(["decky_code_issue", "decky_code_touch", "decky_code_revoke"]);
+				const request = (method, arg) =>
+					allowed.has(method) ? rpc(method, { ...(arg || {}), pid: key }) : NativePromise.reject(compatibilityError());
+				const client = provider.attach({
+					api,
+					generation,
+					alive: () => alive() && manager.current(generation),
+					current: () => manager.current(generation),
+					request,
+					cleanupRequest(method, arg) {
+						if (method === "decky_code_revoke") io.post(method, { ...(arg || {}), pid: key });
+					},
+					lost: code =>
+						s.hub.emit("compat.modules.lost", Object.freeze({ code }), {
+							name: "compat.modules.lost",
+							dropped: 0,
+							open: framey.panelOpen,
+							tab: privateApi.tab(),
+						}),
+				});
+				if (
+					!client ||
+					typeof client.dispose !== "function" ||
+					typeof client.mount !== "function" ||
+					["issue", "touch", "revoke"].some(method => typeof client.modules?.[method] !== "function")
+				) {
+					invokeSafely("api.compat_failed", () => client?.dispose?.());
+					throw compatibilityError();
+				}
+				compatibilityClient = client;
+				compatibilityGeneration = generation;
+				return client;
+			};
+			const compatibilityCall = (method, args) =>
+				compatibilityWait(wait =>
+					compatibilityClientFor().then(client => {
+						wait.ready = true;
+						if (!alive()) throw disposed();
+						return client.modules[method](...args);
+					}),
+				);
+			api.compat = Object.freeze({
+				modules: Object.freeze({
+					issue: (...args) => compatibilityCall("issue", args),
+					touch: (...args) => compatibilityCall("touch", args),
+					revoke: (...args) => compatibilityCall("revoke", args),
+				}),
+				mount(container, descriptor) {
+					const sequence = ++mountSequence;
+					return compatibilityWait(wait =>
+						compatibilityClientFor().then(async client => {
+							wait.ready = true;
+							const generation = compatibilityGeneration;
+							const handle = await client.mount(container, descriptor);
+							if (!alive() || sequence !== mountSequence || !compatibilityManager()?.current(generation)) {
+								invokeSafely("api.compat_failed", () => handle?.dispose?.());
+								throw alive() ? compatibilityError() : disposed();
+							}
+							return handle;
+						}),
+					);
+				},
+			});
+			const compatibilityOff = compatibilityManager()?.subscribe(compatibilityDispose);
+			res.push(() => {
+				compatibilityOff?.();
+				compatibilityDispose();
+			});
 			s.log = (level, msg) => {
 				const t = Date.now();
 				if (t - s.lt >= 1000) {
@@ -478,6 +697,55 @@
 						},
 					);
 				},
+			};
+			api.steam = Object.freeze({
+				read(operation, args) {
+					if (!alive()) return NativePromise.reject(disposed());
+					try {
+						if (!["visibleApps", "app", "focus"].includes(operation)) throw steamError("unknown_operation");
+						const input = args === undefined ? {} : args;
+						if (
+							!steamShape(input, operation === "app" ? ["appId"] : []) ||
+							(operation === "app" && !steamInteger(input.appId, 1, 4294967295))
+						)
+							throw steamError("invalid_arguments");
+						const copied = operation === "app" ? { appId: input.appId } : {};
+						return rpc("steam_read", { operation, args: copied, pid: key })
+							.then(result => {
+								if (!alive()) throw disposed();
+								return steamSnapshot(operation, copied, result);
+							})
+							.catch(error => {
+								if (!alive()) throw disposed();
+								throw steamError(error && STEAM_FAILURE_CODES.has(error.code) ? error.code : "provider_read_failed");
+							});
+					} catch (error) {
+						return NativePromise.reject(
+							steamError(error && STEAM_FAILURE_CODES.has(error.code) ? error.code : "invalid_arguments"),
+						);
+					}
+				},
+			});
+			api.openURL = url => {
+				if (!alive()) return NativePromise.reject(disposed());
+				try {
+					return rpc("open_url", { url, pid: key }).then(result => {
+						if (!alive()) throw disposed();
+						if (
+							!result ||
+							typeof result !== "object" ||
+							Array.isArray(result) ||
+							result.requested !== true ||
+							Object.prototype.hasOwnProperty.call(result, "error")
+						)
+							throw Object.assign(new Error("The browser request did not return a valid result"), {
+								code: "bad_response",
+							});
+						return { requested: true };
+					});
+				} catch (error) {
+					return NativePromise.reject(error);
+				}
 			};
 			api.fetch = (url, o) =>
 				rpc("fetch", Object.assign({}, o, { url, pid: key })).then(r => {

@@ -192,7 +192,7 @@ PREFS = {
     "lang": (_lang, ""),
     "safe": (_flag, False),
     "workers_max": (_workers, 3),
-    "panel_mode": (_choice("embedded", "dashboard", "floating"), "embedded"),
+    "panel_mode": (_choice("embedded", "dashboard", "floating", "compact", "window"), "embedded"),
     "file_roots": (_roots, []),
     "dev": (_group(DEV), {}),
 }

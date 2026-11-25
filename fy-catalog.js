@@ -4,7 +4,6 @@
 	if (!privateApi || !privateApi.kit || (framey.pages && framey.pages.store)) return;
 	const { tx, put, col, row, make, GOOD, BAD, UP, WARN } = privateApi.kit;
 	const MUTED = "#b8b8cc";
-	const TITLE = "font-size:28px;font-weight:700;margin:0 0 12px;overflow-wrap:anywhere";
 	const TEXT = {
 		title: "Store",
 		search: "Search",
@@ -53,25 +52,20 @@
 			.then(object);
 	const problem = v => text(object(v).error, 600) || text(object(v).message, 600) || TEXT.noanswer;
 	const jobs = new Map();
-	const recordStorageFailure = () => {
-		try {
-			if (typeof privateApi.diagnostic === "function") privateApi.diagnostic("core.storage_failed");
-			return true;
-		} catch (e) {
-			return false;
-		}
-	};
 	let active = null;
 	const leave = () => {
 		if (active) active.dispose();
 		active = null;
 	};
-	const render = (box, deckyPage) => {
+	const render = box => {
 		leave();
 		const k = make(box);
+		const windowLayout = !!(privateApi.singleWindow && privateApi.singleWindow());
+		let readerLabel = "";
 		const ordinaryKey = box.onkeydown;
 		box.onkeydown = ev => {
-			if (/^(INPUT|SELECT|TEXTAREA)$/.test(ev.target.tagName)) return;
+			if (/^(INPUT|SELECT|TEXTAREA)$/.test(ev.target.tagName) && (!windowLayout || ev.key !== "Escape")) return;
+			if (ev.target.closest("[data-catalog-reader]") && ev.key !== "Escape") return;
 			ordinaryKey(ev);
 		};
 		let dead = false,
@@ -79,6 +73,12 @@
 			view = "browse",
 			selected = null,
 			filterOpen = false;
+		let screenIndex = 0,
+			screenUnits = [],
+			screenTitle = "",
+			screenBack = null,
+			resultOffset = 0,
+			resultHistory = [];
 		let data = {},
 			rows = [],
 			listError = "",
@@ -90,37 +90,21 @@
 			sourceCode = "",
 			reportPending = false,
 			reportError = "";
-		const allowedSources = deckyPage ? ["decky_stable", "decky_testing"] : ["stable", "testing", "custom"];
-		let sources = deckyPage
-			? [
-					{ id: "decky_stable", label: "Decky Store" },
-					{ id: "decky_testing", label: "Decky Store Testing" },
-				]
-			: [
-					{ id: "stable", label: "Stable" },
-					{ id: "testing", label: "Testing" },
-					{ id: "custom", label: "Custom" },
-				];
+		const allowedSources = ["stable", "testing", "custom"];
+		let sources = [
+			{ id: "stable", label: "Stable" },
+			{ id: "testing", label: "Testing" },
+			{ id: "custom", label: "Custom" },
+		];
 		let customURL = "",
 			sourceError = "",
 			sourceBusy = false,
 			reviewed = false,
 			sourceSerial = 0;
-		let inspection = { version: "", pending: false, error: "", result: null };
-		const inspections = new Map();
-		let rememberedSource = "decky_stable";
-		if (deckyPage) {
-			try {
-				if (allowedSources.includes(sessionStorage.fyDeckyCatalogSource))
-					rememberedSource = sessionStorage.fyDeckyCatalogSource;
-			} catch (e) {
-				recordStorageFailure();
-			}
-		}
 		let form = {
 			query: "",
 			category: "all",
-			source: deckyPage ? rememberedSource : "stable",
+			source: "stable",
 			sort: "name",
 		};
 		const state = {
@@ -130,12 +114,17 @@
 				serial++;
 				sourceSerial++;
 				box.onkeydown = null;
+				if (active === state) privateApi.clearPageNavigation();
 			},
 		};
 		active = state;
 		const alive = () => !dead && active === state && box.isConnected;
 		const scoped = n => alive() && n === serial;
 		const fresh = name => {
+			if (view !== name) {
+				screenIndex = 0;
+				readerLabel = "";
+			}
 			view = name;
 			serial++;
 			reportError = "";
@@ -151,47 +140,48 @@
 				Object.assign({ nav }, options),
 			);
 			if (nav) e.dataset.fyEsc = "1";
+			if (label.length > 32)
+				e.textContent = label.startsWith("Details:")
+					? "Open details"
+					: label.startsWith("Update ")
+						? "Update module"
+						: label.startsWith("Install ")
+							? "Install module"
+							: label.slice(0, 28) + "…";
+			e.style.cssText += ";min-height:48px;min-width:0;max-width:100%;overflow-wrap:anywhere";
 			return e;
 		};
-		const heading = title => {
-			const h = tx(TITLE, title);
-			h.setAttribute("role", "heading");
-			h.setAttribute("aria-level", "2");
-			return h;
-		};
-		const subheading = (title, level) => {
-			const h = col("#fff", title, level === 3 ? 22 : 21, true);
-			h.setAttribute("role", "heading");
-			h.setAttribute("aria-level", String(level));
-			return h;
-		};
-		const deckyDisclosure = () =>
-			col(
-				MUTED,
-				"Experimental compatibility; results vary. Framey is independent and is not affiliated with or endorsed by Decky Loader. This tab only browses and inspects original packages; it cannot install or run them. Report Framey issues to Framey, not Decky or plugin authors.",
-				17,
-			);
 		const status = (message, color = MUTED) => {
 			const e = col(color, message, 18);
 			e.setAttribute("role", "status");
 			e.setAttribute("aria-live", "polite");
 			return e;
 		};
-		const reportNotice = () => {
-			const notice = status(reportError, BAD);
-			notice.dataset.catalogReportNotice = "true";
-			notice.style.display = reportError ? "" : "none";
-			return notice;
+		const screenNodes = selector => {
+			const nodes = [...box.querySelectorAll(selector)];
+			for (const unit of screenUnits) {
+				if (unit.node.matches(selector)) nodes.push(unit.node);
+				nodes.push(...unit.node.querySelectorAll(selector));
+			}
+			return [...new Set(nodes)];
 		};
 		const syncReportControls = () => {
 			if (!alive()) return;
-			box.querySelectorAll('[data-catalog-report="true"]').forEach(control => {
+			screenNodes('[data-catalog-report="true"]').forEach(control => {
 				control.disabled = reportPending;
 			});
-			box.querySelectorAll('[data-catalog-report-notice="true"]').forEach(notice => {
-				notice.textContent = reportError;
-				notice.style.display = reportError ? "" : "none";
-			});
+			if (windowLayout && view === "browse") return draw();
+			const existingError = screenUnits.some(unit => unit.label === "Report unavailable");
+			if (reportError && !existingError) {
+				screenIndex = 0;
+				screen(screenTitle, [...copyUnits("Report unavailable", reportError, BAD), ...screenUnits], screenBack);
+			} else if (!reportError && existingError) {
+				screen(
+					screenTitle,
+					screenUnits.filter(unit => unit.label !== "Report unavailable"),
+					screenBack,
+				);
+			}
 		};
 		const report = (item, error, code) => {
 			if (reportPending || !alive()) return;
@@ -201,14 +191,11 @@
 				syncReportControls();
 				return;
 			}
-			const selectedVersion =
-				item && decky(item) ? versions(item).find(version => version.identity === inspection.version) : null;
-			const source = item ? item._catalogSource : form.source;
 			const context = {
 				plugin: {
 					name: item ? text(item.name, 200) : "",
-					version: item ? text(selectedVersion ? selectedVersion.name : item.version, 200) : "",
-					source: source === "decky_stable" || source === "decky_testing" ? source : "framey",
+					version: item ? text(item.version, 200) : "",
+					source: "framey",
 				},
 				error: text(error, 600),
 				code: text(code, 80),
@@ -237,19 +224,195 @@
 			control.dataset.catalogReport = "true";
 			return control;
 		};
-		const show = (...nodes) => {
+		// Screens are composed from semantic copy and controls, never cloned DOM.
+		const copyUnits = (label, values, color = MUTED) => {
+			const units = [];
+			for (const value of [].concat(values || [])) {
+				if (value && typeof value !== "string" && value.getAttribute("role") === "heading") {
+					units.push(actionUnit(label, value));
+					continue;
+				}
+				const message = typeof value === "string" ? value : value && value.textContent;
+				if (!message) continue;
+				if (windowLayout) {
+					const node = col(color, message, 18);
+					node.style.cssText += ";white-space:pre-wrap;overflow-wrap:anywhere;margin:0;line-height:1.25";
+					units.push({ label, node });
+					continue;
+				}
+				// A compact step fits at most four 18px lines, including long URLs.
+				const points = Array.from(message);
+				for (let at = 0; at < points.length;) {
+					let end = Math.min(at + 64, points.length);
+					// Hard line breaks consume visual rows even in very short copy.
+					// Keep each break (including CRLF) with its preceding text so
+					// concatenating the reading steps preserves the exact content.
+					for (let index = at; index < end; index++) {
+						if (!/[\r\n\u2028\u2029]/.test(points[index])) continue;
+						end = index + (points[index] === "\r" && points[index + 1] === "\n" ? 2 : 1);
+						break;
+					}
+					const node = col(color, points.slice(at, end).join(""), 18);
+					node.style.cssText += ";white-space:pre-wrap;overflow-wrap:anywhere;margin:0;line-height:1.25";
+					units.push({ label, node });
+					at = end;
+				}
+			}
+			return units;
+		};
+		const actionUnit = (label, node) => ({ label, node });
+		// Window routes own a single destination. Long copy is read contextually,
+		// while compact hosts retain their existing small reading steps below.
+		const windowShow = (...nodes) => {
 			if (!alive()) return;
-			k.show(...nodes);
+			const out = tx("display:flex;flex-direction:column;gap:10px;min-width:0;width:100%;box-sizing:border-box");
+			out.dataset.catalogWindow = "true";
+			put(out, ...nodes);
+			k.rawShow(out);
 			if (focusName) {
 				const target = [...box.querySelectorAll("[aria-label]")].find(
-					e => e.getAttribute("aria-label") === focusName && e.tabIndex >= 0,
+					node => node.getAttribute("aria-label") === focusName,
 				);
-				if (target) target.focus();
+				if (target) target.focus({ preventScroll: true });
+				focusName = "";
+			}
+		};
+		const windowRow = (...nodes) =>
+			put(tx("display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;min-width:0"), ...nodes);
+		const readDetails = (units, done) => {
+			const grouped = new Map();
+			for (const unit of units) {
+				if (
+					unit.node.matches("[role='button'],button") ||
+					unit.node.querySelector("input,select,textarea,[role='button'],button")
+				)
+					continue;
+				grouped.set(
+					unit.label,
+					(grouped.has(unit.label) ? grouped.get(unit.label) + "\n\n" : "") + unit.node.textContent,
+				);
+			}
+			if (!grouped.size) grouped.set("Details", "No information available.");
+			if (!grouped.has(readerLabel)) readerLabel = grouped.keys().next().value;
+			const choice = document.createElement("select");
+			choice.dataset.fy = "core";
+			choice.style.cssText = inputStyle;
+			choice.setAttribute("aria-label", "Details to read");
+			fieldFocus(choice);
+			for (const label of grouped.keys()) {
+				const option = document.createElement("option");
+				option.value = option.textContent = label;
+				choice.append(option);
+			}
+			choice.value = readerLabel;
+			const full = document.createElement("pre");
+			full.dataset.fy = "core";
+			full.dataset.catalogReader = "true";
+			full.style.cssText =
+				inputStyle +
+				";height:250px;min-height:0;resize:none;white-space:pre-wrap;overflow:auto;font-size:18px;line-height:1.35";
+			full.setAttribute("aria-label", "Full details");
+			full.setAttribute("role", "textbox");
+			full.setAttribute("aria-readonly", "true");
+			full.tabIndex = 0;
+			full.textContent = grouped.get(readerLabel);
+			fieldFocus(full);
+			choice.addEventListener("change", () => {
+				readerLabel = choice.value;
+				full.textContent = grouped.get(readerLabel);
+				full.scrollTop = 0;
+			});
+			const close = button("Done reading", () => {
+				readerLabel = "";
+				done();
+			});
+			close.dataset.fyEsc = "1";
+			windowShow(field("Details to read", choice), full, close);
+		};
+		const windowScreen = () => {
+			if (readerLabel) return readDetails(screenUnits, windowScreen);
+			const actions = screenUnits.filter(
+				unit => unit.node.matches("[role='button'],button") || unit.node.querySelector("input,select,textarea"),
+			);
+			const heading = col(
+				"#fff",
+				view === "confirm" ? TEXT.review : selected ? selected.name : "Module details",
+				21,
+				true,
+			);
+			heading.style.cssText += ";margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+			const identity = col(
+				MUTED,
+				selected ? (view === "confirm" ? selected.name + " · " : "") + summary(selected) : "",
+				17,
+			);
+			identity.style.cssText += ";margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+			const read = button("Read details", () => {
+				readerLabel = "Name";
+				readDetails(screenUnits, windowScreen);
+			});
+			const nodes = [heading, identity];
+			if (view === "confirm") {
+				const risk = col("#fff", TEXT.risk, 17);
+				risk.style.cssText += ";margin:0;line-height:1.3";
+				nodes.push(risk);
+			}
+			if (detailError || reportError || (selected && jobFor(selected)?.error))
+				nodes.push(col(BAD, "An action needs attention. Read details for the full message.", 17));
+			else if (selected && jobFor(selected))
+				nodes.push(status(jobFor(selected).pending ? TEXT.installing : TEXT.success));
+			for (let at = 0; at < actions.length; at += 2)
+				nodes.push(windowRow(...actions.slice(at, at + 2).map(unit => unit.node)));
+			nodes.push(windowRow(read, screenBack && button(TEXT.back, screenBack)));
+			windowShow(...nodes);
+		};
+		const screen = (title, units, onBack) => {
+			if (!alive()) return;
+			screenTitle = title.length > 32 ? "Module details" : title;
+			screenUnits = units.filter(Boolean);
+			screenBack = onBack || null;
+			if (windowLayout) return windowScreen();
+			const renderScreen = index => {
+				if (!alive()) return;
+				const size = privateApi.panelLayout() === "compact" ? 1 : 3;
+				const groups = [];
+				for (let at = 0; at < screenUnits.length; at += size) groups.push(screenUnits.slice(at, at + size));
+				if (!groups.length) groups.push(copyUnits(title, "No information available."));
+				screenIndex = Math.max(0, Math.min(index, groups.length - 1));
+				const visible = groups[screenIndex];
+				visible.forEach(unit => {
+					unit.node.dataset.catalogStep = unit.label;
+				});
+				k.show(...visible.map(unit => unit.node));
+				privateApi.setPageNavigation({
+					index: screenIndex,
+					count: groups.length,
+					title: screenTitle,
+					label: visible.every(unit => unit.label === visible[0].label) ? visible[0].label : "Catalog",
+					onBack: screenBack,
+					onPage: renderScreen,
+					onLayout: () => renderScreen(screenIndex),
+				});
+			};
+			if (focusName) {
+				const at = screenUnits.findIndex(
+					unit =>
+						unit.node.getAttribute("aria-label") === focusName ||
+						[...unit.node.querySelectorAll("[aria-label]")].some(node => node.getAttribute("aria-label") === focusName),
+				);
+				if (at >= 0) screenIndex = Math.floor(at / (privateApi.panelLayout() === "compact" ? 1 : 3));
+			}
+			renderScreen(screenIndex);
+			if (focusName) {
+				const target = [...box.querySelectorAll("[aria-label]")].find(
+					node => node.getAttribute("aria-label") === focusName,
+				);
+				if (target) target.focus({ preventScroll: true });
 				focusName = "";
 			}
 		};
 		const field = (label, control) => {
-			const holder = tx("display:flex;flex-direction:column;gap:6px;flex:1;min-width:130px");
+			const holder = tx("display:flex;flex-direction:column;min-width:0");
 			const caption = document.createElement("label");
 			caption.style.cssText = "font-size:17px;color:" + MUTED;
 			caption.textContent = label;
@@ -257,8 +420,9 @@
 			holder.append(caption);
 			return holder;
 		};
-		const inputStyle =
-			"box-sizing:border-box;width:100%;min-height:48px;border:2px solid #70708b;border-radius:12px;background:#1a1a28;color:#fff;font:20px sans-serif;padding:10px 12px;margin-top:6px;caret-color:#8fb0ff";
+		const inputStyle = windowLayout
+			? "box-sizing:border-box;width:100%;min-height:48px;border:1px solid #516071;border-radius:5px;background:#171f2a;color:#fff;font:18px sans-serif;padding:8px 10px;margin-top:4px;caret-color:#8fb0ff"
+			: "box-sizing:border-box;width:100%;min-height:48px;border:2px solid #70708b;border-radius:12px;background:#1a1a28;color:#fff;font:20px sans-serif;padding:10px 12px;margin-top:6px;caret-color:#8fb0ff";
 		const fieldFocus = e => {
 			e.addEventListener("focus", () => {
 				e.style.outline = "4px solid #8fb0ff";
@@ -297,6 +461,7 @@
 			e.value = form[key];
 			e.addEventListener("change", () => {
 				form[key] = e.value;
+				focusName = label;
 				if (key === "source") configureSource();
 				else load(false);
 			});
@@ -316,71 +481,12 @@
 				typeof item.identity === "string" ? item.identity : "",
 			].join("\n");
 		const jobFor = item => jobs.get(identity(item));
-		const decky = item =>
-			deckyPage ||
-			item.format === "decky" ||
-			item.kind === "decky" ||
-			item._catalogSource === "decky_stable" ||
-			item._catalogSource === "decky_testing";
-		const readOnly = item => decky(item) || item.read_only === true;
-		const formatLabel = item => (decky(item) ? "Decky plugin" : "Framey-native module");
+		const readOnly = item => item.read_only === true;
+		const formatLabel = () => "Framey-native module";
+		const readOnlyDetails = item =>
+			copyUnits("Read-only entry", text(item.reason, 600) || "This catalog entry is available for browsing only.");
 		const compat = item => {
 			const out = tx("margin-top:8px");
-			if (decky(item)) {
-				put(
-					out,
-					col(WARN, "Not compatible", 21, true),
-					col("#fff", "Built for Decky’s interface; it needs a Framey version before it can run here.", 18),
-				);
-				const inspectingSelection = selected === item && view === "details";
-				const cached = object(item._latestAssessment);
-				const defaultVersion = versions(item).find(v => v.name === item.version) || versions(item)[0];
-				const bound =
-					defaultVersion &&
-					cached.entry_key === identity(item) &&
-					cached.version_identity === defaultVersion.identity &&
-					cached.hash === defaultVersion.hash;
-				const evidence = inspectingSelection ? inspection.result : bound ? cached.assessment : null;
-				const assessment = object(evidence);
-				const binaries = Array.isArray(assessment.native_binaries) ? assessment.native_binaries : [];
-				const x86 =
-					assessment.architecture === "x86_64" || binaries.some(binary => object(binary).architecture === "x86_64");
-				const arm =
-					assessment.architecture === "aarch64" || binaries.some(binary => object(binary).architecture === "aarch64");
-				const mixed = assessment.architecture === "mixed" || (x86 && arm);
-				if (evidence && inspectingSelection) {
-					const version = versions(item).find(v => v.identity === inspection.version);
-					if (version)
-						out.append(
-							col(
-								MUTED,
-								"Selected version " + text(version.name, 200) + " · SHA-256 " + text(version.hash, 12),
-								17,
-								true,
-							),
-						);
-				}
-				if (!mixed && !arm && (assessment.architecture_status === "incompatible" || x86))
-					put(
-						out,
-						col(WARN, "Needs an ARM64 build", 19, true),
-						col("#fff", "Includes a program built for Intel/AMD processors; your headset needs an ARM64 build.", 18),
-					);
-				else {
-					const failed = selected === item && view === "details" && inspection.error;
-					const reason = failed
-						? "The archive inspection failed: " + inspection.error
-						: offline()
-							? "This catalog may be out of date. Refresh it before inspecting an archive for ARM64 support."
-							: mixed
-								? "This archive contains mixed native architectures. A manual porting review is needed to determine which programs it uses on ARM64."
-								: arm
-									? "ARM64 binaries were found, but running this plugin in Framey has not been verified."
-									: "ARM64 compatibility is unverified. The catalog alone cannot confirm support for your headset.";
-					put(out, col(MUTED, "ARM64: Not checked", 19, true), col(MUTED, reason, 18));
-				}
-				return out;
-			}
 			const declared = object(item.compatibility);
 			const cm = object(item.compat);
 			const badge = text(cm.badge || cm.state, 40);
@@ -463,6 +569,7 @@
 		const detailName = item => "Details: " + item.name;
 		const normal = value => {
 			const it = object(value);
+			if (it.format === "decky" || it.kind === "decky") return null;
 			const id = text(it.id, 200);
 			if (!id) return null;
 			return Object.assign({}, it, {
@@ -501,7 +608,7 @@
 		};
 		const filterPanel = () => {
 			const out = put(
-				tx("display:flex;flex-wrap:wrap;gap:12px;margin:14px 0"),
+				tx("display:flex;flex-direction:column;gap:12px"),
 				select(TEXT.category, "category", [
 					["all", TEXT.all],
 					...names(data.categories, rows, "category").filter(v => v[0] !== "all"),
@@ -535,7 +642,7 @@
 					sourceBusy = false;
 					loading = false;
 					apply.disabled = false;
-					const pending = out.querySelector('[data-catalog-source-saving="true"]');
+					const pending = screenNodes('[data-catalog-source-saving="true"]')[0];
 					if (pending) pending.textContent = "Apply the source to use this catalog URL.";
 				});
 				out.append(field("Custom catalog URL", url), apply);
@@ -552,6 +659,143 @@
 					reportAction(null, sourceError, sourceCode),
 				);
 			return out;
+		};
+		let matchPosition = 0;
+		const windowBrowse = (search, submit, filters, reset) => {
+			if (filterOpen) {
+				const panel = filterPanel();
+				const controls = [...panel.children].filter(
+					node => node.querySelector("input,select") || node.matches("[role='button'],button"),
+				);
+				const done = button("Done filtering", () => {
+					filterOpen = false;
+					focusName = TEXT.filters;
+					draw();
+				});
+				done.dataset.fyEsc = "1";
+				const nodes = [];
+				for (let at = 0; at < controls.length; at += 2) nodes.push(windowRow(...controls.slice(at, at + 2)));
+				if (sourceBusy) {
+					const pending = status("Saving catalog source…");
+					pending.dataset.catalogSourceSaving = "true";
+					nodes.push(pending);
+				}
+				if (sourceError) {
+					nodes.push(
+						button("Read source error", () =>
+							readDetails(
+								[...copyUnits("Source error", sourceError, BAD), ...copyUnits("Report unavailable", reportError, BAD)],
+								draw,
+							),
+						),
+					);
+				}
+				nodes.push(windowRow(button(TEXT.reset, reset), done));
+				windowShow(...nodes);
+				return;
+			}
+			const info = [
+				...copyUnits(
+					"Catalog source",
+					"Catalog: " +
+						(text(object(data.source).label, 200) || sources.find(s => s.id === form.source)?.label || form.source),
+				),
+				...copyUnits("Catalog source", [...snapshot().children]),
+			];
+			if (reportError) info.push(...copyUnits("Report unavailable", reportError, BAD));
+			if (listError) info.push(...copyUnits("Catalog error", [TEXT.failed, listError], BAD));
+			const nodes = [search, windowRow(button(TEXT.search, submit, { primary: true }), filters)];
+			if (loading) {
+				const pending = status(TEXT.loading);
+				pending.dataset.catalogLoading = "true";
+				nodes.push(pending);
+			} else if (listError)
+				nodes.push(
+					status(TEXT.failed, BAD),
+					windowRow(
+						button(TEXT.retry, () => load(true)),
+						reportAction(null, listError, listCode),
+					),
+				);
+			else if (!rows.length) nodes.push(status(form.query || form.category !== "all" ? TEXT.empty : TEXT.none));
+			else {
+				const total = Number.isFinite(data.total) ? data.total : rows.length;
+				const visible = box.clientWidth > 0 && box.clientWidth < 650 ? 2 : 3;
+				matchPosition = Math.max(0, Math.min(matchPosition, Math.max(0, total - 1)));
+				const matches = rows.slice(
+					Math.max(0, matchPosition - resultOffset),
+					Math.max(0, matchPosition - resultOffset) + visible,
+				);
+				const count = col(
+					MUTED,
+					"Showing " +
+						matches.length +
+						" of " +
+						total +
+						" matches. " +
+						(total > matches.length
+							? "Refine your search or filters to find more."
+							: "Choose a match to read its details."),
+					17,
+				);
+				count.style.cssText += ";margin:0;line-height:1.3";
+				nodes.push(count);
+				if (total > visible) {
+					const range = document.createElement("input"),
+						number = document.createElement("input");
+					range.type = "range";
+					number.type = "number";
+					range.setAttribute("aria-label", "Browse matches");
+					number.setAttribute("aria-label", "First match");
+					for (const input of [range, number]) {
+						input.min = "1";
+						input.max = String(total);
+						input.step = "1";
+						input.value = String(matchPosition + 1);
+						input.tabIndex = 0;
+					}
+					range.style.cssText = "width:100%;min-width:0;min-height:44px;accent-color:#5585ff";
+					number.style.cssText = inputStyle + ";width:90px;min-width:0";
+					const choose = (value, label) => {
+						if (!Number.isFinite(value)) return;
+						const position = Math.max(0, Math.min(total - 1, Math.round(value) - 1));
+						if (position >= resultOffset && position < resultOffset + rows.length) {
+							matchPosition = position;
+							focusName = label;
+							draw();
+						} else load(false, Math.floor(position / 50) * 50, position, label);
+					};
+					range.oninput = () => {
+						number.value = range.value;
+					};
+					range.onchange = () => choose(+range.value, "Browse matches");
+					number.onchange = () => choose(+number.value, "First match");
+					const position = windowRow(range, number);
+					position.style.gridTemplateColumns = "minmax(0,1fr) 90px";
+					nodes.push(position);
+				}
+				for (const item of matches) {
+					const control = button(detailName(item), () => open(item));
+					// The complete name remains the accessible label and in Read details.
+					control.textContent = item.name;
+					control.dataset.catalogResult = "true";
+					control.style.cssText +=
+						";display:block;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+					nodes.push(control);
+				}
+			}
+			if (reportError) nodes.push(col(BAD, "The report could not be opened. Read Catalog details.", 17));
+			if (offline()) nodes.push(col(WARN, "Saved catalog. Refresh before installing.", 17));
+			const footer = windowRow(
+				button(TEXT.refresh, () => load(true)),
+				button("Catalog details", () => readDetails(info, draw)),
+			);
+			if (text(data.fetch_error, 600) && !listError) {
+				footer.style.gridTemplateColumns = "repeat(3,minmax(0,1fr))";
+				footer.append(reportAction(null, data.fetch_error));
+			}
+			nodes.push(footer);
+			windowShow(...nodes);
 		};
 		const draw = () => {
 			const search = document.createElement("input");
@@ -573,7 +817,7 @@
 				serial++;
 				if (loading) {
 					loading = false;
-					const pending = box.querySelector('[data-catalog-loading="true"]');
+					const pending = screenNodes('[data-catalog-loading="true"]')[0];
 					if (pending) pending.textContent = "Press Search to find modules.";
 				}
 			});
@@ -585,93 +829,123 @@
 			});
 			const filters = button(TEXT.filters, () => {
 				filterOpen = !filterOpen;
+				focusName = filterOpen ? TEXT.category : TEXT.filters;
 				draw();
 			});
 			filters.setAttribute("aria-expanded", String(filterOpen));
-			const actions = row(
-				button(TEXT.search, submit, { primary: true }),
-				filters,
-				button(TEXT.refresh, () => load(true)),
-			);
-			actions.style.flexWrap = "wrap";
 			const reset = () => {
 				form.query = "";
 				form.category = "all";
 				form.sort = "name";
 				return load(false);
 			};
+			if (windowLayout) return windowBrowse(search, submit, filters, reset);
 			const filtered = !!(form.query || form.category !== "all");
-			const list = tx("display:flex;flex-direction:column;margin-top:12px");
+			const units = [
+				actionUnit("Search", field(TEXT.searchLabel, search)),
+				actionUnit("Search", button(TEXT.search, submit, { primary: true })),
+				actionUnit("Filters", filters),
+				actionUnit(
+					"Refresh",
+					button(TEXT.refresh, () => load(true)),
+				),
+			];
+			if (filterOpen) {
+				const panel = filterPanel();
+				for (const node of [...panel.children]) {
+					if (
+						node.dataset.catalogSourceSaving ||
+						node.querySelector("input,select") ||
+						node.getAttribute("role") === "button" ||
+						node.tagName === "BUTTON"
+					)
+						units.push(actionUnit("Filters", node));
+					else units.push(...copyUnits("Source", node));
+				}
+			}
+			if (filtered) units.push(actionUnit("Filters", button(TEXT.reset, reset)));
 			if (loading) {
 				const pending = status(TEXT.loading);
 				pending.dataset.catalogLoading = "true";
-				list.append(pending);
+				units.push(actionUnit("Results", pending));
 			} else if (listError)
-				list.append(
-					status(TEXT.failed, BAD),
-					col(BAD, listError, 18),
-					row(
+				units.push(
+					...copyUnits("Catalog error", [TEXT.failed, listError], BAD),
+					actionUnit(
+						"Catalog error",
 						button(TEXT.retry, () => load(true), { primary: true }),
-						reportAction(null, listError, listCode),
 					),
+					actionUnit("Catalog error", reportAction(null, listError, listCode)),
 				);
 			else if (!rows.length)
-				list.append(
-					col("#fff", filtered ? TEXT.empty : TEXT.none, 21, true),
-					col(MUTED, filtered ? TEXT.emptyHint : TEXT.noneHint, 18),
-					(filtered && row(button(TEXT.reset, reset))) || tx(""),
+				units.push(
+					...copyUnits("Results", [filtered ? TEXT.empty : TEXT.none, filtered ? TEXT.emptyHint : TEXT.noneHint]),
 				);
 			else {
-				list.append(
-					status(
-						rows.length +
-							(Number.isFinite(data.total) && data.total > rows.length ? " of " + data.total : "") +
-							(deckyPage ? (rows.length === 1 ? " plugin" : " plugins") : rows.length === 1 ? " module" : " modules"),
+				units.push(
+					...copyUnits(
+						"Results",
+						resultOffset +
+							1 +
+							"–" +
+							(resultOffset + rows.length) +
+							" of " +
+							(Number.isFinite(data.total) ? data.total : rows.length) +
+							" modules",
 					),
 				);
-				rows.forEach(item => {
-					const wrap = tx("padding:16px 0;border-bottom:1px solid #39394f;min-width:0");
-					const title = col("#fff", item.name, 23, true);
-					const details = button(detailName(item), () => open(item), {
-						css: "flex:1;margin-top:10px",
-					});
-					put(
-						wrap,
-						title,
-						col(UP, formatLabel(item), 16),
-						col(MUTED, summary(item), 16),
-						text(item.description, 600) && col("#fff", text(item.description, 600), 18),
-						compat(item),
-						!readOnly(item) && item.installed === true && col(GOOD, TEXT.installed, 17),
-						!readOnly(item) && jobFor(item) && jobFor(item).pending && status(TEXT.installing, UP),
-						details,
+				for (const item of rows) {
+					if (item.name.length > 32) units.push(...copyUnits("Name", item.name, "#fff"));
+					units.push(
+						actionUnit(
+							"Results",
+							button(detailName(item), () => open(item)),
+						),
 					);
-					list.append(wrap);
-				});
-				if (Number.isFinite(data.total) && data.total > rows.length)
-					list.append(row(button("Load more", () => load(false, true))));
+					units.push(...copyUnits("Module info", [formatLabel(item), summary(item), text(item.description, 600)]));
+					units.push(...copyUnits("Module info", [...compat(item).children]));
+					if (!readOnly(item) && item.installed === true) units.push(...copyUnits("Module info", TEXT.installed, GOOD));
+					if (!readOnly(item) && jobFor(item) && jobFor(item).pending)
+						units.push(...copyUnits("Module info", TEXT.installing, UP));
+				}
+				if (resultOffset > 0)
+					units.push(
+						actionUnit(
+							"Results",
+							button("Previous results", () => load(false, resultHistory.pop() || 0)),
+						),
+					);
+				if (Number.isFinite(data.total) && data.total > resultOffset + rows.length)
+					units.push(
+						actionUnit(
+							"Results",
+							button("Next results", () => {
+								resultHistory.push(resultOffset);
+								return load(false, resultOffset + rows.length);
+							}),
+						),
+					);
 			}
-			show(
-				heading(deckyPage ? "Decky Store" : TEXT.title),
-				deckyPage && deckyDisclosure(),
-				reportNotice(),
-				field(TEXT.searchLabel, search),
-				actions,
-				filterOpen && filterPanel(),
-				filtered && row(button(TEXT.reset, reset)),
-				col(
-					MUTED,
+			units.push(
+				...copyUnits(
+					"Catalog source",
 					"Catalog: " +
 						(text(object(data.source).label, 200) || sources.find(s => s.id === form.source)?.label || form.source),
-					17,
 				),
-				snapshot(),
-				list,
 			);
+			const provenance = snapshot();
+			for (const node of [...provenance.children]) {
+				if (node.querySelector("[data-catalog-report]")) units.push(actionUnit("Catalog source", node));
+				else units.push(...copyUnits("Catalog source", node));
+			}
+			screen(TEXT.title, units);
 		};
-		const load = (refresh, more) => {
+		const load = (refresh, offset = 0, position = offset, focus = "") => {
 			const seq = fresh("browse");
-			const offset = more ? rows.length : 0;
+			if (!offset) resultHistory = [];
+			resultOffset = offset;
+			matchPosition = position;
+			screenIndex = 0;
 			loading = true;
 			listError = "";
 			listCode = "";
@@ -688,9 +962,10 @@
 					listCode = r.error ? text(r.code, 80) : "";
 					if (!r.error) {
 						const incoming = (Array.isArray(r.rows) ? r.rows : []).slice(0, 50).map(normal).filter(Boolean);
-						const unique = new Map((more ? rows : []).concat(incoming).map(item => [identity(item), item]));
+						const unique = new Map(incoming.map(item => [identity(item), item]));
 						rows = [...unique.values()].slice(0, 512);
 					}
+					if (focus) focusName = focus;
 					draw();
 				},
 				err => {
@@ -704,12 +979,12 @@
 		};
 		const open = item => {
 			const seq = fresh("details");
+			readerLabel = "";
 			selected = item;
-			inspection = { version: "", pending: false, error: "", result: null };
 			reviewed = false;
 			detailError = "";
 			detailCode = "";
-			show(heading(item.name), row(button(TEXT.back, back)), status(TEXT.detailsLoading));
+			screen(item.name, copyUnits("Details", TEXT.detailsLoading), back);
 			return call("catalog_details", Object.assign({ id: item.id }, sourceArgs(item))).then(
 				r => {
 					if (!scoped(seq)) return;
@@ -747,396 +1022,78 @@
 		const details = () => {
 			const item = selected;
 			if (!item) return back();
-			if (decky(item)) restoreInspection(item);
 			const job = jobFor(item);
-			const reportFailure = detailError || inspection.error || (job && job.error) || text(data.fetch_error, 600);
-			const reportCode = detailError
-				? detailCode
-				: inspection.error
-					? inspection.code
-					: job && job.error
-						? job.code
-						: "";
-			const install =
-				!readOnly(item) &&
-				button(installLabel(item), review, {
-					primary: true,
-					disabled: blocked(item) || !!detailError || !reviewed,
-				});
-			const description = col("#fff", text(item.description, 12000) || TEXT.noDescription, 19);
-			const permissions = Array.isArray(item.permissions)
-				? item.permissions
-						.slice(0, 64)
-						.map(p => text(p, 300))
-						.filter(Boolean)
-						.join("\n")
-				: text(item.permissions, 4000);
-			const source = object(item.source);
-			show(
-				heading(item.name),
-				row(button(TEXT.back, back), reportAction(item, reportFailure, reportCode)),
-				reportNotice(),
-				decky(item) && deckyDisclosure(),
-				snapshot(item),
-				col(UP, formatLabel(item), 18),
-				col(MUTED, summary(item), 17),
-				item.author && col(MUTED, "By " + text(item.author, 200), 17),
-				compat(item),
-				detailError && status(detailError, BAD),
-				detailError && row(button(TEXT.retry, () => open(item))),
-				col("#fff", TEXT.description, 21, true),
-				description,
-				Array.isArray(item.tags) &&
-					col(
-						MUTED,
+			const reportFailure = detailError || (job && job.error) || text(data.fetch_error, 600);
+			const reportCode = detailError ? detailCode : job && job.error ? job.code : "";
+			const units = [
+				...copyUnits("Name", item.name, "#fff"),
+				...copyUnits("Module", [formatLabel(item), summary(item), item.author && "By " + text(item.author, 200)]),
+			];
+			if (!readOnly(item))
+				units.push(
+					actionUnit(
+						"Installation",
+						button(installLabel(item), review, {
+							primary: true,
+							disabled: blocked(item) || !!detailError || !reviewed,
+						}),
+					),
+				);
+			if (detailError)
+				units.push(
+					...copyUnits("Details error", detailError, BAD),
+					actionUnit(
+						"Details error",
+						button(TEXT.retry, () => open(item)),
+					),
+				);
+			units.push(...copyUnits("Compatibility", [...compat(item).children]));
+			if (readOnly(item)) units.push(...readOnlyDetails(item));
+			else {
+				units.push(
+					...copyUnits("Installation", [
+						installHint(item),
+						!reviewed &&
+							!detailError &&
+							"A current catalog identity is required before installing. Refresh the catalog and retry.",
+					]),
+				);
+				if (job) units.push(...copyUnits("Installation", [...progress(job).children]));
+			}
+			units.push(...copyUnits(TEXT.description, text(item.description, 12000) || TEXT.noDescription, "#fff"));
+			if (Array.isArray(item.tags))
+				units.push(
+					...copyUnits(
+						"Tags",
 						item.tags
 							.slice(0, 40)
 							.map(t => text(t, 100))
 							.filter(Boolean)
 							.join(" · "),
-						17,
 					),
-				col("#fff", TEXT.source, 21, true),
-				col(
-					MUTED,
-					[
-						text(object(data.source).label, 200),
-						text(object(data.source).url, 2000),
-						text(source.repository, 2000),
-						text(source.url, 2000),
-						source.commit && "Commit: " + text(source.commit, 200),
-						source.path && "Path: " + text(source.path, 1000),
-						text(item.homepage, 2000),
-					]
+				);
+			const source = object(item.source);
+			units.push(
+				...copyUnits(TEXT.source, [
+					text(object(data.source).label, 200),
+					text(object(data.source).url, 2000),
+					text(source.repository, 2000),
+					text(source.url, 2000),
+					source.commit && "Commit: " + text(source.commit, 200),
+					source.path && "Path: " + text(source.path, 1000),
+					text(item.homepage, 2000),
+				]),
+			);
+			const permissions = Array.isArray(item.permissions)
+				? item.permissions
+						.slice(0, 64)
+						.map(p => text(p, 300))
 						.filter(Boolean)
-						.join("\n"),
-					17,
-				),
-				permissions && col("#fff", TEXT.permissions, 21, true),
-				permissions && col(MUTED, permissions, 18),
-				readOnly(item)
-					? deckyDetails(item)
-					: put(
-							tx(""),
-							installHint(item) && status(installHint(item), item.installed === true ? GOOD : WARN),
-							!reviewed &&
-								!detailError &&
-								col(
-									WARN,
-									"A current catalog identity is required before installing. Refresh the catalog and retry.",
-									17,
-								),
-							row(install),
-							job && progress(job),
-						),
-			);
-		};
-		const versions = item => {
-			const values = (Array.isArray(item.versions) ? item.versions : [])
-				.slice(0, 100)
-				.map(object)
-				.filter(
-					v =>
-						typeof v.name === "string" &&
-						v.name &&
-						typeof v.identity === "string" &&
-						v.identity &&
-						v.identity.length <= 512 &&
-						typeof v.hash === "string" &&
-						/^[a-f0-9]{64}$/i.test(v.hash),
-				);
-			return [...new Map(values.map(v => [v.identity, v])).values()];
-		};
-		const restoreInspection = item => {
-			const available = versions(item);
-			let version = available.find(v => v.identity === inspection.version);
-			if (!version) {
-				version = available.find(v => v.name === item.version) || available[0];
-				if (version) {
-					const key = identity(item) + "\n" + version.identity;
-					inspection = inspections.get(key) || {
-						version: version.identity,
-						pending: false,
-						error: "",
-						result: null,
-					};
-				}
-			}
-			return version;
-		};
-		const versionInfo = version =>
-			put(
-				tx(""),
-				col(MUTED, "Version: " + text(version.name, 200), 18),
-				text(version.hash, 128) && col(MUTED, "SHA-256: " + text(version.hash, 128), 16),
-				text(version.created, 100) && col(MUTED, "Published: " + text(version.created, 100), 16),
-				Number.isFinite(version.downloads) &&
-					version.downloads >= 0 &&
-					col(MUTED, "Downloads: " + Math.floor(version.downloads), 16),
-				text(version.updates, 3000) && col("#fff", text(version.updates, 3000), 18),
-			);
-		const assessmentView = assessment => {
-			const out = put(
-				tx("margin-top:16px"),
-				subheading("Archive inspection", 3),
-				deckyDisclosure(),
-				col(WARN, "Requires a Framey port", 20, true),
-			);
-			if (text(assessment.label, 600)) out.append(col(MUTED, text(assessment.label, 600), 18));
-			const architecture = {
-				unknown: "ARM64 compatibility remains unverified.",
-				aarch64: "AArch64 native binaries were found. This does not establish Framey compatibility.",
-				x86_64: "x86-64 native binaries were found. These binaries cannot run natively on ARM64.",
-				mixed: "Mixed native binary architectures were found. Review each binary before an ARM64 port.",
-				other: "Other native binary architectures were found. ARM64 support remains unverified.",
-			};
-			out.append(
-				col(
-					assessment.architecture === "x86_64" || assessment.architecture === "mixed" ? WARN : MUTED,
-					architecture[assessment.architecture] || architecture.unknown,
-					18,
-				),
-			);
-			out.append(
-				col(
-					MUTED,
-					"No code was executed. This inspection reads only the selected archive. Archive contents alone do not prove ARM64 or Framey compatibility.",
-					18,
-				),
-			);
-			const details = [
-				"Frontend: " +
-					(assessment.has_frontend === true
-						? "present; Decky UI requires a Framey port"
-						: assessment.has_frontend === false
-							? "not detected"
-							: "unknown"),
-				"Backend: " +
-					(assessment.has_backend === true
-						? "present; review backend API and dependencies"
-						: assessment.has_backend === false
-							? "not detected"
-							: "unknown"),
-				"Root access: " +
-					(assessment.root_required === true
-						? "required by package metadata"
-						: assessment.root_required === false
-							? "not declared by package metadata"
-							: "unknown"),
-				assessment.verified_sha256 === true ? "Archive SHA-256 verified." : "",
-				Number.isFinite(assessment.bytes) && assessment.bytes >= 0
-					? "Archive size: " + Math.floor(assessment.bytes) + " bytes"
-					: "",
-				Number.isFinite(assessment.files) && assessment.files >= 0
-					? "Files inspected: " + Math.floor(assessment.files)
-					: "",
-			].filter(Boolean);
-			out.append(col(MUTED, details.join("\n"), 17));
-			const sections = [
-				["Porting assessment", assessment.reasons],
-				["Inspection limits and warnings", assessment.warnings],
-				["Flags", assessment.flags],
-				["Dependencies", assessment.dependencies],
-			];
-			sections.forEach(([title, values]) => {
-				const lines = (Array.isArray(values) ? values : [])
-					.slice(0, 40)
-					.map(v => text(v, 500))
-					.filter(Boolean);
-				if (lines.length) out.append(subheading(title, 4), col(MUTED, lines.join("\n"), 18));
-			});
-			const binaries = (Array.isArray(assessment.native_binaries) ? assessment.native_binaries : [])
-				.slice(0, 60)
-				.map(object)
-				.map(binary =>
-					[text(binary.path, 300), text(binary.format, 40), text(binary.architecture, 80)].filter(Boolean).join(" · "),
-				)
-				.filter(Boolean);
-			if (binaries.length) out.append(subheading("Native binaries", 4), col(MUTED, binaries.join("\n"), 17));
-			else
-				out.append(
-					col(
-						MUTED,
-						"No recognized native binaries were reported. Unsupported or nested content may still require review.",
-						17,
-					),
-				);
-			return out;
-		};
-		const deckyDetails = item => {
-			if (!decky(item))
-				return put(
-					tx("margin-top:16px"),
-					col(WARN, "Read-only entry", 22, true),
-					col("#fff", text(item.reason, 600) || "This catalog entry is available for browsing only.", 19),
-				);
-			const out = put(
-				tx("margin-top:16px"),
-				col(WARN, "Requires a Framey port", 22, true),
-				col(
-					"#fff",
-					"Decky plugins cannot be installed in Framey. Their frontend, backend APIs and runtime need a separate port.",
-					19,
-				),
-			);
-			const available = versions(item);
-			if (!available.length) {
-				out.append(col(MUTED, "No inspectable versions are available for this entry.", 18));
-				return out;
-			}
-			const version = restoreInspection(item);
-			const choice = document.createElement("select");
-			choice.dataset.fy = "core";
-			choice.style.cssText = inputStyle;
-			choice.setAttribute("aria-label", "Version");
-			fieldFocus(choice);
-			choice.tabIndex = 0;
-			available.forEach(v => {
-				const option = document.createElement("option");
-				option.value = v.identity;
-				option.textContent = text(v.name, 200);
-				choice.append(option);
-			});
-			choice.value = version.identity;
-			choice.addEventListener("change", () => {
-				const key = identity(item) + "\n" + choice.value;
-				inspection = inspections.get(key) || {
-					version: choice.value,
-					pending: false,
-					error: "",
-					result: null,
-				};
-				details();
-			});
-			const inspect = button("Inspect compatibility", () => assess(item, version), {
-				disabled: inspection.pending || !!detailError || !reviewed || offline() || version.inspectable === false,
-			});
-			if (inspection.pending) {
-				inspect.tabIndex = 0;
-				inspect.addEventListener("keydown", ev => {
-					if (ev.key !== "ArrowUp" && ev.key !== "ArrowLeft") return;
-					ev.preventDefault();
-					ev.stopPropagation();
-					choice.focus({ preventScroll: true });
-				});
-			}
-			out.append(
-				subheading("Versions", 3),
-				field("Version", choice),
-				versionInfo(version),
-				(item.versions_truncated === true &&
-					col(MUTED, "The catalog contains more versions than are shown here.", 17)) ||
-					tx(""),
-				col(
-					MUTED,
-					"Inspect compatibility downloads only the selected archive for a bounded, read-only inspection. No plugin code runs.",
-					18,
-				),
-				row(inspect),
-			);
-			if (version.inspectable === false)
-				out.append(col(WARN, "No supported package link is available for this version.", 18));
-			if (inspection.pending) out.append(status("Inspecting archive…", UP));
-			if (inspection.error) out.append(status("Inspection failed.", BAD), col(BAD, inspection.error, 18));
-			if (inspection.result) out.append(assessmentView(inspection.result));
-			if (offline()) out.append(col(WARN, "Refresh this catalog before inspecting an archive.", 17));
-			return out;
-		};
-		const assess = (item, version) => {
-			if (
-				!decky(item) ||
-				view !== "details" ||
-				!selected ||
-				identity(selected) !== identity(item) ||
-				inspection.pending ||
-				inspection.version !== version.identity ||
-				version.inspectable === false ||
-				!reviewed ||
-				detailError ||
-				offline()
-			)
-				return;
-			const current = inspection;
-			const key = identity(item) + "\n" + version.identity;
-			const available = versions(item);
-			const defaultVersion = available.find(v => v.name === item.version) || available[0];
-			const isDefault =
-				defaultVersion && version.identity === defaultVersion.identity && version.hash === defaultVersion.hash;
-			if (isDefault) delete item._latestAssessment;
-			if (!inspections.has(key) && inspections.size >= 100) {
-				for (const [oldKey, entry] of inspections) {
-					if (!entry.pending) {
-						inspections.delete(oldKey);
-						break;
-					}
-				}
-				if (inspections.size >= 100) {
-					current.error = "Other archive inspections are still running. Wait for one to finish, then retry.";
-					details();
-					return;
-				}
-			}
-			inspections.set(key, current);
-			current.pending = true;
-			current.error = "";
-			current.code = "";
-			current.result = null;
-			details();
-			const request = Object.assign(
-				{ id: item.id, identity: item.identity, version_identity: version.identity, confirm: true },
-				sourceArgs(item),
-			);
-			return call("catalog_assess", request).then(
-				r => {
-					current.pending = false;
-					const result = object(r.assessment);
-					if (r.error) {
-						current.error = problem(r);
-						current.code = text(r.code, 80);
-					} else if (
-						r.id !== item.id ||
-						r.format !== "decky" ||
-						r.read_only !== true ||
-						r.version !== version.name ||
-						r.hash !== version.hash ||
-						result.not_executed !== true ||
-						result.verified_sha256 !== true
-					) {
-						current.error = "The inspection result could not be confirmed. Select Inspect compatibility to retry.";
-						current.code = "unconfirmed_assessment";
-					} else {
-						current.result = result;
-						if (isDefault)
-							item._latestAssessment = {
-								entry_key: identity(item),
-								version_identity: version.identity,
-								hash: version.hash,
-								assessment: result,
-							};
-					}
-					if (
-						alive() &&
-						view === "details" &&
-						current === inspection &&
-						selected &&
-						identity(selected) === identity(item)
-					)
-						details();
-				},
-				err => {
-					current.pending = false;
-					current.error = problem(err);
-					current.code = text(object(err).code, 80);
-					if (
-						alive() &&
-						view === "details" &&
-						current === inspection &&
-						selected &&
-						identity(selected) === identity(item)
-					)
-						details();
-				},
-			);
+				: text(item.permissions, 4000);
+			units.push(...copyUnits(TEXT.permissions, permissions));
+			units.push(...copyUnits("Catalog source", [...snapshot(item).children]));
+			units.push(actionUnit("Report", reportAction(item, reportFailure, reportCode)));
+			screen(item.name, units, back);
 		};
 		const progress = job => {
 			const out = tx("margin-top:14px");
@@ -1158,20 +1115,29 @@
 				fresh("details");
 				details();
 			});
-			show(
-				heading(TEXT.review),
-				col("#fff", item.name, 23, true),
-				col(MUTED, summary(item), 18),
-				col(MUTED, text(object(item.source).repository, 2000), 17),
-				col(MUTED, "Commit: " + text(object(item.source).commit, 200), 17),
-				compat(item),
-				col("#fff", TEXT.risk, 19),
-				row(
-					button(TEXT.install, () => install(item), { primary: true }),
-					cancel,
-				),
+			focusName = TEXT.cancel;
+			screen(
+				TEXT.review,
+				[
+					...copyUnits("Review", [
+						item.name,
+						summary(item),
+						text(object(item.source).repository, 2000),
+						"Commit: " + text(object(item.source).commit, 200),
+					]),
+					...copyUnits("Compatibility", [...compat(item).children]),
+					...copyUnits("Permissions warning", TEXT.risk, "#fff"),
+					actionUnit(
+						"Confirm installation",
+						button(TEXT.install, () => install(item), { primary: true }),
+					),
+					actionUnit("Cancel installation", cancel),
+				],
+				() => {
+					fresh("details");
+					details();
+				},
 			);
-			cancel.focus();
 		};
 		const install = item => {
 			if (view !== "confirm" || blocked(item)) return;
@@ -1217,15 +1183,6 @@
 			data = {};
 			loading = false;
 			sourceCode = "";
-			if (deckyPage) {
-				try {
-					sessionStorage.fyDeckyCatalogSource = form.source;
-				} catch (e) {
-					recordStorageFailure();
-				}
-				sourceError = "";
-				return load(false);
-			}
 			if (form.source === "custom" && !customURL) {
 				sourceError = "Enter a custom catalog URL, then apply the source.";
 				draw();
@@ -1259,7 +1216,7 @@
 			);
 		};
 		state.settleJob = key => {
-			if (!alive() || deckyPage) return;
+			if (!alive()) return;
 			if (view === "details" && selected && identity(selected) === key) {
 				const job = jobs.get(key);
 				if (job && !job.error) open(selected);
@@ -1273,7 +1230,7 @@
 			r => {
 				if (!scoped(boot)) return;
 				const saved = object(r.source);
-				const sourceList = deckyPage ? r.decky_sources : r.sources;
+				const sourceList = r.sources;
 				if (Array.isArray(sourceList)) {
 					const incoming = sourceList
 						.slice(0, 20)
@@ -1282,7 +1239,7 @@
 						.map(s => ({ id: s.id, label: text(s.label, 150) || s.id }));
 					if (incoming.length === allowedSources.length) sources = [...new Map(incoming.map(s => [s.id, s])).values()];
 				}
-				if (!deckyPage && sources.some(s => s.id === saved.id)) form.source = saved.id;
+				if (sources.some(s => s.id === saved.id)) form.source = saved.id;
 				else if (!sources.some(s => s.id === form.source)) form.source = sources[0].id;
 				customURL = text(r.custom_url, 2000) || (saved.id === "custom" ? text(saved.url, 2000) : "");
 				if (r.error) {
@@ -1297,18 +1254,90 @@
 		);
 		return state.dispose;
 	};
-	const page = deckyPage =>
-		Object.freeze({
-			render(box) {
-				return render(box, deckyPage);
-			},
-			leave,
+	const disposeCatalog = () => {
+		leave();
+		window.removeEventListener("pagehide", leave);
+	};
+	const page = Object.freeze({ render, leave, dispose: disposeCatalog });
+	const renderDecky = box => {
+		leave();
+		let dead = false,
+			handle = null;
+		const state = {
 			dispose() {
-				leave();
-				window.removeEventListener("pagehide", leave);
+				if (dead) return;
+				dead = true;
+				if (handle) handle.dispose();
+				privateApi.clearPageNavigation();
 			},
-		});
-	Object.defineProperty(framey.pages, "store", { value: page(false), enumerable: true });
-	Object.defineProperty(framey.pages, "decky_store", { value: page(true), enumerable: true });
+		};
+		active = state;
+		const alive = () => !dead && active === state && box.isConnected;
+		const k = make(box);
+		const T = privateApi.kit.T;
+		const unavailable = (reason, disabled = false) => {
+			if (!alive()) return;
+			const nodes = [
+				col(WARN, T(disabled ? "s.decky_store_off" : "s.decky_store_unavailable")),
+				col(MUTED, T(disabled ? "s.decky_explain" : "s.decky_store_recover"), 17),
+			];
+			if (reason) nodes.push(col(BAD, String(reason).slice(0, 300)));
+			nodes.push(
+				k.btn(T("s.decky_settings"), () => {
+					framey.open("#settings:decky");
+				}),
+			);
+			k.show(...nodes);
+		};
+		k.show(col(MUTED, TEXT.loading));
+		call("decky_runtime_status", {})
+			.then(async status => {
+				if (!alive()) return;
+				const reason = text(status.error, 300) || text(object(status.error).message, 300);
+				if (status.enabled === false) return unavailable(reason, true);
+				if (status.enabled !== true || status.installed !== true)
+					return unavailable(reason || T("s.decky_unavailable"));
+				const manager = privateApi.optionalRuntime;
+				if (!manager || typeof manager.store !== "function") return unavailable(T("s.decky_unavailable"));
+				const allowed = new Set([
+					"catalog_sources",
+					"catalog_list",
+					"catalog_details",
+					"catalog_assess",
+					"catalog_import",
+				]);
+				const scopedCall = (name, arg) => {
+					if (!alive() || !allowed.has(name)) return Promise.reject(new Error("Decky Store request is unavailable"));
+					return privateApi.call(name, arg);
+				};
+				const context = {
+					box,
+					kit: { ...privateApi.kit, call: scopedCall },
+					call: scopedCall,
+					diagnostic: privateApi.diagnostic,
+					report: privateApi.report,
+					panelLayout: privateApi.panelLayout,
+					singleWindow: privateApi.singleWindow,
+					setPageNavigation: privateApi.setPageNavigation,
+					clearPageNavigation: privateApi.clearPageNavigation,
+					importEnabled: true,
+					alive,
+				};
+				const value = await manager.store(context);
+				if (!alive()) {
+					if (value && typeof value.dispose === "function") value.dispose();
+					return;
+				}
+				if (!value || typeof value.dispose !== "function") throw new Error(T("s.decky_unavailable"));
+				handle = value;
+			})
+			.catch(error => unavailable((error && error.message) || error));
+		return state.dispose;
+	};
+	Object.defineProperty(framey.pages, "store", { value: page, enumerable: true });
+	Object.defineProperty(framey.pages, "decky_store", {
+		value: Object.freeze({ render: renderDecky, leave, dispose: disposeCatalog }),
+		enumerable: true,
+	});
 	window.addEventListener("pagehide", leave);
 })();

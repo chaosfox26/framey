@@ -105,7 +105,7 @@ test("the remembered Decky Store route is restored independently and its module 
     assert.strictEqual(h.K.tab(), "#decky-store");
     assert.ok(h.document.body.textContent.includes("Community catalog ready"));
     const labels = [...h.document.querySelector('[role="tablist"]').children].map(node => node.textContent);
-    assert.deepStrictEqual(labels.slice(-4), ["Modules", "Store", "Decky Store", "Settings"]);
+    assert.deepStrictEqual(labels, ["Plugins", "Browse", "Settings"]);
     assert.throws(() => h.window.__bindFramey("decky-store", "reserved-token-0000", { name: "Reserved" }), /reserved/);
   } finally { h.K.dispose(); h.window.close(); }
 });

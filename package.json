@@ -2,8 +2,8 @@
   "name": "framey-development",
   "private": true,
   "scripts": {
-    "lint": "eslint *.js compat/*.js examples/*/*.js *.mjs tests/browser/*.mjs",
-    "format:check": "prettier --check *.js compat/*.js examples/*/source.js examples/hello-plugin/main.js examples/starter/main.js types/*.ts *.mjs tests/browser/*.mjs",
+    "lint": "eslint *.js compat/*.js 'decky_runtime/**/*.js' examples/*/*.js *.mjs tests/browser/*.mjs",
+    "format:check": "prettier --check *.js compat/*.js 'decky_runtime/**/*.js' examples/*/source.js examples/hello-plugin/main.js examples/starter/main.js types/*.ts *.mjs tests/browser/*.mjs",
     "types:check": "tsc --strict --noEmit --lib ES2020,DOM types/framey.d.ts",
     "python:types": "pyright",
     "javascript:types": "tsc -p tsconfig.checks.json",

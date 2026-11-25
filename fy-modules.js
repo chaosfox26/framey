@@ -72,7 +72,9 @@
 	privateApi.listen("progress", ev => {
 		if (watch) watch(ev);
 	});
+	let recentResult = null;
 	const keep = v => {
+		recentResult = v && v.fullRows ? v : null;
 		try {
 			if (v) sessionStorage.fyRes = JSON.stringify(v);
 			else sessionStorage.removeItem("fyRes");
@@ -118,6 +120,7 @@
 		}
 	};
 	const rd = () => {
+		if (recentResult) return recentResult;
 		let v = null;
 		try {
 			v = JSON.parse(sessionStorage.fyRes || "null");
@@ -132,7 +135,7 @@
 			.slice(0, 200)
 			.filter(r => Array.isArray(r) && typeof r[0] === "string" && typeof r[1] === "string")
 			.map(r => [r[0], clip(r[1], 300)]);
-		return { good: v.good === true, text: clip(v.text, 300), rows };
+		return { good: v.good === true, text: clip(v.text, 300), rows, savedSummary: true };
 	};
 	const pack = (good, text, rows) => {
 		const v = {
@@ -176,13 +179,31 @@
 		const ordered = rows.length > 32 ? bad.concat(rows.filter(x => !bad.includes(x))) : rows;
 		const okn = typeof r.ok === "number" ? r.ok : rows.filter(x => x.state === "ok").length;
 		const failn = typeof r.failed === "number" ? r.failed : bad.length;
-		return pack(
+		const result = pack(
 			!failn && !r.error,
 			r.error && !rows.length ? T("c.failed", { msg: r.error }) : T("m.summary", { ok: okn, failed: failn }),
 			ordered.map(line),
 		);
+		Object.defineProperty(result, "fullRows", { value: rows.map(line) });
+		Object.defineProperty(result, "fullText", {
+			value: r.error && !rows.length ? T("c.failed", { msg: r.error }) : result.text,
+		});
+		return result;
 	};
 	const paintRes = (k, out, v, done) => {
+		if (k.bounded)
+			return k.show(
+				tx(TITLE, T("m.res_title")),
+				col(v.good ? GOOD : WARN, k.windowFocused && v.fullText ? v.fullText : v.text, 21, true),
+				k.windowFocused &&
+					v.savedSummary &&
+					col(GREY, "Saved summary. Details from an earlier session may be shortened.", 17),
+				row(k.btn(T("c.back"), done)),
+				!v.good && k.reportButton(reportContext(null, v.text, "management_batch_failed")),
+				...(k.windowFocused && v.fullRows ? v.fullRows : v.rows).map(x =>
+					col(x[0] === "ok" ? GOOD : x[0] === "failed" ? BAD : GREY, x[1], 18),
+				),
+			);
 		const back = k.btn(T("c.back"), done);
 		put(
 			out,
@@ -210,6 +231,12 @@
 		let held = false;
 		let view = 0;
 		const k = { names: () => "" };
+		const navigation = new WeakMap();
+		let lastFocused = null;
+		box.onfocusin = ev => {
+			lastFocused = ev.target;
+		};
+		k.bounded = false;
 		owners.set(box, k);
 		k.alive = () => owners.get(box) === k && box.isConnected;
 		k.guard = fn => {
@@ -230,8 +257,9 @@
 			box.style.opacity = on ? ".5" : "1";
 		};
 		let want = null;
-		k.show = (...n) => {
+		const showNodes = (...n) => {
 			if (!k.alive()) return;
+			if (typeof privateApi.clearPageNavigation === "function") privateApi.clearPageNavigation();
 			k.cancel();
 			const a = document.activeElement;
 			if (a !== box && box.contains(a))
@@ -254,6 +282,130 @@
 				box;
 			t.focus();
 			want = null;
+		};
+		k.rawShow = showNodes;
+		k.pages = (title, nodes, options) => {
+			const o = options || {};
+			const focused = box.contains(document.activeElement)
+				? document.activeElement
+				: box.contains(lastFocused)
+					? lastFocused
+					: null;
+			const previousLabel = focused && focused.getAttribute("aria-label");
+			const replacementLabel =
+				previousLabel === T("m.more") ? T("m.less") : previousLabel === T("m.less") ? T("m.more") : previousLabel;
+			const units = [];
+			let back = o.back;
+			const add = node => {
+				if (!node) return;
+				if (node.nodeType === 3) {
+					if (node.textContent.trim()) add(col("#fff", node.textContent));
+					return;
+				}
+				if (node.matches("[data-fy-esc]")) {
+					back = back || navigation.get(node);
+					return;
+				}
+				if (node.matches(".fy-c,input,textarea,select,[data-fy-live-work],[role='progressbar'],[role='status']")) {
+					if (node.matches("[role='button']") && node.textContent.length > 64) {
+						const full = node.textContent;
+						add(col("#fff", full));
+						node.textContent = full.slice(0, 48) + "…";
+					}
+					node.style.flex = "none";
+					node.style.width = "100%";
+					node.style.boxSizing = "border-box";
+					if (node.matches("input,textarea,select")) node.style.minHeight = "48px";
+					units.push(node);
+					return;
+				}
+				if (node.childElementCount) {
+					[...node.childNodes].forEach(add);
+					return;
+				}
+				const value = node.textContent;
+				if (!value.trim()) return;
+				let remaining = value;
+				while (remaining.length) {
+					let end = Math.min(64, remaining.length);
+					const lineBreak = remaining.search(/[\r\n\u2028\u2029]/);
+					if (lineBreak >= 0 && lineBreak < end)
+						end = lineBreak + (remaining[lineBreak] === "\r" && remaining[lineBreak + 1] === "\n" ? 2 : 1);
+					else if (end < remaining.length) {
+						const space = remaining.lastIndexOf(" ", end);
+						if (space > 32) end = space + 1;
+					}
+					const part = tx(node.style.cssText, remaining.slice(0, end));
+					part.style.margin = "0";
+					part.style.lineHeight = "1.25";
+					units.push(part);
+					remaining = remaining.slice(end);
+				}
+			};
+			(nodes || []).forEach(add);
+			const restoreFocus = units.find(node => node.getAttribute("aria-label") === replacementLabel && replacementLabel);
+			if (!o.preserve) showNodes();
+			const at = view;
+			let first = true;
+			let index = Math.max(0, o.index | 0);
+			const render = (next, anchor) => {
+				if (!k.alive() || view !== at) return;
+				const size = privateApi.panelLayout && privateApi.panelLayout() === "window" ? 4 : 1;
+				const screens = [];
+				let screen = [];
+				for (const unit of units) {
+					if (
+						screen.length &&
+						(screen.length >= size ||
+							unit.hasAttribute("data-fy-live-work") ||
+							screen[0].hasAttribute("data-fy-live-work"))
+					) {
+						screens.push(screen);
+						screen = [];
+					}
+					screen.push(unit);
+				}
+				if (screen.length || !screens.length) screens.push(screen);
+				const count = screens.length;
+				if (anchor) {
+					const found = screens.findIndex(nodes => nodes.some(node => node === anchor || node.contains(anchor)));
+					if (found >= 0) next = found;
+				} else if (first && restoreFocus) next = screens.findIndex(nodes => nodes.includes(restoreFocus));
+				index = Math.max(0, Math.min(count - 1, next | 0));
+				const active = document.activeElement;
+				box.replaceChildren(...screens[index]);
+				box.style.display = "flex";
+				box.style.flexDirection = "column";
+				box.style.gap = "8px";
+				if (typeof privateApi.setPageNavigation === "function")
+					privateApi.setPageNavigation({
+						index,
+						count,
+						title,
+						onPage: render,
+						onBack:
+							back &&
+							(() => {
+								if (!k.alive() || view !== at) return;
+								if (!o.preserveBack) k.cancel();
+								return back();
+							}),
+						onLayout: () =>
+							render(index, box.contains(document.activeElement) ? document.activeElement : box.firstElementChild),
+					});
+				if (anchor && anchor.isConnected) anchor.focus();
+				else if (first && restoreFocus) restoreFocus.focus();
+				else if (active && !active.isConnected && active !== document.body)
+					(box.querySelector("[tabindex='0'],input,textarea,select") || box).focus();
+				first = false;
+			};
+			render(index);
+		};
+		k.show = (...nodes) => {
+			if (!k.bounded) return showNodes(...nodes);
+			const n = nodes.filter(Boolean);
+			const heading = n[0] && n[0].style.fontSize === "28px" ? n.shift().textContent : "";
+			return k.pages(heading, n);
 		};
 		box.onkeydown = ev => {
 			const d =
@@ -296,7 +448,10 @@
 					o,
 				),
 			);
-			if (nav) e.dataset.fyEsc = "1";
+			if (nav) {
+				e.dataset.fyEsc = "1";
+				navigation.set(e, fn);
+			}
 			return e;
 		};
 		k.reportButton = context => k.btn(T("c.report"), () => openReport(context));
@@ -330,11 +485,14 @@
 			bar.setAttribute("role", "progressbar");
 			bar.setAttribute("aria-valuemin", "0");
 			bar.setAttribute("aria-valuemax", "100");
+			const progressBox = put(tx(""), head, list, bar, pct);
+			if (k.bounded) progressBox.dataset.fyLiveWork = "1";
 			const lines = new Map();
 			let job = null;
 			bar.append(fill);
 			return {
-				el: put(tx(""), head, list, bar, pct),
+				el: progressBox,
+				details: () => [...lines.values()].map(node => col(node.style.color, node.textContent, 18)),
 				update(ev) {
 					if (!ev || typeof ev.stage !== "string") return;
 					if (ev.job !== job) {
@@ -369,6 +527,21 @@
 					else bar.removeAttribute("aria-valuenow");
 					fill.style.width = p + "%";
 					pct.textContent = real ? p + "%" : "";
+					if (k.bounded) {
+						list.replaceChildren();
+						head.textContent =
+							(ev.index | 0) +
+							"/" +
+							(ev.total | 0) +
+							" " +
+							clip(label, 24) +
+							" — " +
+							state +
+							(real ? " (" + p + "%)" : "");
+						head.style.margin = "0";
+						bar.style.marginTop = "8px";
+						pct.textContent = "";
+					}
 				},
 			};
 		};
@@ -380,7 +553,24 @@
 				typeof k.back === "function"
 					? put(tx(""), col(GREY, T("c.work_background"), 18), row(k.btn(T("c.back"), k.back)))
 					: null;
-			k.show(tx(TITLE, title), p.el, nav, out);
+			if (k.bounded) {
+				const progressScreen = (preserve = false) =>
+					k.pages(
+						title,
+						[
+							p.el,
+							k.btn("Progress details", () =>
+								k.pages(title, p.details(), {
+									back: () => progressScreen(true),
+									preserve: true,
+									preserveBack: true,
+								}),
+							),
+						],
+						{ back: typeof k.back === "function" ? k.back : undefined, preserve },
+					);
+				progressScreen();
+			} else k.show(tx(TITLE, title), p.el, nav, out);
 			const progress = k.guard(p.update);
 			watch = progress;
 			return run().then(
@@ -403,6 +593,12 @@
 				back();
 			});
 			const report = r.error && k.reportButton(reportContext(obj(context).plugin, r.error, obj(context).code));
+			if (k.bounded)
+				return k.show(
+					col(r.error ? BAD : GOOD, r.error ? T("c.failed", { msg: r.error }) : okText, 21, true),
+					r.error && r.stage && col(GREY, T("c.stage", { stage: r.stage })),
+					row(b, report),
+				);
 			put(
 				out,
 				col(r.error ? BAD : GOOD, r.error ? T("c.failed", { msg: r.error }) : okText, 21, true),
@@ -414,15 +610,21 @@
 		};
 		k.notes = (id, tag, title, back) => {
 			k.show(tx(TITLE, title), row(k.btn(T("c.back"), back)), col(GREY, T("c.loading")));
-			return call("notes", { id, tag }).then(
-				k.guard(r =>
-					k.show(
-						tx(TITLE, title),
-						row(k.btn(T("c.back"), back)),
-						col(r.error ? BAD : "#fff", r.error || r.notes || T("v.nonotes")),
+			return call("notes", { id, tag })
+				.then(
+					k.guard(r =>
+						k.show(
+							tx(TITLE, title),
+							row(k.btn(T("c.back"), back)),
+							col(r.error ? BAD : "#fff", r.error || r.notes || T("v.nonotes")),
+						),
 					),
-				),
-			);
+				)
+				.catch(
+					k.guard(error => {
+						if (k.bad) k.bad(error);
+					}),
+				);
 		};
 		k.versions = (id, title, back, gate, plugin) => {
 			let rows = [],
@@ -448,17 +650,20 @@
 						row(
 							k.reportButton(reportContext(plugin || (id !== "_loader" ? { id } : null), err, "version_list_failed")),
 						),
-					ui().list({
-						items: rows.map(v => ({ id: v.tag, label: vlabel(v), sub: vsub(v) })),
-						onselect: tag => detail(rows.find(v => v.tag === tag)),
-						empty: T("v.none"),
-					}),
+					k.bounded
+						? put(tx(""), ...rows.map(v => k.btn(vlabel(v), () => detail(v))), !rows.length && col(GREY, T("v.none")))
+						: ui().list({
+								items: rows.map(v => ({ id: v.tag, label: vlabel(v), sub: vsub(v) })),
+								onselect: tag => detail(rows.find(v => v.tag === tag)),
+								empty: T("v.none"),
+							}),
 					more && row(k.btn(T("v.more"), () => load(page + 1))),
 				);
 			const detail = v => {
 				const cm = obj(v.compat);
 				k.show(
 					tx(TITLE, vlabel(v)),
+					k.bounded && col(GREY, vsub(v)),
 					v.published && col(GREY, T("v.published", { d: day(v.published) })),
 					cm.msg && col(cm.badge === "ok" ? GOOD : GREY, cm.msg),
 					v.downgrade && col(WARN, T("v.limits")),
@@ -511,24 +716,31 @@
 			};
 			const load = pg => {
 				k.hold(true);
-				return call("ver_list", { id, page: pg }).then(
-					k.guard(r => {
-						k.hold(false);
-						if (r.error) err = r.error;
-						else {
-							err = "";
-							page = pg;
-							rows = rows.concat(
-								(Array.isArray(r.versions) ? r.versions : []).filter(
-									v => v && typeof v === "object" && typeof v.tag === "string",
-								),
-							);
-							more = !!r.more;
-							info = r.note || info;
-						}
-						list();
-					}),
-				);
+				return call("ver_list", { id, page: pg })
+					.then(
+						k.guard(r => {
+							k.hold(false);
+							if (r.error) err = r.error;
+							else {
+								err = "";
+								page = pg;
+								rows = rows.concat(
+									(Array.isArray(r.versions) ? r.versions : []).filter(
+										v => v && typeof v === "object" && typeof v.tag === "string",
+									),
+								);
+								more = !!r.more;
+								info = r.note || info;
+							}
+							list();
+						}),
+					)
+					.catch(
+						k.guard(error => {
+							k.hold(false);
+							if (k.bad) k.bad(error);
+						}),
+					);
 			};
 			k.show(tx(TITLE, title), row(k.btn(T("c.back"), back)), col(GREY, T("c.loading")));
 			return load(1);
@@ -587,11 +799,228 @@
 		return put(tx(frame), col(BAD, T("sd.corrupt"), 20, true), row(k.btn(T("sd.repair"), repair, { primary: true })));
 	};
 
+	const managementWindow = (k, box) => {
+		k.windowFocused = true;
+		const control = (node, label) => {
+			node.dataset.fy = "core";
+			node.setAttribute("aria-label", label);
+			node.tabIndex = 0;
+			node.style.cssText =
+				"width:100%;min-width:0;box-sizing:border-box;height:44px;flex:none;background:#18232e;color:#fff;border:1px solid #586776;border-radius:5px;padding:7px 10px;font:inherit;font-size:18px";
+			return node;
+		};
+		const input = (label, value = "") => {
+			const node = control(document.createElement("input"), label);
+			node.placeholder = label;
+			node.value = value;
+			return node;
+		};
+		const select = (label, values, change) => {
+			const node = control(document.createElement("select"), label);
+			values.forEach(([value, text]) => {
+				const option = document.createElement("option");
+				option.value = value;
+				option.textContent = text;
+				node.append(option);
+			});
+			node.onchange = () => {
+				if (k.alive()) change(node.value);
+			};
+			return node;
+		};
+		const small = text => tx("font-size:17px;line-height:1.25;color:#b9c6d2;overflow-wrap:anywhere", text);
+		const heading = text => tx("font-size:23px;font-weight:700;line-height:1.2;overflow-wrap:anywhere", text);
+		const grid = nodes =>
+			put(
+				tx(
+					"display:grid;grid-template-columns:repeat(" +
+						(nodes.filter(Boolean).length === 1 ? 1 : 2) +
+						",minmax(0,1fr));gap:8px",
+				),
+				...nodes,
+			);
+		const mount = (nodes, preserve = false) => {
+			if (!k.alive()) return;
+			if (typeof k.windowContext === "function") k.windowContext();
+			if (preserve) box.replaceChildren(...nodes.filter(Boolean));
+			else k.rawShow(...nodes);
+			box.style.cssText += ";display:flex;flex-direction:column;gap:8px;min-height:0;overflow:hidden";
+			box.querySelectorAll("[role='button'],[role='switch']").forEach(node => {
+				node.style.minHeight = "44px";
+				node.style.height = "auto";
+				node.style.margin = "0";
+				node.style.padding = "7px 10px";
+				node.style.fontSize = "18px";
+				node.style.lineHeight = "1.2";
+				node.style.borderRadius = "5px";
+				node.style.minWidth = "0";
+				node.style.overflowWrap = "anywhere";
+			});
+		};
+		const pieces = value => {
+			const parts = [];
+			let text = String(value == null ? "" : value);
+			while (text.length) {
+				let end = Math.min(box.clientWidth >= 640 ? 240 : 96, text.length);
+				if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
+				if (text[end - 1] === "\r" && text[end] === "\n") end--;
+				const breaks = [...text.slice(0, end).matchAll(/\r\n|[\n\r\u2028\u2029]/g)];
+				if (breaks.length > 2) end = breaks[2].index + breaks[2][0].length;
+				parts.push(text.slice(0, end));
+				text = text.slice(end);
+			}
+			return parts.length ? parts : [""];
+		};
+		const reader = value => {
+			const parts = pieces(value);
+			const body = tx(
+				"font-size:18px;line-height:1.3;white-space:pre-wrap;overflow-wrap:anywhere;min-height:118px",
+				parts[0],
+			);
+			const pick =
+				parts.length > 1 &&
+				select(
+					"Text segment",
+					parts.map((_, i) => [i === parts.length - 1 ? "last" : String(i), i + 1 + " / " + parts.length]),
+					value => {
+						body.textContent = parts[value === "last" ? parts.length - 1 : Number(value)];
+					},
+				);
+			return [pick, body].filter(Boolean);
+		};
+		const actions = nodes => {
+			const slot = tx(""),
+				labels = nodes.map(node => node.getAttribute("aria-label") || node.textContent);
+			const choose = value => {
+				const node = nodes[Number(value)];
+				node.textContent = "Run action";
+				node.setAttribute("aria-label", "Run action");
+				slot.replaceChildren(node);
+			};
+			const picker = select(
+				"Actions",
+				labels.map((label, i) => [String(i), label]),
+				choose,
+			);
+			[...picker.options].forEach((option, i) => {
+				option.value = labels[i];
+			});
+			picker.onchange = () => {
+				if (k.alive()) choose(String(picker.selectedIndex));
+			};
+			choose("0");
+			return [picker, slot];
+		};
+		const inspect = (title, values, back) => {
+			const fields = [];
+			const add = (value, path) => {
+				if (value && typeof value === "object") {
+					const entries = Object.entries(value);
+					if (!entries.length) fields.push([path, Array.isArray(value) ? "[]" : "{}"]);
+					else
+						entries.forEach(([key, child]) =>
+							add(child, path ? path + " · " + key.replace(/_/g, " ") : key.replace(/_/g, " ")),
+						);
+				} else fields.push([path || "Detail", value == null ? "—" : String(value)]);
+			};
+			add(values, "");
+			const query = input("Find a detail");
+			const content = tx("display:flex;flex-direction:column;gap:8px;min-height:0");
+			const render = () => {
+				const term = query.value.trim().toLocaleLowerCase();
+				const found = fields.filter(([key, value]) => (key + " " + value).toLocaleLowerCase().includes(term));
+				if (!found.length) return content.replaceChildren(small("No matching details."));
+				const value = tx("display:flex;flex-direction:column;gap:8px");
+				const show = i => value.replaceChildren(...reader(found[Number(i)][1]));
+				const picker = select(
+					"Detail",
+					found.map(([key], i) => [String(i), key]),
+					show,
+				);
+				show(0);
+				content.replaceChildren(picker, value);
+			};
+			query.oninput = render;
+			render();
+			mount([heading(title.length > 52 ? "Details" : title), query, content, k.btn(T("c.back"), back)]);
+			query.focus();
+		};
+		const show = (title, nodes, options = {}) => {
+			const buttons = [],
+				inputs = [],
+				text = [];
+			let back = options.back;
+			const add = node => {
+				if (!node) return;
+				if (node.nodeType === 3) {
+					if (node.textContent.trim()) text.push(node.textContent);
+					return;
+				}
+				if (node.matches("[data-fy-esc]")) {
+					buttons.push(node);
+					return;
+				}
+				if (node.matches("[role='button'],[role='switch']")) {
+					buttons.push(node);
+					return;
+				}
+				if (node.matches("input,textarea,select")) {
+					inputs.push(control(node, node.getAttribute("aria-label") || node.placeholder || "Value"));
+					return;
+				}
+				if (node.hasAttribute("data-fy-live-work")) {
+					inputs.push(node);
+					return;
+				}
+				if (node.childNodes.length) [...node.childNodes].forEach(add);
+			};
+			nodes.filter(Boolean).forEach(add);
+			const nav = buttons.filter(node => node.hasAttribute("data-fy-esc"));
+			const acts = buttons.filter(node => !node.hasAttribute("data-fy-esc"));
+			if (back && !nav.length) {
+				const button = options.preserveBack
+					? ui().button({
+							label: T("c.back"),
+							nav: true,
+							onclick: () => {
+								if (k.alive()) back();
+							},
+						})
+					: k.btn(T("c.back"), back);
+				button.dataset.fyEsc = "1";
+				nav.push(button);
+			}
+			const full = text.join("\n");
+			const content = [];
+			if (title) content.push(heading(title.length > 52 ? "Details" : title));
+			if (full || title.length > 52) content.push(...reader((title.length > 52 ? title + "\n" : "") + full));
+			content.push(...inputs);
+			if (acts.length <= 4 && acts.every(node => (node.getAttribute("aria-label") || "").length < 34))
+				content.push(grid(acts));
+			else if (acts.length) content.push(...actions(acts));
+			if (nav.length) content.push(grid(nav));
+			mount(content, options.preserve);
+		};
+		k.pages = show;
+		k.show = (...nodes) => {
+			const n = nodes.filter(Boolean);
+			const title = n[0] && n[0].style.fontSize === "28px" ? n.shift().textContent : "";
+			show(title, n);
+		};
+		return { control, input, select, small, heading, grid, mount, reader, actions, inspect };
+	};
+
 	const modules = {
 		render(box) {
 			const k = make(box);
+			k.bounded = !!box.closest(".fy-panel");
+			const windowUI =
+				k.bounded && privateApi.singleWindow && privateApi.singleWindow() ? managementWindow(k, box) : null;
 			const { btn, sw } = k;
 			let data = { list: [], store: [], st: {}, mp: {}, maint: {} };
+			let selection = "";
+			let windowQuery = "";
+			let lastAction = null;
 			let res = {},
 				more = "",
 				line = null;
@@ -602,8 +1031,12 @@
 			let onHome = false,
 				onResult = false;
 			let bad = 0;
+			k.windowContext = () => {
+				onHome = false;
+				onResult = false;
+			};
 			const fall = e => {
-				const error = clip(e && e.message, 200) || T("c.noanswer");
+				const error = (windowUI ? String((e && e.message) || "") : clip(e && e.message, 200)) || T("c.noanswer");
 				k.show(
 					tx(TITLE, T("m.title")),
 					col(BAD, T("c.failed", { msg: error })),
@@ -615,6 +1048,14 @@
 				);
 			};
 			k.bad = fall;
+			if (windowUI) {
+				const pages0 = k.pages;
+				k.pages = (...args) => {
+					onHome = false;
+					onResult = false;
+					return pages0(...args);
+				};
+			}
 			const show0 = k.show;
 			k.show = (...n) => {
 				onHome = false;
@@ -622,14 +1063,20 @@
 				return show0(...n);
 			};
 			const mrec = id => obj(obj(data.maint)[id]);
-			const pull = ids =>
-				ids.length
-					? call("maint_get", { ids: ids.slice(0, 64) }).then(
+			const pull = ids => {
+				if (!windowUI) ids = ids.slice(0, 64);
+				const groups = [];
+				for (let at = 0; at < ids.length; at += 64) groups.push(ids.slice(at, at + 64));
+				return Promise.all(
+					groups.map(group =>
+						call("maint_get", { ids: group }).then(
 							k.guard(r => {
 								if (r.records) Object.assign(data.maint, r.records);
 							}),
-						)
-					: Promise.resolve();
+						),
+					),
+				);
+			};
 			const draw = () =>
 				Promise.all([call("list"), call("store"), call("state_get"), call("maint_prefs"), call("status")])
 					.then(
@@ -663,20 +1110,23 @@
 			k.back = back;
 			const quick = (method, arg, okText) => {
 				k.hold(true);
-				return call(method, arg).then(
-					k.guard(r => {
-						k.hold(false);
-						if (r.error) warn(r.error);
-						else if (Array.isArray(r.purge_failed) && r.purge_failed.length)
-							warn(T("m.purge_failed", { count: r.purge_failed.length }));
-						else if (okText) say(okText);
-						if (!r.error && Array.isArray(r.order)) {
-							data.st = r;
-							return home();
-						}
-						return draw();
-					}),
-				);
+				return call(method, arg)
+					.then(
+						k.guard(r => {
+							k.hold(false);
+							lastAction = { id: typeof arg === "string" ? arg : obj(arg).id, result: r };
+							if (r.error) warn(r.error);
+							else if (Array.isArray(r.purge_failed) && r.purge_failed.length)
+								warn(T("m.purge_failed", { count: r.purge_failed.length }));
+							else if (okText) say(okText);
+							if (!r.error && Array.isArray(r.order)) {
+								data.st = r;
+								return home();
+							}
+							return draw();
+						}),
+					)
+					.catch(k.guard(fall));
 			};
 			const thaw = (m, cont) => {
 				const f = obj(data.st.frozen)[m.id];
@@ -724,7 +1174,14 @@
 				);
 			const updateAsk = m => {
 				const s = obj(res[m.id]);
-				const n = typeof s.notes === "string" ? (s.notes.length > 600 ? s.notes.slice(0, 600) + "..." : s.notes) : "";
+				const n =
+					typeof s.notes === "string"
+						? windowUI
+							? s.notes
+							: s.notes.length > 600
+								? s.notes.slice(0, 600) + "..."
+								: s.notes
+						: "";
 				let used = false;
 				k.show(
 					tx(TITLE, T("m.update")),
@@ -822,21 +1279,23 @@
 				k.hold(true);
 				el.textContent = T("c.checking");
 				el.style.color = GREY;
-				call("check").then(
-					k.guard(r => {
-						k.hold(false);
-						if (!r.checked) line = [T("m.check_failed", { msg: r.error || T("c.noanswer") }), BAD];
-						else {
-							res = obj(r.checked);
-							const all = Object.values(obj(res)).filter(x => x && typeof x === "object");
-							const n = all.filter(x => x.state === "update").length;
-							const f = all.filter(x => x.state === "error").length;
-							const parts = [f && T("m.n_failed", { count: f }), n && T("m.n_updates", { count: n })].filter(Boolean);
-							line = [parts.length ? parts.join(", ") : T("m.all_current"), f ? BAD : n ? UP : GOOD];
-						}
-						home();
-					}),
-				);
+				call("check")
+					.then(
+						k.guard(r => {
+							k.hold(false);
+							if (!r.checked) line = [T("m.check_failed", { msg: r.error || T("c.noanswer") }), BAD];
+							else {
+								res = obj(r.checked);
+								const all = Object.values(obj(res)).filter(x => x && typeof x === "object");
+								const n = all.filter(x => x.state === "update").length;
+								const f = all.filter(x => x.state === "error").length;
+								const parts = [f && T("m.n_failed", { count: f }), n && T("m.n_updates", { count: n })].filter(Boolean);
+								line = [parts.length ? parts.join(", ") : T("m.all_current"), f ? BAD : n ? UP : GOOD];
+							}
+							home();
+						}),
+					)
+					.catch(k.guard(fall));
 			};
 			const results = (r, out) => {
 				if (!Array.isArray(r.results)) return k.result(out, { error: r.error || T("c.noanswer") }, "", back);
@@ -856,7 +1315,9 @@
 				return call("batch_plan", {}).then(
 					k.guard(r => {
 						k.hold(false);
-						const items = (Array.isArray(r.items) ? r.items : []).filter(x => x && typeof x === "object").slice(0, 32);
+						const items = (Array.isArray(r.items) ? r.items : [])
+							.filter(x => x && typeof x === "object")
+							.slice(0, windowUI ? undefined : 32);
 						if (r.error || !items.length)
 							return k.show(
 								tx(TITLE, T("m.updall")),
@@ -954,7 +1415,7 @@
 				const plat = (window.FY_RUNTIME || {}).platform;
 				const cs = (Array.isArray(m.companions) ? m.companions : [])
 					.filter(c => c && typeof c.name === "string" && (!c.platform || !plat || c.platform === plat))
-					.slice(0, 4);
+					.slice(0, windowUI ? undefined : 4);
 				return put(
 					tx("margin-top:6px"),
 					row(
@@ -1024,6 +1485,7 @@
 				);
 			};
 			const details = m => {
+				if (windowUI) return windowUI.inspect(T("mt.title", { name: m.name }), mrec(m.id), home);
 				const r = mrec(m.id),
 					[key, glyph, color] = mt(r),
 					d = obj(r.declaration),
@@ -1108,31 +1570,35 @@
 					row(btn(T("c.back"), () => home())),
 					col(GREY, T("c.checking")),
 				);
-				return call("maint_refresh", { id: m.id }).then(
-					k.guard(r => {
-						k.hold(false);
-						if (r.error) warn(r.error);
-						else data.maint[m.id] = r;
-						details(m);
-					}),
-				);
+				return call("maint_refresh", { id: m.id })
+					.then(
+						k.guard(r => {
+							k.hold(false);
+							if (r.error) warn(r.error);
+							else data.maint[m.id] = r;
+							details(m);
+						}),
+					)
+					.catch(k.guard(fall));
 			};
 			const refreshAll = el => {
 				k.hold(true);
 				el.textContent = T("c.checking");
 				el.style.color = GREY;
-				call("maint_refresh", { id: "all" }).then(
-					k.guard(r => {
-						k.hold(false);
-						const n = Object.keys(obj(r.records)).length;
-						if (r.error) line = [T("c.failed", { msg: r.error }), BAD];
-						else {
-							Object.assign(data.maint, r.records);
-							line = [T("mt.refreshed", { count: n }), GOOD];
-						}
-						home();
-					}),
-				);
+				call("maint_refresh", { id: "all" })
+					.then(
+						k.guard(r => {
+							k.hold(false);
+							const n = Object.keys(obj(r.records)).length;
+							if (r.error) line = [T("c.failed", { msg: r.error }), BAD];
+							else {
+								Object.assign(data.maint, r.records);
+								line = [T("mt.refreshed", { count: n }), GOOD];
+							}
+							home();
+						}),
+					)
+					.catch(k.guard(fall));
 			};
 			const card = (m, i, n) => {
 				const fz = obj(data.st.frozen)[m.id];
@@ -1152,6 +1618,8 @@
 					fz && col(UP, T("m.frozen_at", { v: vv(fz.version) }), 18),
 					v[0] && col(v[1], v[0]),
 					compat(m.compat),
+					m.decky_runtime_available === false &&
+						col(WARN, String(m.decky_runtime_reason || T("m.decky_off")).slice(0, 300)),
 					maintRow(m),
 					(m.fail || m.stuck) && failbox(m),
 					put(
@@ -1230,6 +1698,227 @@
 				out.push(url, row(btn(T("m.install"), install, { primary: true })));
 				return out;
 			};
+			const windowCollection = (title, entries, queryLabel, backTo, choose, initial = "", remember) => {
+				const w = windowUI;
+				const query = w.input(queryLabel, initial);
+				const found = tx("display:flex;flex-direction:column;gap:8px");
+				const filter = () => {
+					if (remember) remember(query.value);
+					const term = query.value.trim().toLocaleLowerCase();
+					const matches = entries.filter(m => [m.name, m.id, m.version].join(" ").toLocaleLowerCase().includes(term));
+					if (term)
+						matches.sort(
+							(a, b) =>
+								Number(String(b.id).toLocaleLowerCase() === term) - Number(String(a.id).toLocaleLowerCase() === term),
+						);
+					const capacity = box.clientWidth >= 640 && box.clientHeight >= 560 ? 6 : 4;
+					const status = w.small(
+						matches.length +
+							" / " +
+							entries.length +
+							(matches.length > capacity ? " · Refine search to find a plugin" : ""),
+					);
+					const buttons = matches.slice(0, capacity).map(m => {
+						const b = btn(m.name || m.id, () => choose(m));
+						b.style.cssText +=
+							";height:44px;min-height:44px;margin:0;padding:7px 10px;font-size:18px;line-height:1.2;border-radius:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block";
+						b.title = (m.name || m.id) + " · " + m.id;
+						return b;
+					});
+					found.replaceChildren(
+						status,
+						...buttons,
+						!matches.length ? w.small(T("m.none")) : document.createTextNode(""),
+					);
+				};
+				query.oninput = filter;
+				filter();
+				const nodes = [title && w.heading(title), query, found];
+				if (backTo) nodes.push(btn(T("c.back"), backTo));
+				return { nodes, query };
+			};
+			const windowPlugin = (m, mods) => {
+				const w = windowUI;
+				const latestAction = lastAction && lastAction.id === m.id ? lastAction.result : {};
+				const inspect = () => {
+					onHome = false;
+					return w.inspect(
+						"Details",
+						{
+							plugin: m,
+							"last action result": latestAction,
+							"update status": obj(res[m.id]),
+							"upstream project": mrec(m.id),
+							"hidden in launcher": data.st.hidden.includes(m.id),
+							"frozen version": obj(data.st.frozen)[m.id] || false,
+						},
+						() => windowPlugin(m, mods),
+					);
+				};
+				const choices = [];
+				const collect = node => {
+					if (!node) return;
+					if (node.matches("[role='button']")) choices.push(node);
+					else [...node.children].forEach(collect);
+				};
+				collect(morePanel(m, mods.indexOf(m), mods.length));
+				if (typeof latestAction.error === "string") {
+					const reportAt = choices.findIndex(node => node.getAttribute("aria-label") === T("c.report"));
+					if (reportAt >= 0)
+						choices[reportAt] = k.reportButton(reportContext(m, latestAction.error, "plugin_management_failed"));
+				}
+				if (m.pending) collect(approval(m));
+				else if (m.held) collect(heldbox(m));
+				if (m.fail || m.stuck) collect(failbox(m));
+				choices.push(btn(T("mt.refresh"), () => refresh(m)));
+				const main = [
+					sw(T("m.enabled"), m.enabled, on =>
+						quick(on ? "enable" : "disable", m.id, T(on ? "m.enabled_ok" : "m.disabled_ok", { name: m.name })),
+					),
+					!m.nosource && !m.pending
+						? btn(T("m.update"), () => thaw(m, () => updateAsk(m)), { primary: true })
+						: btn(T("m.recover"), () => repairAsk(m)),
+				];
+				const name = m.name || m.id;
+				const state =
+					m.decky_runtime_available === false
+						? String(m.decky_runtime_reason || T("m.decky_off")).slice(0, 300)
+						: m.pending
+							? T("m.partial")
+							: m.held
+								? T("m.held")
+								: m.fail || m.stuck
+									? T("m.failed", { what: obj(m.fail).what || "backend" })
+									: verdict(res[m.id], m.nosource)[0] || compat(m.compat).textContent;
+				w.mount([
+					w.heading(name.length > 52 ? name.slice(0, 49) + "…" : name),
+					...w.reader(
+						[
+							m.version && T("c.ver", { v: m.version }),
+							latestAction.error || state,
+							box.clientWidth >= 640 && m.commit ? T("m.commit", { c: m.commit }) : "",
+						]
+							.filter(Boolean)
+							.join(" · "),
+					),
+					w.grid(main),
+					w.grid([
+						btn("Details", inspect),
+						btn(T("c.back"), () => {
+							selection = "";
+							home();
+						}),
+					]),
+					...w.actions(choices),
+				]);
+				onHome = true;
+			};
+			const windowStore = () => {
+				const w = windowUI;
+				const collection = windowCollection(T("m.store_title"), data.store, "Search available plugins", home, m => {
+					k.show(
+						tx(TITLE, m.name || m.id),
+						col(GREY, m.version || ""),
+						btn("Details", () => w.inspect("Details", m, windowStore)),
+						btn(T(m.installed ? "m.remove" : "m.install"), () =>
+							m.installed ? removeAsk(m, false) : quick("add", m.id, T("m.installed_ok", { name: m.name })),
+						),
+						btn(T("c.back"), windowStore),
+					);
+				});
+				w.mount(collection.nodes);
+			};
+			const windowTools = () => {
+				const w = windowUI;
+				const controls = [
+					btn(T(data.st.sort !== "name" ? "m.sort_custom" : "m.sort_name"), () =>
+						quick("mod_sort", data.st.sort !== "name" ? "name" : "custom"),
+					),
+					btn(T("mt.refresh_all"), () => refreshAll(tx(""))),
+					btn(T("m.store_title"), windowStore),
+					btn("Install from link", () =>
+						k.show(tx(TITLE, "Install from link"), ...tail([]), btn(T("c.back"), windowTools)),
+					),
+					btn("Details", () =>
+						w.inspect(
+							"Details",
+							{
+								settings: data.st,
+								status: data.ss,
+								maintenance: data.mp,
+								notice: line && line[0],
+								"invalid records": bad,
+							},
+							windowTools,
+						),
+					),
+				];
+				if (line && line[1] === BAD)
+					controls.push(k.reportButton(reportContext(null, line[0], "management_check_failed")));
+				const damage = dmg(k, data.ss, back);
+				if (damage) [...damage.querySelectorAll("[role='button']")].forEach(node => controls.push(node));
+				k.show(
+					tx(TITLE, "Manage plugins"),
+					data.st.safe && col(WARN, T("m.safe_text")),
+					(data.ss === "corrupt" || data.ss === "unreadable") &&
+						col(BAD, T(data.ss === "corrupt" ? "sd.corrupt" : "sd.unreadable")),
+					...controls,
+					btn(T("c.back"), home),
+				);
+			};
+			const windowHome = mods => {
+				const selected = mods.find(m => m.id === selection);
+				if (selected) return windowPlugin(selected, mods);
+				selection = "";
+				const w = windowUI;
+				const collection = windowCollection(
+					"",
+					mods,
+					"Search installed plugins",
+					null,
+					m => {
+						selection = m.id;
+						home();
+					},
+					windowQuery,
+					value => {
+						windowQuery = value;
+					},
+				);
+				w.mount([
+					...collection.nodes,
+					w.grid([btn(T("m.check"), () => check(tx("")), { primary: true }), btn(T("m.updall"), plan)]),
+					w.grid([
+						btn("More tools", windowTools),
+						btn("Details", () =>
+							w.inspect(
+								"Details",
+								{
+									notice: line && line[0],
+									"safe mode": !!data.st.safe,
+									"settings status": data.ss,
+									"maintenance window": data.mp,
+									"invalid records": bad,
+								},
+								home,
+							),
+						),
+					]),
+					(line || data.st.safe || data.ss === "corrupt" || data.ss === "unreadable" || bad) &&
+						w.small(
+							line
+								? line[0].length > 96
+									? line[0].slice(0, 93) + "…"
+									: line[0]
+								: data.st.safe
+									? T("m.safe_title")
+									: bad
+										? T("m.dropped", { count: bad })
+										: T(data.ss === "corrupt" ? "sd.corrupt" : "sd.unreadable"),
+						),
+				]);
+				onHome = true;
+			};
 			const paint = () => {
 				const { list, store, st } = data;
 				if (!Array.isArray(list))
@@ -1253,6 +1942,50 @@
 						col(WARN, T("m.safe_title"), 22, true),
 						col("#fff", T("m.safe_text"), 18),
 					);
+				if (windowUI) return windowHome(mods);
+				if (k.bounded) {
+					const selected = mods.find(m => m.id === selection);
+					if (selected) {
+						k.show(
+							tx(TITLE, selected.name),
+							row(
+								btn(T("c.back"), () => {
+									selection = "";
+									home();
+								}),
+							),
+							card(selected, mods.indexOf(selected), mods.length),
+						);
+						onHome = true;
+						return;
+					}
+					const tools = () =>
+						k.show(
+							tx(TITLE, "Manage plugins"),
+							row(btn(T("c.back"), home)),
+							dmg(k, data.ss, back),
+							st.safe && banner(),
+							btn(T(custom ? "m.sort_custom" : "m.sort_name"), () => quick("mod_sort", custom ? "name" : "custom")),
+							btn(T("m.check"), () => check(sum), { primary: true }),
+							btn(T("m.updall"), plan),
+							btn(T("mt.refresh_all"), () => refreshAll(sum)),
+							sum,
+							line && line[1] === BAD && k.reportButton(reportContext(null, line[0], "management_check_failed")),
+							...tail(store),
+						);
+					k.pages(T("m.title"), [
+						...mods.map(m =>
+							btn(m.name, () => {
+								selection = m.id;
+								home();
+							}),
+						),
+						btn("Manage plugins", tools),
+						!mods.length && col(GREY, T("m.none")),
+					]);
+					onHome = true;
+					return;
+				}
 				k.show(
 					tx(TITLE, T("m.title")),
 					dmg(k, data.ss, back),
@@ -1288,11 +2021,11 @@
 				k.hold(false);
 				const out = tx("");
 				k.show(tx(TITLE, T("m.res_title")), out);
-				onResult = true;
 				paintRes(k, out, v, () => {
 					keep(null);
 					draw();
 				});
+				onResult = true;
 			};
 			live = {
 				box,

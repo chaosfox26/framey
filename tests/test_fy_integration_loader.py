@@ -84,7 +84,16 @@ class ImportTests(unittest.TestCase):
             fy = loader.fy
             have = {f.name for f in REPO.iterdir() if f.is_file() and (f.name.startswith("fy_") and f.suffix == ".py" or f.name.startswith("fy-") and f.suffix == ".js")}
             self.assertEqual(have - set(fy.MANIFEST), set())
-            self.assertEqual(set(fy.MANIFEST) - have - set(fy.LEGACY), {"catalog/index.json"})
+            self.assertEqual(set(fy.MANIFEST) - have - set(fy.LEGACY), {
+                "catalog/index.json", "core-files.txt",
+            })
+            self.assertIn("fy_decky_runtime.py", fy.MANIFEST)
+            self.assertIn("fy-optional.js", fy.MANIFEST)
+            self.assertFalse(any(name.startswith(("compat/", "decky_runtime/")) for name in fy.MANIFEST))
+            self.assertFalse({"fy_decky_catalog.py", "fy_decky_import.py", "fy_decky_code.py", "fy_code_http.py"} & set(fy.MANIFEST))
+            core_files = (REPO / "core-files.txt").read_text().splitlines()
+            self.assertEqual(core_files[0], "framey-native-core-v1")
+            self.assertEqual(set(core_files[1:]), set(fy.MANIFEST) | {"framey.py", "LICENSE"})
             for name in fy.LEGACY:
                 self.assertIn(name, fy.MANIFEST)
             self.assertEqual(len(fy.MANIFEST), len(set(fy.MANIFEST)))

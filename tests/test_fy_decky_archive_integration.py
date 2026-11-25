@@ -11,7 +11,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "fixtures" / "j"))
 sys.path.insert(0, str(HERE.parent))
 
-import fy_decky_catalog
+from decky_runtime import catalog as fy_decky_catalog
 import jharness as H
 
 
@@ -136,7 +136,7 @@ class DeckyArchiveBoundaryIntegration(unittest.IsolatedAsyncioTestCase):
         catalog = self.catalog(self.decky_archive(), advertised_hash="0" * 64)
         request = await self.reviewed_request(catalog)
         stack, guards = self.runtime_guards()
-        with stack, mock.patch("fy_decky_catalog.zipfile.ZipFile", side_effect=AssertionError("unverified archive opened")) as opener:
+        with stack, mock.patch("decky_runtime.catalog.zipfile.ZipFile", side_effect=AssertionError("unverified archive opened")) as opener:
             result = await catalog.assess(request)
         self.assertEqual(result["code"], "digest_mismatch")
         opener.assert_not_called()

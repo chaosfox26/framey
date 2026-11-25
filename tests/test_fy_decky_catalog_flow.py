@@ -10,9 +10,9 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import fy_catalog
-import fy_decky_catalog
-
-
+from decky_runtime import catalog as fy_decky_catalog
+from decky_runtime import runtime as provider
+from types import SimpleNamespace
 STABLE_URL = "https://plugins.deckbrew.xyz/plugins"
 TESTING_URL = "https://testing.deckbrew.xyz/plugins"
 
@@ -119,6 +119,16 @@ class DeckyCatalogFlow(unittest.IsolatedAsyncioTestCase):
         self.fetcher = ControlledFetcher()
         self.archives = NoArchiveFetcher()
         self.catalog = fy_decky_catalog.DeckyCatalog(self.host, fetcher=self.fetcher, archive_fetcher=self.archives)
+        # Provider behavior fixture: trust/installation admission is independently
+        # exercised by the core manager suite, not simulated by this catalog test.
+        lease = SimpleNamespace(entry=provider)
+        manager = SimpleNamespace(acquire=lambda host: lease, current=lambda host, handle: handle is lease,
+                                  status=lambda host: {"enabled": True})
+        provider_patch = mock.patch.dict(sys.modules, {"fy_decky_runtime": manager})
+        provider_patch.start()
+        self.addCleanup(provider_patch.stop)
+        self.addAsyncCleanup(provider.shutdown, self.host)
+
         network = mock.patch("urllib.request.urlopen", side_effect=AssertionError("unit test attempted real network access"))
         network.start()
         self.addCleanup(network.stop)

@@ -8,7 +8,7 @@ export default [
 		rules: js.configs.recommended.rules,
 	},
 	{
-		files: ["*.js", "compat/*.js", "examples/*/*.js"],
+		files: ["*.js", "compat/*.js", "decky_runtime/**/*.js", "examples/*/*.js"],
 		languageOptions: {
 			ecmaVersion: 2022,
 			sourceType: "script",
@@ -38,8 +38,29 @@ export default [
 		},
 	},
 	{
-		files: ["compat/*.js", "examples/decky-style/main.js"],
+		files: ["compat/*.js", "decky_runtime/**/*.js", "examples/decky-style/main.js"],
 		languageOptions: { globals: { module: "readonly" } },
+	},
+	{
+		files: ["decky_runtime/client.js"],
+		languageOptions: {
+			globals: {
+				createFrameyDeckyAssets: "readonly",
+				createFrameyDeckyHost: "readonly",
+				createFrameyDeckyMenus: "readonly",
+				createFrameyDeckyModules: "readonly",
+				createFrameyDeckyNavigation: "readonly",
+				createFrameyDeckySidebar: "readonly",
+				createFrameyDeckyStore: "readonly",
+				createFrameyViewRuntime: "readonly",
+			},
+		},
+	},
+	{
+		files: ["decky_runtime/frontend/store.js"],
+		rules: {
+			"no-unused-vars": ["error", { varsIgnorePattern: "^createFrameyDeckyStore$", args: "none", caughtErrors: "none" }],
+		},
 	},
 	{
 		files: ["examples/decky-style/source.js"],

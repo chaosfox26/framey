@@ -55,6 +55,7 @@ const boot = (opts = {}) => {
   });
   sim.calls = env.calls;
   const w = env.window, d = env.document, FY = w.Framey, load = env.load;
+  Object.defineProperty(d.documentElement, "clientHeight", { get: () => w.innerHeight });
   [d, w].forEach(t => {
     const f = t.addEventListener.bind(t);
     t.addEventListener = (...a) => { spy.listeners++; return f(...a); };
@@ -179,7 +180,7 @@ t("roots reply with data only: starts there, no roots row", async () => {
   const p = api.pickFolder();
   await settle();
   assert.equal(sim.calls.length, 2);
-  assert.equal(view().querySelectorAll('[role="button"]').length, 3);
+  assert.equal(view().querySelectorAll('[role="button"]').length, 5);
   assert.equal(button("data"), undefined);
   assert.ok(view().textContent.includes("data"));
   assert.deepEqual(labels(), ["<b>x</b>", "Downloads", "Empty"].sort());
@@ -349,7 +350,12 @@ t("error line: first listing fails, malformed replies, focus stays inside", asyn
   sim.raw["long"] = { error: "x".repeat(900) };
   p = api.pickFolder({ path: "long" });
   await settle();
-  assert.equal(errLine().textContent.length, 300);
+  assert.equal(view().querySelector("[data-picker-details]").textContent.length, 42);
+  let longError = view().querySelector("[data-picker-details]").textContent;
+  while (button("Next").getAttribute("aria-disabled") !== "true") {
+    button("Next").click(); longError += view().querySelector("[data-picker-details]").textContent;
+  }
+  assert.equal(longError.length, 300);
   button("Cancel").click();
   await p;
 });
@@ -458,7 +464,7 @@ t("roots: object-shaped roots and a single root are handled", async () => {
   p = api.pickFolder();
   await settle();
   assert.equal(button("data"), undefined);
-  assert.equal(view().querySelectorAll('[role="button"]').length, 3);
+  assert.equal(view().querySelectorAll('[role="button"]').length, 5);
   button("Cancel").click();
   await p;
 });
@@ -518,7 +524,13 @@ t("list cap and truncation note", async () => {
   for (let i = 0; i < 600; i++) sim.tree.data.dirs["d" + i] = node();
   const p = api.pickFolder();
   await settle();
-  assert.equal(rows().length, 500);
+  assert.equal(rows().length, 8);
+  const reached = new Set(rows().map(r => r.firstChild.textContent));
+  while (button("Next").getAttribute("aria-disabled") !== "true") {
+    button("Next").click();
+    rows().forEach(r => reached.add(r.firstChild.textContent));
+  }
+  assert.equal(reached.size, 500);
   assert.ok(view().textContent.includes("(list shortened)"));
   button("Cancel").click();
   await p;
@@ -917,6 +929,59 @@ t("cleanup registration failure settles quietly and is diagnosable without paylo
   assert.equal(await api.pickFolder(), null);
   assert.equal(view(), null);
   assert.deepEqual(diagnostics(), [{ code: "picker.cleanup_failed", count: 1 }]);
+});
+
+t("compact picker pages all bounded entries without more backend calls", async () => {
+  const h = boot();
+  Object.defineProperty(h.w, "innerHeight", { value: 320, configurable: true });
+  h.sim.tree.data = node({}, Array.from({length: 12}, (_, i) => "file" + String(i).padStart(2, "0") + ".txt"));
+  const pending = h.api.pickFile();
+  await settle();
+  assert.equal(h.rows().length, 1);
+  assert.equal(h.view().style.overflow, "hidden");
+  const sent = h.sim.calls.length;
+  for (let i = 0; i < 11; i++) h.button("Next").click();
+  assert.deepEqual(h.labels(), ["file11.txt"]);
+  assert.equal(h.button("Next").getAttribute("aria-disabled"), "true");
+  assert.equal(h.sim.calls.length, sent);
+  h.row("file11.txt").click();
+  h.button("Previous").click();
+  h.button("Select").click();
+  assert.deepEqual(await pending, {root: "data", path: "file11.txt", name: "file11.txt"});
+});
+
+t("compact picker pages root choices and long names without losing the exact selection", async () => {
+  const h = boot();
+  Object.defineProperty(h.w, "innerHeight", {value: 320, configurable: true});
+  h.sim.tree = Object.fromEntries(Array.from({length: 12}, (_, i) => ["root" + i, node()]));
+  const longName = "a".repeat(120) + ".txt";
+  h.sim.tree.root11 = node({}, [longName]);
+  const pending = h.api.pickFile(); await settle();
+  assert.ok(h.button("Locations"), "Many permitted roots need a Locations screen");
+  h.button("Locations").click();
+  for (let i = 0; i < 11; i++) h.button("Next").click();
+  h.row("root11").click(); await settle();
+  assert.equal(h.rows().length, 1);
+  h.rows()[0].click();
+  assert.ok(h.view().querySelector('[data-picker-details]'));
+  h.button("Choose file").click();
+  h.button("Select").click();
+  assert.deepEqual(await pending, {root: "root11", path: longName, name: longName});
+});
+
+t("long listing errors expose every part with Retry and Cancel still reachable", async () => {
+  const h = boot();
+  h.sim.errors[""] = "Connection " + "unavailable ".repeat(24);
+  const pending = h.api.pickFolder(); await settle();
+  assert.ok(h.view().querySelector('[data-picker-details]').textContent.length <= 42);
+  let text = h.view().querySelector('[data-picker-details]').textContent;
+  assert.ok(text.length > 0, "Long failure needs a readable first detail page");
+  while (h.button("Next").getAttribute("aria-disabled") !== "true") {
+    h.button("Next").click(); text += h.view().querySelector('[data-picker-details]').textContent;
+  }
+  assert.equal(text, h.sim.errors[""]);
+  assert.ok(h.button("Retry"));
+  h.button("Cancel").click(); assert.equal(await pending, null);
 });
 
 (async () => {
